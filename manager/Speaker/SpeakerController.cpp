@@ -584,19 +584,34 @@ IDevice::Ptr SpeakerController::vendorDevice(const OnDeviceResult &cb) {
 }
 
 void SpeakerController::runVendorOp(const VendorOp &op, const OnDeviceResult &cb, bool autoDisconnect) {
+    _vendor_failure = static_cast<int>(DeviceFailure::None);
     auto device = vendorDevice(cb);
     if (!device) {
         return;
     }
 
-    device->connect([device, op, cb, autoDisconnect](bool ok, const std::string& data) {
+    // Kept when the operation ends, before the logout of autoDisconnect overwrites lastFailure().
+    std::weak_ptr<SpeakerController> weak_self = shared_from_this();
+    auto record = [weak_self, device](bool ok) {
+        if (auto self = weak_self.lock()) {
+            self->_vendor_failure = static_cast<int>(ok ? DeviceFailure::None : device->lastFailure());
+        }
+    };
+    device->connect([device, op, cb, autoDisconnect, record](bool ok, const std::string& data) {
         if (!ok) {
+            record(false);
             cb(false, "Connection failed: " + data);
             return;
         }
-        OnDeviceResult done = cb;
+        OnDeviceResult done = [record, cb](bool ok, const std::string& data) {
+            record(ok);
+            cb(ok, data);
+        };
         if (autoDisconnect) {
-            done = [device, cb](bool ok, const std::string& data) { doDisconnect(device, ok, data, cb); };
+            done = [device, cb, record](bool ok, const std::string& data) {
+                record(ok);
+                doDisconnect(device, ok, data, cb);
+            };
         }
         op(device, dynamic_cast<IAudioPlayback*>(device.get()), done);
     });

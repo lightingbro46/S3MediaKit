@@ -13,6 +13,7 @@
 
 #include "Camera/CameraController.h"
 #include "Speaker/SpeakerController.h"
+#include "ext-plugin/Bosch/BoschIpSpeaker.h"
 #include "Camera/VideoConfigRuleDecision.h"
 #include "Common/config.h"
 #include "Poller/EventPoller.h"
@@ -2285,4 +2286,18 @@ TEST_F(SpeakerProtocolTest, ReconnectReportsWhyTheProbeFailed) {
     EXPECT_FALSE(wait.result.connected);
     EXPECT_EQ(ConnectError::AUTH_FAILED, wait.result.error);
     EXPECT_EQ(DeviceFailure::Unauthorized, wait.result.failure) << "the ONVIF verdict, not PSIA's";
+}
+
+// ── Bosch vendor API: the cause of a failed request ──────────────────────────
+
+TEST(BoschFailureTest, RequestFailureForTheApi) {
+    EXPECT_EQ(DeviceFailure::Unauthorized, BoschIpSpeaker::classifyFailure(Err_success, 401));
+    EXPECT_EQ(DeviceFailure::Unauthorized, BoschIpSpeaker::classifyFailure(Err_success, 403));
+    EXPECT_EQ(DeviceFailure::None, BoschIpSpeaker::classifyFailure(Err_success, 204));
+    EXPECT_EQ(DeviceFailure::Other, BoschIpSpeaker::classifyFailure(Err_success, 500));
+    EXPECT_EQ(DeviceFailure::None, BoschIpSpeaker::classifyFailure(Err_other, 200)) << "answer came, body failed";
+    EXPECT_EQ(DeviceFailure::Unreachable, BoschIpSpeaker::classifyFailure(Err_refused, 0));
+    EXPECT_EQ(DeviceFailure::Unreachable, BoschIpSpeaker::classifyFailure(Err_dns, 0));
+    EXPECT_EQ(DeviceFailure::Timeout, BoschIpSpeaker::classifyFailure(Err_timeout, 0));
+    EXPECT_EQ(DeviceFailure::Timeout, BoschIpSpeaker::classifyFailure(Err_eof, 0));
 }

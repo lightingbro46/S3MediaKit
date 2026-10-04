@@ -6,6 +6,7 @@
 #include <sstream>
 #include <cmath>
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include "../IAudioPlayback.h"
 #include "../IDevice.h"
@@ -74,6 +75,12 @@ public:
     // Get the speaker configuration.
     SpeakerConfig getConfig() const override { return m_cfg; }
 
+    DeviceFailure lastFailure() const override { return static_cast<DeviceFailure>(m_lastFailure.load()); }
+
+    // One request's outcome as a DeviceFailure: `sock_err` is the toolkit::ErrCode of the request,
+    // `http_status` the status of its answer (0 when none came back).
+    static DeviceFailure classifyFailure(int sock_err, int http_status);
+
 private:
     // Create an HTTP requester and attach the SESSID cookie if required.
     mediakit::HttpRequester::Ptr makeReq(const std::string& method, bool withCookie = true);
@@ -133,6 +140,7 @@ private:
 
 private:
     SpeakerConfig m_cfg;
+    std::atomic<int> m_lastFailure {static_cast<int>(DeviceFailure::None)};
     std::string m_baseUrl;
     std::string m_sessionId;
     int64_t m_freeStorageSpace = -1;

@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include "Common/config.h"
+#include "Common/DeviceControlTypes.h"
 
 namespace managerkit {
 
@@ -98,6 +99,10 @@ public:
 
     // Get the device configuration.
     virtual IDeviceConfig getConfig() const = 0;
+
+    // Why the last request to the device failed (network, credentials), for the API error codes.
+    // Readable from any thread; None when the plugin does not tell.
+    virtual DeviceFailure lastFailure() const { return DeviceFailure::None; }
 };
 
 } //namespace managerkit

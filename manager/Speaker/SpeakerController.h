@@ -64,6 +64,10 @@ public:
 
     void setAudioVolume(int volume, managerkit::OnDeviceResult cb, bool autoDisconnect = true);
 
+    // Why the last vendor operation failed (IDevice::lastFailure() when it ended), None after a
+    // success or a failure that was not the network or the credentials. Any thread.
+    DeviceFailure lastVendorFailure() const { return static_cast<DeviceFailure>(_vendor_failure.load()); }
+
     // ================== Backchannel operations ==================
     void playAudioFileByBackchannel(const std::string& fileId, managerkit::OnDeviceResult cb);
 
@@ -155,6 +159,7 @@ private:
     // Vendor plugin (audio files, volume, ONVIF account), for brands that have one.
     IDevice::Ptr _vendor_ctr;
     IAudioPlayback* _audio_playback_ctr = nullptr;
+    std::atomic<int> _vendor_failure { static_cast<int>(DeviceFailure::None) };
     std::string _address;
     ControllerOption _ctrl_option;
     std::string _device_name;

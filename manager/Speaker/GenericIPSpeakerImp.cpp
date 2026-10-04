@@ -1,5 +1,6 @@
 #include "GenericIPSpeakerImp.h"
 #include "server/WebApiErrCode.h"
+#include "Common/DeviceFailureCode.h"
 #include "Common/config.h"
 #include "Thread/WorkThreadPool.h"
 
@@ -123,15 +124,21 @@ void GenericIPSpeakerImp::playAudioFile(const std::string& speakerId, const std:
         controller->playAudioFileByBackchannel(fileId, resultCb);
     };
 
-    auto playByVendorApi = [controller, strong_statistic, fileId, resultCb]() {
+    auto playByVendorApi = [controller, strong_statistic, fileId, speakerId, cb, resultCb]() {
         std::string fileRemoteId = strong_statistic->getAudioRemoteId(fileId);
         controller->playAudioFileByVendorApi(fileId, fileRemoteId,
-            [strong_statistic, fileId, fileRemoteId, resultCb](bool ok, const std::string& data) {
+            [controller, strong_statistic, fileId, fileRemoteId, speakerId, cb, resultCb](bool ok, const std::string& data) {
                 if (ok && fileRemoteId.empty()) {
                     // File does not exist on the speaker -> save remoteId to file
                     strong_statistic->setAudioRemoteId(fileId, data);
                 }
-                resultCb(ok, data);
+                if (ok) {
+                    resultCb(ok, data);
+                    return;
+                }
+                // The vendor API rejecting the account or unreachable reports that.
+                cb(SockException(Err_other, "Trigger play [" + speakerId + "]: FAIL (error: " + data + ")",
+                                 deviceFailureCode(controller->lastVendorFailure(), ApiErrCode::CODE_PLAY_AUDIO_FAILED)));
             });
     };
 
@@ -217,7 +224,8 @@ void GenericIPSpeakerImp::setAudioVolume(int volume, const std::function<void(co
             strong_statistic->setAudioVolume(volume, cVolume);
             cb(SockException(Err_success, "Set audio volume OK", ApiErrCode::CODE_SUCCESS));
         } else {
-            cb(SockException(Err_other, "Set audio volume FAIL (error: " + data + ")", ApiErrCode::CODE_SET_AUDIO_VOLUME_FAILED));
+            cb(SockException(Err_other, "Set audio volume FAIL (error: " + data + ")",
+                             deviceFailureCode(controller->lastVendorFailure(), ApiErrCode::CODE_SET_AUDIO_VOLUME_FAILED)));
         }
     });
 }

@@ -829,6 +829,10 @@ void BoschIpSpeaker::send(const HttpRequester::Ptr &req, const std::string &url,
     std::weak_ptr<HttpRequester> weak_req = req;
     keep(req);
     req->startRequester(url, [weak_self, weak_req, cb](const SockException &ex, const Parser &parser) {
+        if (auto self = weak_self.lock()) {
+            // Before cb: a failure it reports reads the cause of this request.
+            self->m_lastFailure = static_cast<int>(classifyFailure(ex.getErrCode(), atoi(parser.status().c_str())));
+        }
         cb(ex, parser);
         auto self = weak_self.lock();
         auto req = weak_req.lock();
@@ -836,6 +840,29 @@ void BoschIpSpeaker::send(const HttpRequester::Ptr &req, const std::string &url,
             self->release(req);
         }
     });
+}
+
+DeviceFailure BoschIpSpeaker::classifyFailure(int sock_err, int http_status) {
+    // An HTTP answer came back (even when the body then failed): the status says it all.
+    if (http_status) {
+        if (http_status == 401 || http_status == 403) {
+            return DeviceFailure::Unauthorized;
+        }
+        return http_status / 100 == 2 ? DeviceFailure::None : DeviceFailure::Other;
+    }
+    switch (sock_err) {
+        case Err_success:
+            return DeviceFailure::Other;
+        // Connected, but no answer: response timeout, or the speaker dropped the connection.
+        case Err_timeout:
+        case Err_eof:
+        case Err_reset:
+        case Err_shutdown:
+            return DeviceFailure::Timeout;
+        // No connection: refused, unknown host, no route.
+        default:
+            return DeviceFailure::Unreachable;
+    }
 }
 
 void BoschIpSpeaker::keep(HttpRequester::Ptr req) {
