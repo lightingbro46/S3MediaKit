@@ -10,8 +10,11 @@
 #include <unordered_map>
 #include <vector>
 #include "Common/DeviceControl.h"
+#include "Backchannel/IBackchannelPusher.h"
 
 namespace managerkit {
+
+using mediakit::AudioBackchannelInfo;
 
 // Device model shared by every camera control protocol. The structs keep their historical Onvif*
 // names: CameraStatistic, the REST API and the video config rules read them whatever protocol
@@ -430,6 +433,13 @@ public:
     virtual SDCardInformation getSDCardInfo() { return SDCardInformation(); }
     virtual OnvifAudioOutputProfile getAudioOutputProfile() const { return OnvifAudioOutputProfile(); }
     virtual OnvifAudioInputProfile getAudioInputProfile() const { return OnvifAudioInputProfile(); }
+
+    // Audio to the device's speaker (ONVIF: RTSP backchannel, ISAPI: two-way audio). Blocking, on the
+    // device queue, after a successful connect(). The default is "not supported".
+    virtual bool supportsAudioBackchannel() { return false; }
+    // Prepares the device and fills `out` with where BackchannelManager sends the audio. Credentials
+    // are the caller's to add (the RTSP URI or the info fields).
+    virtual bool setupAudioBackchannel(AudioBackchannelInfo &out, bool sharedDspPipeline) { return false; }
 };
 
 // ── Protocol selection shared by every controller (camera, speaker) ─────────────────────────────

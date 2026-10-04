@@ -105,7 +105,7 @@ private:
     // ================== Backchannel operations ==================
     // Device queue: resolves the backchannel RTSP URI and registers it with BackchannelManager.
     // Takes the controller and credentials explicitly because it runs off the owner poller.
-    void registerAudioBackchannel(const OnvifControl::Ptr &onvif_ctr, const ConnectContext &ctx);
+    void registerAudioBackchannel(const CameraDeviceControl::Ptr &device_ctr, const ConnectContext &ctx);
 private:
     DeviceTuple _tuple;
     toolkit::EventPoller::Ptr _poller;

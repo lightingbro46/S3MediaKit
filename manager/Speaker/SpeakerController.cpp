@@ -256,12 +256,11 @@ void SpeakerController::publishConnected(const CameraDeviceControl::Ptr &device_
     auto audio_playback = dynamic_cast<IAudioPlayback*>(ctx.vendor.get());
     if (audio_playback) caps->audioVolumeInfo = audio_playback->getAudioSettings();
     caps->supportsAudioVolumeControl        = caps->audioVolumeInfo.supportsControl();
-    // Only the ONVIF RTSP backchannel exists so far.
-    auto onvif_ctr = std::dynamic_pointer_cast<OnvifControl>(device_ctr);
-    caps->supportsAudioBackchannel          = onvif_ctr && onvif_ctr->supportAudioBackchannel();
+    // ONVIF: RTSP backchannel, ISAPI: two-way audio, PSIA: none.
+    caps->supportsAudioBackchannel          = device_ctr->supportsAudioBackchannel();
     if (caps->supportsAudioBackchannel) {
-        // Still on the device queue, which is where this blocking SOAP setup belongs.
-        registerAudioBackchannel(onvif_ctr, ctx);
+        // Still on the device queue, which is where this blocking setup belongs.
+        registerAudioBackchannel(device_ctr, ctx);
     }
     onControllerReady(true, "connected", std::move(caps));
 }
@@ -580,25 +579,26 @@ void SpeakerController::playAudioFileByBackchannel(const std::string& fileId, On
     cb(ok, ok ? "" : backchannel.getErrorMsg());
 }
 
-void SpeakerController::registerAudioBackchannel(const OnvifControl::Ptr &onvif_ctr, const ConnectContext &ctx) {
-    if (!onvif_ctr) {
-        return;
-    }
-
-    std::string backchannelUri;
-    if (!onvif_ctr->setupAudioBackchannel(backchannelUri, ctx.sharedDsp) || backchannelUri.empty()) {
+void SpeakerController::registerAudioBackchannel(const CameraDeviceControl::Ptr &device_ctr, const ConnectContext &ctx) {
+    AudioBackchannelInfo info;
+    if (!device_ctr->setupAudioBackchannel(info, ctx.sharedDsp) || info.url.empty()) {
         WarnL << "Setup audio backchannel failed for device " << _tuple.shortUrl();
         return;
     }
 
-    if (backchannelUri.find("@") == string::npos && !ctx.password.empty()) {
-        backchannelUri = UriUtils::replaceCredentials(backchannelUri, ctx.username, ctx.password);
+    if (info.transport == AudioBackchannelInfo::RTSP_ONVIF) {
+        if (info.url.find("@") == string::npos && !ctx.password.empty()) {
+            info.url = UriUtils::replaceCredentials(info.url, ctx.username, ctx.password);
+        }
+    } else {
+        info.username = ctx.username;
+        info.password = ctx.password;
     }
     if (_ctrl_generation.load() != ctx.generation) {
         return; // the controller was replaced meanwhile: its backchannel is not this speaker's any more
     }
 
-    BackchannelManager::Instance().registerDevice(_tuple.device_id, backchannelUri);
+    BackchannelManager::Instance().registerDevice(_tuple.device_id, info);
 }
 
 } // namespace managerkit

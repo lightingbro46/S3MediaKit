@@ -88,6 +88,11 @@ std::string parseFirstPtzChannel(const std::string &xml);
 // no enabled RTSP entry.
 int parseRtspPort(const std::string &xml);
 
+// First channel of an ISAPI TwoWayAudioChannelList (GET /ISAPI/System/TwoWayAudio/channels): its id
+// and audioCompressionType mapped to "PCMU" (G.711ulaw) or "PCMA" (G.711alaw); `codec` is the raw
+// type for any other compression. False when the list has no channel.
+bool parseTwoWayAudioChannel(const std::string &xml, std::string &id, std::string &codec);
+
 // Classifies a failed GET /PSIA/System/deviceInfo. `http_status` is 0 when no HTTP answer came
 // back, `soap_error` is soap->error then; `is_device_info` tells whether a 200 carried a DeviceInfo.
 ConnectError classifyConnectError(int http_status, int soap_error, bool is_device_info);
@@ -236,8 +241,16 @@ public:
 
     ControlProtocol protocol() const override { return ControlProtocol::ISAPI; }
 
+    // Two-way audio channel with G.711 (the only codec the pusher encodes).
+    bool supportsAudioBackchannel() override;
+    // HTTP_ISAPI: http://<address>/ISAPI/System/TwoWayAudio/channels/<id>; sharedDspPipeline is ONVIF only.
+    bool setupAudioBackchannel(AudioBackchannelInfo &out, bool sharedDspPipeline) override;
+
 protected:
     int defaultRtspPort() override;
+
+private:
+    bool readTwoWayAudio(std::string &id, std::string &codec);
 };
 
 } // namespace managerkit

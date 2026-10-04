@@ -2,8 +2,8 @@
 
 Ngày lập: 2026-10-04. Nhánh đề xuất: tiếp trên `feature/psi-controller` (cần `CameraDeviceControl`, `PsiaControl` và
 logic chọn/khoá giao thức của plan PSIA, chưa merge `develop`).
-Trạng thái (2026-10-04): I0–I3, S1–S3, S5 xong theo đề xuất mặc định của mục 8 (user không trả lời Q1–Q6). S4
-(two-way audio ISAPI) và E (thiết bị thật) chưa làm. Kết quả ở mục 9.
+Trạng thái (2026-10-04): I0–I3, S1–S5 xong theo đề xuất mặc định của mục 8 (user không trả lời Q1–Q6); S4 mới
+kiểm trên mock. E (thiết bị thật) chưa làm. Kết quả ở mục 9.
 
 Hai phần:
 - **Phần I — ISAPI cho camera.** ISAPI là REST/XML của Hikvision (`/ISAPI/...`), phát triển từ PSIA. Thêm giao thức
@@ -337,7 +337,33 @@ thêm `ProtocolLockTest`, `ProtocolOrderTest`.
 **S5 — xong.** `docs/camera-control-protocol.md` (ISAPI, luật 401 lúc dò, ánh xạ ISAPI, mục Loa, config),
 `conf/config.ini` (`[camera]` order mới, `[speaker]`, `[isapi]`).
 
-**S4 — chưa làm** (theo Q3): `AudioBackchannelInfo`, `IsapiTwoWayAudioPusher`. Mock đã sẵn TwoWayAudio.
+**S4 — xong trên mock, chưa kiểm thiết bị Hikvision.** Khác plan / cần biết:
+- `AudioBackchannelInfo` nằm ở `src/Backchannel/IBackchannelPusher.h` (namespace `mediakit`, `CameraDeviceControl.h`
+  dùng lại bằng `using`) vì `BackchannelManager` ở tầng `mediakit` không được phụ thuộc `manager/`. Thêm field
+  `username`/`password` cho ISAPI; RTSP vẫn nhúng credential vào URI như cũ.
+- `supportsAudioBackchannel()` không `const`: ISAPI phải `GET /ISAPI/System/TwoWayAudio/channels` (blocking, trên
+  device queue như phần còn lại của `publishConnected`). Chỉ nhận G.711ulaw/alaw; codec khác log `WarnL` và báo không
+  hỗ trợ (không tự đổi `audioCompressionType` của thiết bị).
+- Có interface `IBackchannelPusher` (callback chuyển lên interface); `BackchannelPusher` RTSP chỉ đổi lớp cha.
+- Pusher tự viết HTTP trên `TcpClient` (`HttpClient` sẵn có chỉ có Basic). `audioData` gửi `Content-Length: 0`,
+  thiết bị trả 200 rồi đọc G.711 thô trên cùng kết nối (cách go2rtc làm với Hikvision); mock được sửa theo đúng kiểu
+  này. `close` đi trên kết nối mới; pusher tự giữ mình (`_self_hold`) tới khi `close` có trả lời hoặc hết 5 s, nên
+  `BackchannelManager` bỏ con trỏ ngay vẫn đóng được phiên (R5).
+- **Busy không thành `StartResult::DeviceBusy`:** 403 `deviceBusy` về bất đồng bộ sau khi `startLiveSession`/
+  `playFile` đã trả. Pusher báo `onFailed` với custom code `kDeviceBusyCode`, `BackchannelManager` log "device busy"
+  và dừng phiên, giống lỗi bắt tay RTSP hiện nay. Muốn trả `DeviceBusy` cho client thì phải đổi API phát sang chờ kết
+  quả bắt tay, cho cả RTSP.
+- Không gửi `close` trước `open` (go2rtc làm thế để dọn phiên treo) vì sẽ cướp phiên của client khác. Phiên treo do
+  server chết giữa chừng tự hết theo timeout của thiết bị.
+- Unit: `IsapiParseTest.TwoWayAudioChannel`; `IsapiMockTest.TwoWayAudioSendsG711AndCloses` (cần `ISAPI_MOCK_ADDR`
+  và `ISAPI_MOCK_STATE`): `BackchannelManager::registerDevice(id, info)` → `startLiveSession` → 50 frame PCM 8 kHz →
+  `stopSession`. Mock nhận đúng 8000 byte và khớp từng byte với μ-law của tín hiệu gửi; `open` thứ hai trong lúc
+  đang phát nhận `kDeviceBusyCode` và không làm đóng phiên đầu; trình tự trên mock `open → audioData → open(403) →
+  close`, `two_way_open` về `false`.
+- Chưa chạy: loa ISAPI đi qua `SpeakerController` trong MediaServer (cần dựng loa + file âm thanh qua API), hồi quy
+  RTSP backchannel ONVIF (không có mock RTSP backchannel; `BackchannelPusher` chỉ đổi lớp cha), thiết bị Hikvision
+  thật. Cần kiểm trên thiết bị: `audioData` cùng kết nối với `open` có được không (pusher tự nối lại nếu thiết bị
+  trả `Connection: close`), có cần `?sessionId=` không, nhịp gửi 20 ms có đủ mượt.
 
 **E — chưa làm:** camera Hikvision tắt ONVIF ở `AUTO` (đo R1), Hikvision ở `ISAPI` (PTZ relative), camera ONVIF
-thật, loa Bosch hồi quy (đặc biệt `runVendorOp` và ép ONVIF).
+thật, loa Bosch hồi quy (đặc biệt `runVendorOp` và ép ONVIF), two-way audio Hikvision (các điểm ở S4).

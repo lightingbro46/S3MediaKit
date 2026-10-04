@@ -331,6 +331,10 @@ public:
      */
     bool setupAudioBackchannel(std::string &backchannelUri, const bool &sharedDspPipeline = false);
 
+    bool supportsAudioBackchannel() override { return supportAudioBackchannel(); }
+    // setupAudioBackchannel(std::string &, ...) as RTSP_ONVIF.
+    bool setupAudioBackchannel(AudioBackchannelInfo &out, bool sharedDspPipeline) override;
+
 private:
     void reportError();
 

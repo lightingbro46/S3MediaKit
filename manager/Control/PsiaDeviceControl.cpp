@@ -541,6 +541,29 @@ int parseRtspPort(const std::string &xml) {
     return 0;
 }
 
+bool parseTwoWayAudioChannel(const std::string &xml, std::string &id, std::string &codec) {
+    pugi::xml_document doc;
+    if (!load(doc, xml)) {
+        return false;
+    }
+    std::vector<pugi::xml_node> channels;
+    findAll(root(doc), "TwoWayAudioChannel", channels);
+    for (const auto &node : channels) {
+        id = text(node, "id");
+        if (id.empty()) {
+            continue;
+        }
+        codec = text(node, "audioCompressionType");
+        if (strcasecmp(codec.c_str(), "G.711ulaw") == 0) {
+            codec = "PCMU";
+        } else if (strcasecmp(codec.c_str(), "G.711alaw") == 0) {
+            codec = "PCMA";
+        }
+        return true;
+    }
+    return false;
+}
+
 ConnectError classifyConnectError(int http_status, int soap_error, bool is_device_info) {
     if (http_status == 0) {
         // No HTTP answer at all: refused, reset, timed out.
@@ -1223,6 +1246,37 @@ int IsapiControl::defaultRtspPort() {
         return 554;
     }
     return port;
+}
+
+bool IsapiControl::readTwoWayAudio(std::string &id, std::string &codec) {
+    std::string xml;
+    if (!get("/ISAPI/System/TwoWayAudio/channels", xml) || !parseTwoWayAudioChannel(xml, id, codec)) {
+        return false;
+    }
+    if (codec != "PCMU" && codec != "PCMA") {
+        WarnL << "ISAPI device " << _address << ": two-way audio channel " << id << " uses " << codec
+              << ", only G.711ulaw/G.711alaw can be sent";
+        return false;
+    }
+    return true;
+}
+
+bool IsapiControl::supportsAudioBackchannel() {
+    std::string id, codec;
+    return readTwoWayAudio(id, codec);
+}
+
+bool IsapiControl::setupAudioBackchannel(AudioBackchannelInfo &out, bool) {
+    std::string id, codec;
+    if (!readTwoWayAudio(id, codec)) {
+        return false;
+    }
+    out = AudioBackchannelInfo();
+    out.transport = AudioBackchannelInfo::HTTP_ISAPI;
+    out.url = "http://" + _address + "/ISAPI/System/TwoWayAudio/channels/" + id;
+    out.codec = codec;
+    out.sampleRate = 8000;
+    return true;
 }
 
 } // namespace managerkit

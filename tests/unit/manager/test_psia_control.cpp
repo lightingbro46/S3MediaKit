@@ -1,9 +1,18 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <future>
+#include <regex>
+#include <sstream>
 #include <string>
+#include <thread>
+#include <vector>
 
+#include "Backchannel/BackchannelManager.h"
+#include "Backchannel/IsapiTwoWayAudioPusher.h"
 #include "Control/OnvifDeviceControl.h"
 #include "Control/PsiaDeviceControl.h"
 
@@ -435,6 +444,122 @@ TEST(IsapiMockTest, ConnectReadWritePtzAndRelay) {
     PsiaControl psia(addr, "admin", "admin123");
     EXPECT_FALSE(psia.connect());
     EXPECT_EQ(ConnectError::NOT_THIS_PROTOCOL, psia.lastConnectError()) << psia.lastError();
+}
+
+TEST(IsapiParseTest, TwoWayAudioChannel) {
+    std::string id, codec;
+    EXPECT_TRUE(parseTwoWayAudioChannel(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<TwoWayAudioChannelList version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">"
+        "<TwoWayAudioChannel><id>1</id><enabled>false</enabled>"
+        "<audioCompressionType>G.711alaw</audioCompressionType></TwoWayAudioChannel>"
+        "</TwoWayAudioChannelList>", id, codec));
+    EXPECT_EQ("1", id);
+    EXPECT_EQ("PCMA", codec);
+
+    EXPECT_TRUE(parseTwoWayAudioChannel(
+        "<TwoWayAudioChannelList><TwoWayAudioChannel><id>2</id>"
+        "<audioCompressionType>G.726</audioCompressionType></TwoWayAudioChannel></TwoWayAudioChannelList>", id, codec));
+    EXPECT_EQ("2", id);
+    EXPECT_EQ("G.726", codec);
+
+    EXPECT_FALSE(parseTwoWayAudioChannel("<TwoWayAudioChannelList/>", id, codec));
+    EXPECT_FALSE(parseTwoWayAudioChannel("not xml", id, codec));
+}
+
+namespace {
+
+// audio_bytes / two_way_open from the --state file of psia_mock.py.
+struct MockAudioState {
+    long long audio_bytes = 0;
+    bool two_way_open = false;
+};
+
+MockAudioState readMockAudioState(const std::string &path) {
+    MockAudioState state;
+    std::ifstream in(path);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    const std::string json = ss.str();
+    std::smatch m;
+    if (std::regex_search(json, m, std::regex("\"audio_bytes\":\\s*(\\d+)"))) {
+        state.audio_bytes = atoll(m[1].str().c_str());
+    }
+    state.two_way_open = std::regex_search(json, std::regex("\"two_way_open\":\\s*true"));
+    return state;
+}
+
+template <typename Pred>
+bool waitFor(Pred pred, int timeout_ms = 5000) {
+    for (int waited = 0; waited < timeout_ms; waited += 50) {
+        if (pred()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return pred();
+}
+
+} // namespace
+
+// BackchannelManager → IsapiTwoWayAudioPusher → psia_mock.py --dialect isapi --state PATH. Skipped
+// unless ISAPI_MOCK_ADDR=ip:port and ISAPI_MOCK_STATE=PATH are set.
+TEST(IsapiMockTest, TwoWayAudioSendsG711AndCloses) {
+    const char *addr = getenv("ISAPI_MOCK_ADDR");
+    const char *state_path = getenv("ISAPI_MOCK_STATE");
+    if (!addr || !*addr || !state_path || !*state_path) {
+        GTEST_SKIP() << "ISAPI_MOCK_ADDR / ISAPI_MOCK_STATE not set";
+    }
+    using namespace mediakit;
+
+    IsapiControl ctr(addr, "admin", "admin123");
+    ASSERT_TRUE(ctr.connect()) << ctr.lastError();
+    ASSERT_TRUE(ctr.supportsAudioBackchannel()) << ctr.lastError();
+    AudioBackchannelInfo info;
+    ASSERT_TRUE(ctr.setupAudioBackchannel(info, false));
+    EXPECT_EQ(AudioBackchannelInfo::HTTP_ISAPI, info.transport);
+    EXPECT_EQ(std::string("http://") + addr + "/ISAPI/System/TwoWayAudio/channels/1", info.url);
+    EXPECT_EQ("PCMU", info.codec);
+    info.username = "admin";
+    info.password = "admin123";
+
+    ASSERT_FALSE(readMockAudioState(state_path).two_way_open) << "another two-way session is open on the mock";
+    const long long bytes_before = readMockAudioState(state_path).audio_bytes;
+
+    const std::string device_id = "isapi_two_way_test";
+    auto &manager = BackchannelManager::Instance();
+    manager.registerDevice(device_id, info);
+    ASSERT_EQ(StartResult::Started, manager.startLiveSession(device_id, 8000, 1));
+    ASSERT_TRUE(waitFor([&] { return readMockAudioState(state_path).two_way_open; })) << "open never reached the mock";
+
+    // A second session while the first holds the device: deviceBusy.
+    auto second = std::make_shared<IsapiTwoWayAudioPusher>(info);
+    std::promise<int> second_failed;
+    second->onFailed = [&second_failed](const toolkit::SockException &ex) { second_failed.set_value(ex.getCustomCode()); };
+    second->start();
+    auto second_result = second_failed.get_future();
+    ASSERT_EQ(std::future_status::ready, second_result.wait_for(std::chrono::seconds(5)));
+    EXPECT_EQ(IsapiTwoWayAudioPusher::kDeviceBusyCode, second_result.get());
+    EXPECT_TRUE(readMockAudioState(state_path).two_way_open) << "the refused session must not close the first";
+
+    // Give the audioData request time to be accepted (the ring reader attaches then), then 1 s of audio.
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::vector<int16_t> frame(160);
+    for (int i = 0; i < 50; ++i) {
+        for (size_t k = 0; k < frame.size(); ++k) {
+            frame[k] = (int16_t)((k % 16) * 1000 - 8000);
+        }
+        ASSERT_TRUE(manager.pushAudioFrame(device_id, frame.data(), frame.size()));
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    manager.stopSession(device_id);
+    manager.unregisterDevice(device_id);
+
+    ASSERT_TRUE(waitFor([&] { return !readMockAudioState(state_path).two_way_open; })) << "close never reached the mock";
+    // G.711: one byte per 8 kHz sample.
+    EXPECT_TRUE(waitFor([&] { return readMockAudioState(state_path).audio_bytes - bytes_before == 8000; }))
+        << "mock got " << readMockAudioState(state_path).audio_bytes - bytes_before << " bytes";
 }
 
 // A web server that is not PSIA (here: nothing under /PSIA) is NOT_THIS_PROTOCOL, so AUTO moves on.

@@ -151,9 +151,16 @@ Loa IP chọn giao thức theo đúng luật của camera (cùng `ProtocolLock` 
 - Loa đang online thì mỗi chu kỳ 60 giây chỉ gửi một request kiểm tra (`probeConnection`), không chạy lại toàn bộ
   `connect()`. Chỉ khi kiểm tra lỗi mới kết nối lại và đăng ký lại backchannel.
 - Giao thức đang dùng lưu ở capabilities của loa (`controlProtocol`) và được khôi phục khi khởi động.
-- Backchannel (`supportsAudioBackchannel`, chế độ phát `BACKCHANNEL`) hiện chỉ có với ONVIF. Loa ISAPI/PSIA có
-  thông tin thiết bị và trạng thái online; phát file chỉ qua plugin hãng nếu có. Two-way audio ISAPI để đợt sau
-  (bước S4 của plan).
+- Backchannel (`supportsAudioBackchannel`, chế độ phát `BACKCHANNEL`) theo giao thức đang dùng:
+  - ONVIF: RTSP backchannel như trước (`BackchannelPusher`).
+  - ISAPI: two-way audio Hikvision (`IsapiTwoWayAudioPusher`). Có khi `GET /ISAPI/System/TwoWayAudio/channels` trả
+    một kênh G.711ulaw/G.711alaw; codec khác (G.726, AAC...) thì báo không hỗ trợ (log `WarnL`). Trình tự: `PUT
+    .../channels/<id>/open` → `PUT .../audioData` với `Content-Length: 0` rồi gửi G.711 8 kHz thô trên chính kết nối
+    đó → `PUT .../close` trên kết nối mới. Digest (qop=auth) hoặc Basic theo challenge. `close` luôn được gửi khi
+    `open` đã thành công, kể cả khi lỗi hay bị dừng giữa chừng.
+  - Thiết bị chỉ giữ một phiên two-way: đang có phiên khác thì `open` trả 403 `deviceBusy`, phiên mới dừng với log
+    `device busy`. Lỗi này đến bất đồng bộ nên API phát vẫn trả thành công như lỗi kết nối RTSP hiện nay.
+  - PSIA: không có. Loa PSIA có thông tin thiết bị và trạng thái online; phát file chỉ qua plugin hãng nếu có.
 
 Webhook capabilities của loa có thêm `controlProtocol` và `controlProtocolSetting` như camera; `onvifDevice` giữ
 nghĩa đang chạy ONVIF. Option loa (`makeSpeakerOptionJson`) có thêm `controlProtocol`.
@@ -172,7 +179,8 @@ nghĩa đang chạy ONVIF. Option loa (`makeSpeakerOptionJson`) có thêm `contr
 ## Kiểm thử
 
 - Unit test: `unit.camera_controller_all` (`CameraProtocolTest`, `ProtocolLockTest`, `SpeakerProtocolTest`),
-  `unit.psia_control_all` (`PsiaParseTest`, `IsapiParseTest`, ...).
+  `unit.psia_control_all` (`PsiaParseTest`, `IsapiParseTest`, ...; `IsapiMockTest.TwoWayAudioSendsG711AndCloses` chạy
+  với `psia_mock.py --dialect isapi --state PATH` khi đặt `ISAPI_MOCK_ADDR` và `ISAPI_MOCK_STATE`).
 - Camera PSIA giả: `tests/integration/stress_vms/psia_mock.py --port 18680` (Digest, `admin`/`admin123`;
   `--basic` cho Basic). Camera ISAPI giả: thêm `--dialect isapi --rtsp-port 8554`; `--onvif-401` cho
   `/onvif/device_service` trả 401 như Hikvision tắt ONVIF.

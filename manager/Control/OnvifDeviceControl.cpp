@@ -2582,6 +2582,17 @@ void OnvifControl::getStorageConfiguration() {
     }
 }
 
+bool OnvifControl::setupAudioBackchannel(AudioBackchannelInfo &out, bool sharedDspPipeline) {
+    std::string uri;
+    if (!setupAudioBackchannel(uri, sharedDspPipeline) || uri.empty()) {
+        return false;
+    }
+    out = AudioBackchannelInfo();
+    out.transport = AudioBackchannelInfo::RTSP_ONVIF;
+    out.url = uri;
+    return true;
+}
+
 bool OnvifControl::setupAudioBackchannel(std::string &backchannelUri, const bool &sharedDspPipeline) {
     std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_proxyMedia == nullptr || !supportAudioBackchannel()) {

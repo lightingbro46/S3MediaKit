@@ -25,7 +25,8 @@ có manufacturer, StreamingChannel không có rtspPortNo (cổng RTSP đọc ở
 Thêm two-way audio:
     GET  /ISAPI/System/TwoWayAudio/channels
     PUT  /ISAPI/System/TwoWayAudio/channels/<id>/open|close
-    PUT  /ISAPI/System/TwoWayAudio/channels/<id>/audioData  (byte ghi nối vào --audio-out)
+    PUT  /ISAPI/System/TwoWayAudio/channels/<id>/audioData  (byte ghi nối vào --audio-out;
+         Content-Length: 0 thì trả 200 ngay rồi đọc audio thô tới khi client đóng kết nối)
 Đường /PSIA trả 404 ở dialect isapi và ngược lại.
 
 --onvif-401: /onvif/device_service trả 401 + Digest challenge thay cho 404, giống Hikvision tắt
@@ -416,9 +417,10 @@ def make_handler(cam, args):
             return self._send(401, status(4, "Invalid Operation", "unAuthorized"),
                               {"WWW-Authenticate": challenge})
 
-        def _audio_data(self):
-            # Dữ liệu G.711 gửi liên tục trên một kết nối; không có Content-Length thì đọc tới khi đóng.
-            length = self.headers.get("Content-Length")
+        def _audio_data(self, raw=False):
+            # Dữ liệu G.711 gửi liên tục trên một kết nối; không có Content-Length (hoặc raw) thì đọc
+            # tới khi đóng.
+            length = None if raw else self.headers.get("Content-Length")
             out = open(args.audio_out, "ab") if args.audio_out else None
             total = 0
             try:
@@ -455,6 +457,15 @@ def make_handler(cam, args):
                 if not is_open:
                     self.rfile.read(int(self.headers.get("Content-Length") or 0))
                     return self._send(403, status(4, "Invalid Operation", "notOpen"))
+                if self.headers.get("Content-Length") == "0":
+                    # Kiểu Hikvision: header kết thúc request, thiết bị trả 200 ngay rồi đọc audio thô
+                    # trên cùng kết nối tới khi client đóng.
+                    code, xml = cam.handle(self.command, self.path, "")
+                    self._send(code, xml)
+                    self.wfile.flush()
+                    self._audio_data(raw=True)
+                    self.close_connection = True
+                    return
                 self._audio_data()
                 code, xml = cam.handle(self.command, self.path, "")
                 return self._send(code, xml)

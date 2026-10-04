@@ -11,6 +11,7 @@
 #include "Common/Parser.h"
 #include "Util/mini.h"
 #include "BackchannelMediaSource.h"
+#include "IBackchannelPusher.h"
 
 #include <memory>
 #include <string>
@@ -18,25 +19,18 @@
 
 namespace mediakit {
 
-class BackchannelPusher : public toolkit::TcpClient, public mediakit::RtspSplitter, public toolkit::mINI {
+class BackchannelPusher : public IBackchannelPusher, public toolkit::TcpClient, public mediakit::RtspSplitter, public toolkit::mINI {
 public:
     using Ptr = std::shared_ptr<BackchannelPusher>;
 
     explicit BackchannelPusher(const std::string& strUrl, const toolkit::EventPoller::Ptr& poller = nullptr);
     ~BackchannelPusher() override;
 
-    void start();
-    void attachSource(BackchannelMediaSource::Ptr source);
-    void detachSource();
-    void stopSession();
-
-    // Fired once, when the DESCRIBE/SETUP/PLAY handshake finishes successfully.
-    std::function<void()> onReady;
-    // Fired once, if the handshake (connect/DESCRIBE/SETUP/PLAY) fails.
-    std::function<void(const toolkit::SockException&)> onFailed;
-    // Fired if the session drops unexpectedly *after* onReady already fired.
-    std::function<void(const toolkit::SockException&)> onShutdown;
-    std::function<void()> onSourceFinished;
+    // onReady fires when the DESCRIBE/SETUP/PLAY handshake finishes, onFailed when it fails.
+    void start() override;
+    void attachSource(BackchannelMediaSource::Ptr source) override;
+    void detachSource() override;
+    void stopSession() override;
 
 protected:
     void onConnect(const toolkit::SockException& ex) override;
