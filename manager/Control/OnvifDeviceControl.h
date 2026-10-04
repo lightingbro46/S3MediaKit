@@ -527,6 +527,18 @@ public:
     virtual std::string getSoapErrMsg() { return _soapErrMsg; }
 
     /**
+     * Why the last failed request failed (network, credentials, other). Kept after disconnect(), so
+     * a camera that cannot connect still says why. Readable from any thread.
+     */
+    DeviceFailure lastFailure() const { return static_cast<DeviceFailure>(_last_failure.load()); }
+
+    /**
+     * Classify a gSOAP failure: soap->error, the fault text, and whether the camera's 401 only
+     * offered HTTP Basic that was refused.
+     */
+    static DeviceFailure classifyFailure(int soap_error, const std::string &fault, bool basic_refused);
+
+    /**
      * Execute PTZ Goto Preset
      */
     virtual bool PTZ_GotoPreset(const std::string &presetToken, float panSpeed, float tiltSpeed, float zoomSpeed);
@@ -793,6 +805,7 @@ private:
     std::vector<OnvifRelayOutputProfile> _relayOutputProfiles;
 
     std::string _soapErrMsg;
+    std::atomic<int> _last_failure {static_cast<int>(DeviceFailure::None)};
 
     struct CamTimeInfo {
         std::string TZ;

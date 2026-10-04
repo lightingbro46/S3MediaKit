@@ -95,13 +95,30 @@ TEST(OnvifHttpAuthorizationTest, RefusesChallengesItCannotAnswer) {
     EXPECT_EQ("", SoapUtil::makeHttpAuthorization(challenges, "POST", "/", "u", "p", "c", false));
 }
 
+// ---- Failure classification ----------------------------------------------
+
+TEST(OnvifFailureTest, ClassifiesNetworkAndCredentialFailures) {
+    EXPECT_EQ(DeviceFailure::Unauthorized, OnvifControl::classifyFailure(401, "Error 401 fault detected", false));
+    EXPECT_EQ(DeviceFailure::AuthMethodUnsupported, OnvifControl::classifyFailure(401, "", true));
+    EXPECT_EQ(DeviceFailure::Unauthorized, OnvifControl::classifyFailure(403, "", false));
+    EXPECT_EQ(DeviceFailure::Unreachable, OnvifControl::classifyFailure(SOAP_TCP_ERROR, "connect failed", false));
+    EXPECT_EQ(DeviceFailure::Timeout, OnvifControl::classifyFailure(SOAP_EOF, "End of file or no input", false));
+    // WS-Security rejected inside a SOAP fault (camera in "digest&ws-username token" mode).
+    EXPECT_EQ(DeviceFailure::Unauthorized,
+              OnvifControl::classifyFailure(SOAP_FAULT, "SOAP 1.2 fault SOAP-ENV:Sender [ter:NotAuthorized]", false));
+    EXPECT_EQ(DeviceFailure::Other,
+              OnvifControl::classifyFailure(SOAP_FAULT, "SOAP 1.2 fault SOAP-ENV:Receiver [ter:ActionNotSupported]", false));
+    EXPECT_EQ(DeviceFailure::Other, OnvifControl::classifyFailure(500, "HTTP Error", false));
+}
+
 // ---- Fake camera ------------------------------------------------------------
 
 // A blocking one-connection-at-a-time HTTP server answering like an ONVIF camera whose web
 // service accepts only HTTP authentication. It never checks WS-Security.
 class FakeCamera {
 public:
-    enum Auth { NONE, DIGEST, BASIC };
+    // SILENT: never answers anything but GetSystemDateAndTime.
+    enum Auth { NONE, DIGEST, BASIC, SILENT };
 
     struct Request {
         string action;
@@ -210,8 +227,15 @@ private:
         }
         req.authorization = headerValue(head, "Authorization");
         // ONVIF requires GetSystemDateAndTime to work unauthenticated.
-        req.authorized = _auth == NONE || req.action == "GetSystemDateAndTime" || checkAuth(req.authorization, path);
+        req.authorized = _auth == NONE || _auth == SILENT || req.action == "GetSystemDateAndTime"
+            || checkAuth(req.authorization, path);
 
+        if (_auth == SILENT && req.action != "GetSystemDateAndTime") {
+            // Hold the request until the client gives up and closes the connection.
+            while (!_stop && recv(fd, buf, sizeof(buf), 0) > 0) {
+            }
+            return;
+        }
         string resp;
         if (!req.authorized) {
             resp = "HTTP/1.1 401 Unauthorized\r\n" + challenge() + "Content-Length: 0\r\nConnection: close\r\n\r\n";
@@ -323,6 +347,8 @@ TEST_F(OnvifHttpAuthTest, DigestOnlyCameraConnectsAndLaterCallsAuthenticateUpFro
     OnvifControl ctr(cam.host(), "admin", "pw");
     EXPECT_FALSE(ctr.connect()); // GetCapabilities fails on purpose, after authenticating
     EXPECT_EQ("Fake", ctr.getDeviceInfo().manufacturer);
+    // HTTP 500: neither network nor credentials.
+    EXPECT_EQ(DeviceFailure::Other, ctr.lastFailure());
 
     auto info = cam.requestsFor("GetDeviceInformation");
     ASSERT_EQ(2u, info.size());
@@ -369,12 +395,14 @@ TEST_F(OnvifHttpAuthTest, WrongPasswordStopsAfterOneRetry) {
     EXPECT_FALSE(reqs[1].authorized);
     EXPECT_NE(string::npos, reqs[1].authorization.find("Digest "));
     EXPECT_EQ(0u, cam.requestsFor("GetCapabilities").size());
+    EXPECT_EQ(DeviceFailure::Unauthorized, ctr.lastFailure());
 }
 
 TEST_F(OnvifHttpAuthTest, BasicOnlyCameraIsRefusedByDefault) {
     FakeCamera cam(FakeCamera::BASIC, "admin", "pw");
     OnvifControl ctr(cam.host(), "admin", "pw");
     EXPECT_FALSE(ctr.connect());
+    EXPECT_EQ(DeviceFailure::AuthMethodUnsupported, ctr.lastFailure());
     EXPECT_EQ(1u, cam.requestsFor("GetDeviceInformation").size());
     EXPECT_FALSE(anyBasic(cam.requests()));
 }
@@ -391,6 +419,28 @@ TEST_F(OnvifHttpAuthTest, BasicOnlyCameraWorksWhenAllowed) {
     auto caps = cam.requestsFor("GetCapabilities");
     ASSERT_EQ(1u, caps.size());
     EXPECT_TRUE(caps[0].authorized);
+}
+
+TEST_F(OnvifHttpAuthTest, ClosedPortIsUnreachable) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in addr {};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bind(fd, (sockaddr *)&addr, sizeof(addr));
+    socklen_t len = sizeof(addr);
+    getsockname(fd, (sockaddr *)&addr, &len);
+    close(fd); // nothing listens there any more: connect is refused
+    OnvifControl ctr("127.0.0.1:" + to_string(ntohs(addr.sin_port)), "admin", "pw");
+    EXPECT_FALSE(ctr.connect());
+    EXPECT_EQ(DeviceFailure::Unreachable, ctr.lastFailure());
+}
+
+TEST_F(OnvifHttpAuthTest, SilentCameraTimesOut) {
+    // Connected, request never answered: OnvifControl gives up after its 10 s receive timeout.
+    FakeCamera cam(FakeCamera::SILENT, "admin", "pw");
+    OnvifControl ctr(cam.host(), "admin", "pw");
+    EXPECT_FALSE(ctr.connect());
+    EXPECT_EQ(DeviceFailure::Timeout, ctr.lastFailure());
 }
 
 // ---- HTTP client (SoapUtil) -------------------------------------------------

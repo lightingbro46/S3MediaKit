@@ -30,6 +30,17 @@ enum class RELAY_OUTPUT_CONTROL {
     RelayOff   // relay output inactive
 };
 
+// Why the last request to a device failed, as far as the user can act on it: fix the network,
+// fix the credentials, or nothing specific (the command's own error code applies).
+enum class DeviceFailure {
+    None = 0,
+    Unreachable,           // no connection: refused, no route, connect timeout
+    Timeout,               // connected, but the device did not answer in time or dropped the connection
+    Unauthorized,          // the device rejected the username or password
+    AuthMethodUnsupported, // the device only offers HTTP Basic, which onvif.allowHttpBasicAuth refuses
+    Other
+};
+
 class DeviceControl {
 public:
     using Ptr = std::shared_ptr<DeviceControl>;

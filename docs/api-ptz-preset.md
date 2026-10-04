@@ -33,6 +33,10 @@ Tất cả request phải đính kèm JWT token trong header hoặc query param.
 | `905001` | 404 | Device không tìm thấy |
 | `905002` | 400 | Device offline |
 | `905003` | 403 | Device đang bị điều khiển bởi người dùng khác |
+| `905004` | 403 | Camera từ chối tài khoản/mật khẩu ONVIF |
+| `905005` | 502 | Không kết nối được tới camera (mạng) |
+| `905006` | 504 | Camera không phản hồi kịp (mạng) |
+| `905007` | 403 | Camera chỉ hỗ trợ HTTP Basic, server đang tắt |
 | `907001` | 404 | User preset không tìm thấy |
 | `907011` | 500 | PTZ goto preset thất bại (ONVIF preset) |
 | `907012` | 500 | PTZ goto preset thất bại (user-defined preset) |
@@ -257,4 +261,7 @@ sequenceDiagram
 
 3. **Reload sau thay đổi**: Sau khi `set_preset` hoặc `remove_preset` thành công, FE nên gọi lại `get_presets` để đồng bộ danh sách.
 
-4. **ONVIF preset vs User preset**: ONVIF preset (`isUserDefined: false`) được sync từ camera, FE không thể tạo/xóa loại này. Chỉ user-defined preset mới có thể tạo/xóa qua API.
+4. **Lỗi mạng / xác thực**: `905004`–`905007` thay cho mã lỗi riêng của thao tác (`9070xx`) hoặc `905002` khi
+   biết nguyên nhân; xem `docs/api-device-control-errors.md`.
+
+5. **ONVIF preset vs User preset**: ONVIF preset (`isUserDefined: false`) được sync từ camera, FE không thể tạo/xóa loại này. Chỉ user-defined preset mới có thể tạo/xóa qua API.

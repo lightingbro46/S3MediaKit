@@ -139,6 +139,7 @@ struct OnvifHttpAuth {
     ~OnvifHttpAuth() { releaseInfo(); }
 
     void apply() {
+        _basic_refused = false;
         if (auto data = lookupHttpAuthChallenge(_soap)) {
             data->digest = data->basic = false;
             data->realm[0] = '\0';
@@ -186,6 +187,7 @@ struct OnvifHttpAuth {
         if (data->basic) {
             GET_CONFIG(bool, allow_basic, OnvifAuth::kAllowHttpBasicAuth);
             if (!allow_basic) {
+                _basic_refused = true;
                 WarnL << "Onvif device " << _ip << " only offers HTTP Basic authentication, which sends the password "
                       << "in clear text; refused (set " << OnvifAuth::kAllowHttpBasicAuth << "=1 to allow it)";
                 return false;
@@ -204,6 +206,9 @@ struct OnvifHttpAuth {
 
     // Whether the last request carried HTTP credentials, i.e. a 401 to it means bad credentials.
     bool sentCredentials() const { return _sent; }
+
+    // Whether the last 401 only offered HTTP Basic and onvif.allowHttpBasicAuth refused it.
+    bool basicRefused() const { return _basic_refused; }
 
     // auth-int is only kept when the camera offers nothing else.
     bool signsBody() const { return _mode == DIGEST && qopHasToken(_info.qop, "auth-int"); }
@@ -227,6 +232,7 @@ private:
     std::string _ip;
     Mode _mode = NONE;
     bool _sent = false;
+    bool _basic_refused = false;
     struct http_da_info _info;
     std::string _user;
     std::string _pass;
@@ -234,6 +240,8 @@ private:
 
 int OnvifControl::callWithAuth(const std::function<int()> &call) {
     std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
+    // reportError() sets it again if this call fails.
+    _last_failure = static_cast<int>(DeviceFailure::None);
     if (_http_auth) {
         // Also covers a second call after one setCredentials(): the first response cleared the
         // HTTP credentials gSOAP keeps.
@@ -1261,6 +1269,28 @@ bool OnvifControl::isAuthOrTimestampFault(const std::string &fault) {
     return false;
 }
 
+DeviceFailure OnvifControl::classifyFailure(int soap_error, const std::string &fault, bool basic_refused) {
+    switch (soap_error) {
+        case 401:
+            return basic_refused ? DeviceFailure::AuthMethodUnsupported : DeviceFailure::Unauthorized;
+        // Some cameras answer a locked or disabled account with 403.
+        case 403:
+            return DeviceFailure::Unauthorized;
+        // Connect failed: refused, no route, or the connect timeout.
+        case SOAP_TCP_ERROR:
+        case SOAP_UDP_ERROR:
+        case SOAP_SSL_ERROR:
+            return DeviceFailure::Unreachable;
+        // Connected, but no complete answer: receive timeout or the camera dropped the connection.
+        case SOAP_EOF:
+            return DeviceFailure::Timeout;
+        default:
+            break;
+    }
+    // A SOAP fault (any HTTP status) saying the WS-Security credentials were rejected.
+    return isAuthOrTimestampFault(fault) ? DeviceFailure::Unauthorized : DeviceFailure::Other;
+}
+
 void OnvifControl::reportError() {
     std::ostringstream oss;
     soap_stream_fault(_m_soap, oss);
@@ -1268,6 +1298,8 @@ void OnvifControl::reportError() {
     // A 401 to a request that already carried HTTP credentials means wrong user or password,
     // not a clock problem: keep the offset.
     const bool http_auth_rejected = _m_soap->error == 401 && _http_auth && _http_auth->sentCredentials();
+    _last_failure = static_cast<int>(
+        classifyFailure(_m_soap->error, _soapErrMsg, _http_auth && _http_auth->basicRefused()));
     if (!http_auth_rejected && OnvifControl::isAuthOrTimestampFault(_soapErrMsg)) {
         invalidateClockOffset();
     }

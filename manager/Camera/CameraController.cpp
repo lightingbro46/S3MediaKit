@@ -13,6 +13,39 @@ namespace managerkit {
 // Posts a device task after a delay; `on_cancel` runs instead if the task no longer applies.
 using DelayedDeviceTask = function<void(int delay_ms, const function<void()> &task, const function<void()> &on_cancel)>;
 
+// A device command that failed because of the network or the credentials reports that, so the UI
+// can tell the user what to fix; any other failure keeps the command's own code.
+static ApiErrCode failureCode(DeviceFailure failure, ApiErrCode fallback) {
+    switch (failure) {
+        case DeviceFailure::Unauthorized: return ApiErrCode::CODE_DEVICE_UNAUTHORIZED;
+        case DeviceFailure::AuthMethodUnsupported: return ApiErrCode::CODE_DEVICE_AUTH_METHOD_NOT_ALLOWED;
+        case DeviceFailure::Unreachable: return ApiErrCode::CODE_DEVICE_UNREACHABLE;
+        case DeviceFailure::Timeout: return ApiErrCode::CODE_DEVICE_TIMEOUT;
+        default: return fallback;
+    }
+}
+
+static ApiErrCode failureCode(const OnvifControl::Ptr &ptr, ApiErrCode fallback) {
+    return failureCode(ptr->lastFailure(), fallback);
+}
+
+SockException CameraController::controllerNotReady() const {
+    const auto failure = _onvif_ctr ? _onvif_ctr->lastFailure() : DeviceFailure::None;
+    const char *reason = nullptr;
+    switch (failure) {
+        case DeviceFailure::Unauthorized: reason = "device rejected the username or password"; break;
+        case DeviceFailure::AuthMethodUnsupported: reason = "device only offers HTTP Basic authentication"; break;
+        case DeviceFailure::Unreachable: reason = "device unreachable"; break;
+        case DeviceFailure::Timeout: reason = "device did not respond"; break;
+        default: break;
+    }
+    string msg = "Device controller is not ready";
+    if (reason) {
+        msg += string(": ") + reason;
+    }
+    return SockException(Err_other, msg, failureCode(failure, ApiErrCode::CODE_DEVICE_OFFLINE));
+}
+
 CameraController::CameraController(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller)
     : _tuple(tuple), _poller(poller),
       _device_queue(std::make_shared<SerialTaskQueue>(BlockingExecutors::device(), "camera " + tuple.shortUrl())) {}
@@ -294,7 +327,7 @@ static void onvifImageControl(const OnvifControl::Ptr &ptr, IMAGE_CONTROL_DIRECT
             float focusSpeed = (direct == IMAGE_CONTROL_DIRECT::FocusIn ? 1.0f : -1.0f)
                              * (speed > 0 ? speed / 100.0f : 0.5f);
             if (!ptr->Imaging_FocusMove(focusSpeed)) {
-                return cb(SockException(Err_other, "Imaging focus move failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_IMAGING_FOCUS_CONTROL_FAILED));
+                return cb(SockException(Err_other, "Imaging focus move failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_IMAGING_FOCUS_CONTROL_FAILED)));
             }
             // Auto-stop after 1 second
             delayed(1000, [ptr, cb]() {
@@ -317,7 +350,7 @@ static void onvifImageControl(const OnvifControl::Ptr &ptr, IMAGE_CONTROL_DIRECT
             }
             std::string auxCmd = (direct == IMAGE_CONTROL_DIRECT::IrisIn) ? "tt:Iris|open" : "tt:Iris|close";
             if (!ptr->PTZ_AuxiliaryCommand(auxCmd)) {
-                return cb(SockException(Err_other, "Iris auxiliary command failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_IMAGING_IRIS_CONTROL_FAILED));
+                return cb(SockException(Err_other, "Iris auxiliary command failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_IMAGING_IRIS_CONTROL_FAILED)));
             }
             return cb(SockException(Err_success, "Iris command success", ApiErrCode::CODE_SUCCESS));
         }
@@ -343,7 +376,7 @@ static void onvifRelayControl(const OnvifControl::Ptr &ptr, RELAY_OUTPUT_CONTROL
     }
     bool active = (direct == RELAY_OUTPUT_CONTROL::RelayOn);
     if (!ptr->Relay_SetOutputState(relayProfiles[idx].token, active)) {
-        return cb(SockException(Err_other, "Relay output control failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_RELAY_OUTPUT_FAILED));
+        return cb(SockException(Err_other, "Relay output control failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_RELAY_OUTPUT_FAILED)));
     }
     return cb(SockException(Err_success, "Relay output control success", ApiErrCode::CODE_SUCCESS));
 }
@@ -363,7 +396,7 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
     if (direct == PTZ_DIRECT::Home) {
         // If Home command and preset is enabled, go to home preset if exist, otherwise go to home position
         if (!ptr->PTZ_GotoHomePosition(step, step, step)) {
-            cb(SockException(Err_other, "Device execute ptz goto home position failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_GOTO_HOME_FAILED));
+            cb(SockException(Err_other, "Device execute ptz goto home position failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_PTZ_GOTO_HOME_FAILED)));
             return;
         }
         return cb(SockException(Err_success, "Device execute ptz go to home success", ApiErrCode::CODE_SUCCESS));
@@ -374,7 +407,10 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
         auto status = ptr->PTZ_GetStatus(pan, tilt, zoom);
         if (status != tt__MoveStatus__IDLE) {
             auto err_msg = status == tt__MoveStatus__MOVING ? "Device is running ptz control" : ("Device ptz status unknown: " + ptr->getSoapErrMsg());
-            cb(SockException(Err_other, err_msg, ApiErrCode::CODE_DEVICE_IS_RUNNING_PTZ));
+            // UNKNOWN is a failed GetStatus: report its network/credential cause when there is one.
+            auto code = status == tt__MoveStatus__MOVING ? ApiErrCode::CODE_DEVICE_IS_RUNNING_PTZ
+                                                         : failureCode(ptr, ApiErrCode::CODE_DEVICE_IS_RUNNING_PTZ);
+            cb(SockException(Err_other, err_msg, code));
             return;
         }
         switch (direct) {
@@ -392,7 +428,7 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
             default: break;
         }
         if (!ptr->PTZ_AbsoluteMove(pan, tilt, zoom, step, step, step)) {
-            cb(SockException(Err_other, "Device execute ptz absolute move failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_ABSOLUTED_CONTROL_FAILED));
+            cb(SockException(Err_other, "Device execute ptz absolute move failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_PTZ_ABSOLUTED_CONTROL_FAILED)));
             return;
         }
         // Execute success
@@ -416,7 +452,7 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
             default: break;
         }
         if (!ptr->PTZ_RelativeMove(pan, tilt, zoom , step, step, step)) {
-            cb(SockException(Err_other, "Device execute ptz relative move failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_RELATIVE_CONTROL_FAILED));
+            cb(SockException(Err_other, "Device execute ptz relative move failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_PTZ_RELATIVE_CONTROL_FAILED)));
             return;
         }
         // Execute success
@@ -442,7 +478,7 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
 
         int timeout_sec = 1;
         if (!ptr->PTZ_ContinuousMove(pan, tilt, zoom, timeout_sec)) {
-            cb(SockException(Err_other, "Device execute ptz continuous move failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_CONTINUOUS_CONTROL_FAILED));
+            cb(SockException(Err_other, "Device execute ptz continuous move failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_PTZ_CONTINUOUS_CONTROL_FAILED)));
             return;
         }
 
@@ -450,7 +486,7 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
         // then would cut that command short (the camera also stops by itself at the timeout).
         delayed(timeout_sec * 1000, [ptr, cb]() {
             if (!ptr->PTZ_Stop(true, true)) {
-                cb(SockException(Err_other, "Device execute stop ptz continuous move failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_CONTINUOUS_CONTROL_FAILED));
+                cb(SockException(Err_other, "Device execute stop ptz continuous move failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_PTZ_CONTINUOUS_CONTROL_FAILED)));
                 return;
             }
             // Execute success
@@ -512,7 +548,7 @@ void CameraController::PTZMove(const std::string &strDirect, int speed, const fu
     }
     // todo: add more ptz function from manufacturer sdk
 
-    return cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+    return cb(controllerNotReady());
 }
 
 void CameraController::ImageMoveControl(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb) {
@@ -553,7 +589,7 @@ void CameraController::ImageMoveControl(const std::string &strDirect, int speed,
         return;
     }
 
-    return cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+    return cb(controllerNotReady());
 }
 
 void CameraController::RelayOutputControl(const std::string &strDirect, const std::string &relay_token, const std::function<void(const toolkit::SockException &ex)> &cb) {
@@ -577,7 +613,7 @@ void CameraController::RelayOutputControl(const std::string &strDirect, const st
         return;
     }
 
-    return cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+    return cb(controllerNotReady());
 }
 
 void CameraController::onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps) {
@@ -600,7 +636,7 @@ bool CameraController::addUserPTZPreset(const std::string &presetToken, const st
         return false;
     }
     if (!(_onvif_ctr && _onvif_ctr->isConnected())) {
-        cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE), 0, 0, 0);
+        cb(controllerNotReady(), 0, 0, 0);
         return false;
     }
     auto profile = _onvif_ctr->getPTZProfile();
@@ -620,7 +656,7 @@ bool CameraController::addUserPTZPreset(const std::string &presetToken, const st
         // the call succeeded and the coordinates are valid.
         auto status = onvif_ctr->PTZ_GetStatus(p, t, z);
         SockException result = (status == tt__MoveStatus__UNKNOWN)
-            ? SockException(Err_other, "Execute ptz get status failed: " + onvif_ctr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_GET_STATUS_FAILED)
+            ? SockException(Err_other, "Execute ptz get status failed: " + onvif_ctr->getSoapErrMsg(), failureCode(onvif_ctr, ApiErrCode::CODE_PTZ_GET_STATUS_FAILED))
             : SockException(Err_success, "User preset added successfully", ApiErrCode::CODE_SUCCESS);
         poller->async([weak_self, token, name, p, t, z, result, cb]() mutable {
             auto self = weak_self.lock();
@@ -676,14 +712,14 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
             float pan = preset.absPan, tilt = preset.absTilt, zoom = preset.absZoom;
             postPriorityDeviceTask([onvif_ctr, pan, tilt, zoom, cb]() mutable {
                 if (!onvif_ctr->PTZ_AbsoluteMove(pan, tilt, zoom)) {
-                    cb(SockException(Err_other, "Device execute ptz goto user preset failed: " + onvif_ctr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_GOTO_USER_PRESET_FAILED));
+                    cb(SockException(Err_other, "Device execute ptz goto user preset failed: " + onvif_ctr->getSoapErrMsg(), failureCode(onvif_ctr, ApiErrCode::CODE_PTZ_GOTO_USER_PRESET_FAILED)));
                 } else {
                     cb(SockException(Err_success, "Device execute ptz goto user preset success", ApiErrCode::CODE_SUCCESS));
                 }
             });
             return;
         } else {
-            cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+            cb(controllerNotReady());
             return;
         }
     } else {
@@ -692,14 +728,14 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
             string token = presetToken;
             postPriorityDeviceTask([onvif_ctr, token, cb]() {
                 if (!onvif_ctr->PTZ_GotoPreset(token, 0.5, 0.5, 0.5)) {
-                    cb(SockException(Err_other, "Device execute ptz goto preset failed: " + onvif_ctr->getSoapErrMsg(), ApiErrCode::CODE_PTZ_GOTO_PRESET_FAILED));
+                    cb(SockException(Err_other, "Device execute ptz goto preset failed: " + onvif_ctr->getSoapErrMsg(), failureCode(onvif_ctr, ApiErrCode::CODE_PTZ_GOTO_PRESET_FAILED)));
                 } else {
                     cb(SockException(Err_success, "Device execute ptz goto preset success", ApiErrCode::CODE_SUCCESS));
                 }
             });
             return;
         } else {
-            cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+            cb(controllerNotReady());
             return;
         }
     }
@@ -708,7 +744,7 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
 static void onvifGetMediaProfile(const OnvifControl::Ptr &ptr, const string &profileToken, const std::function<void(const toolkit::SockException &ex, VideoEncoderConfig &config)> &cb) {
     VideoEncoderConfig config;
     if (!ptr->getVideoEncoderConfigByToken(profileToken, config)) {
-        cb(SockException(Err_other, "Device execute get media profile failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_ONVIF_GET_CONFIG_FAILED), config);
+        cb(SockException(Err_other, "Device execute get media profile failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_ONVIF_GET_CONFIG_FAILED)), config);
         return;
     }
     cb(SockException(Err_success, "Device execute get media profile success", ApiErrCode::CODE_SUCCESS), config);
@@ -735,7 +771,7 @@ void CameraController::getMediaProfileAsync(const string &profileToken, const st
     }
     // todo: add more ptz function from manufacturer sdk
     VideoEncoderConfig config;
-    return cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE), config);
+    return cb(controllerNotReady(), config);
 }
 
 void CameraController::getSDCardInfoAsync(const std::function<void(const toolkit::SockException &ex, SDCardInformation &info)> &cb) {
@@ -746,13 +782,13 @@ void CameraController::getSDCardInfoAsync(const std::function<void(const toolkit
         return;
     }
     SDCardInformation info;
-    cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE), info);
+    cb(controllerNotReady(), info);
     return;
 }
 
 static void onvifSetMediaProfile(const OnvifControl::Ptr &ptr, const string &profileToken, const VideoEncoderConfig &config, const function<void(const SockException &ex)> &cb, const function<void()> &on_success) { 
     if (!ptr->setVideoEncoderConfigByToken(profileToken, config)) {
-        cb(SockException(Err_other, "Device execute set media profile failed: " + ptr->getSoapErrMsg(), ApiErrCode::CODE_ONVIF_SET_CONFIG_FAILED));
+        cb(SockException(Err_other, "Device execute set media profile failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_ONVIF_SET_CONFIG_FAILED)));
         return;
     }
         
@@ -815,7 +851,7 @@ void CameraController::setMediaProfileAsync(const string &profileToken, VideoEnc
     }    
     // todo: add more ptz function from manufacturer sdk
 
-    return cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+    return cb(controllerNotReady());
 }
 
 void CameraController::addProfileConfig(const std::string &profileToken, const VideoEncoderConfig &config, bool emitEvent) {
@@ -1112,7 +1148,7 @@ void CameraController::applyRuleVideoConfigAsync(const std::string &logId, const
     _ruleReportMap[profileToken] = ctx;
 
     if (!_onvif_ctr || !_onvif_ctr->isConnected()) {
-        cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+        cb(controllerNotReady());
         return;
     }
 
@@ -1146,7 +1182,7 @@ void CameraController::rollbackRuleVideoConfigAsync(const string &profileToken, 
 
     if (!_onvif_ctr || !_onvif_ctr->isConnected()) {
         markBaselineNeedResync(profileToken);
-        cb(SockException(Err_other, "Device controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+        cb(controllerNotReady());
         return;
     }
 

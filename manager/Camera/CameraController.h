@@ -90,6 +90,10 @@ private:
 
     void onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps);
 
+    // Error for a command that needs the ONVIF controller while it is not connected: says why the
+    // last connect failed (credentials, network) when known, else CODE_DEVICE_OFFLINE.
+    toolkit::SockException controllerNotReady() const;
+
     // Media profile sync after (re)connect, in three steps so _profileConfigMap is only touched on
     // _poller: read the camera profiles (device queue) → decide per profile (_poller) → send the
     // needed set commands (device queue) → store the results (_poller).
