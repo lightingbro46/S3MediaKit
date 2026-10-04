@@ -48,6 +48,7 @@ Webhook capabilities của thiết bị (`hook.on_device_caps_changed`, dựng b
 |---|---|
 | `controlProtocol` | Giao thức đang dùng: `"ONVIF"`, `"PSIA"`, hoặc `""` khi chưa kết nối được lần nào |
 | `controlProtocolSetting` | Giá trị đã cấu hình: `"AUTO"`, `"ONVIF"` hoặc `"PSIA"` |
+| `enableOnvifProfileSelect` | `true` khi camera có controller (ONVIF hoặc PSIA) và đã báo ít nhất một profile: client hiện mục chọn profile cho luồng chính/phụ (`onvifProfiles`) theo cờ này |
 
 Các field cũ giữ nguyên tên. Camera PSIA dùng chung các field đó:
 - `manufacturer`, `model`, `serialNumber`, `firmwareVersion`, `hardwareId` (= `deviceID` của PSIA), `macAddress`,
@@ -56,9 +57,14 @@ Các field cũ giữ nguyên tên. Camera PSIA dùng chung các field đó:
   ví dụ `101`).
 - `enableOnvifProfileConfig` = true khi camera có controller (ONVIF hoặc PSIA).
 
-**Lưu ý cho client:** `onvifDevice` vẫn chỉ true khi camera đang chạy ONVIF. Để biết camera có điều khiển được hay
-không (hiện thông tin thiết bị, PTZ, cấu hình profile), dùng `controlProtocol` khác rỗng, không dùng `onvifDevice`.
-`supportsSdCardPlayback` và audio backchannel chỉ có với ONVIF.
+**Lưu ý cho client:** `onvifDevice` vẫn chỉ true khi camera đang chạy ONVIF. Client hiện từng mục theo cờ chức
+năng, không theo tên giao thức:
+- mục chọn profile (`onvifProfiles`): `enableOnvifProfileSelect` (trước đây là `onvifDevice`);
+- tab cấu hình thông số stream theo token profile: `enableOnvifProfileConfig` (không đổi);
+- cấu hình chế độ PTZ: `onvifProfiles.isPTZ`, `onvifProfiles.ptzControlMode` (không đổi);
+- `supportsSdCardPlayback`, `supportsAudioBackchannel`: chỉ có với ONVIF.
+
+`controlProtocol` dùng để hiện nhãn giao thức. Thêm giao thức mới (ví dụ ISAPI) không cần sửa client.
 
 Option camera (`makeCameraOptionJson`, dùng khi đồng bộ cluster) có thêm `controlProtocol`.
 

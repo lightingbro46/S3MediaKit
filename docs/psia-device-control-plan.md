@@ -444,5 +444,12 @@ Chạy thật MediaServer Debug (harness e2e_real) + `psia_mock.py` (Digest) + `
   `controlProtocolSetting=AUTO`, `onvifDevice=false`, `enableOnvifProfileConfig=true`, thông tin thiết bị và 2
   profile, `isPTZ=true`.
 
+**P5b (2026-10-04) — cờ `enableOnvifProfileSelect`.** Client hiện mục chọn profile (`onvifProfiles`) theo
+`onvifDevice`, nên camera PSIA bị ẩn mục này dù profile vẫn dùng được. Đã chọn hướng cờ chức năng thay cho thêm
+`psiaDevice`: `makeDeviceCapabilitiesJson` trả `enableOnvifProfileSelect` = camera có controller và có ít nhất
+một profile. `onvifDevice` giữ nghĩa ONVIF. Client đổi điều kiện của mục này sang cờ mới; thêm giao thức sau không
+cần sửa client. Chạy lại trên mock: PSIA và ONVIF đều `enableOnvifProfileSelect=true`, `onvifDevice` lần lượt
+`false`/`true`.
+
 **P6 — chưa làm (cần thiết bị thật):** camera ONVIF thật (hồi quy), camera bật PSIA thật ở `PSIA`, camera tắt ONVIF
 ở `AUTO`, kiểm R3 (URL luồng do camera thật cấu hình có khớp URL PSIA sinh ra không).

@@ -1526,6 +1526,8 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
                     auto mediaProfiles = caps->onvifProfile.mediaProfiles;
                     onvifProfileJson["profiles"] = getOnvifProfileJsonArray(mediaProfiles);
                     data["onvifProfiles"] = onvifProfileJson;
+                    // The main/sub profile selection works for any controller that reported profiles.
+                    data["enableOnvifProfileSelect"] = !mediaProfiles.empty();
                 } else {
                     // note: keep manufacturer and model field if camera is added by user with ip
                     data["manufacturer"] = option.manufacturer.empty() && option.ip.empty() ? GENERIC_RTSP_CAMERA : option.manufacturer;
@@ -1542,6 +1544,7 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
                     onvifProfileJson["ptzControlMode"] = Json::arrayValue;
                     onvifProfileJson["profiles"] = Json::arrayValue;
                     data["onvifProfiles"] = onvifProfileJson;
+                    data["enableOnvifProfileSelect"] = false;
                 }
 #ifdef ENABLE_MOTION
                 GET_CONFIG(bool, enableMotion, Motion::kEnableMotion);
