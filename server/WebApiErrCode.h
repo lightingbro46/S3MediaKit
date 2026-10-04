@@ -49,6 +49,7 @@ namespace managerkit {
     XX(CODE_DEVICE_UNREACHABLE,             "Device unreachable",               502,         905005) \
     XX(CODE_DEVICE_TIMEOUT,                 "Device did not respond in time",   504,         905006) \
     XX(CODE_DEVICE_AUTH_METHOD_NOT_ALLOWED, "Device only offers HTTP Basic authentication, which is disabled", 403, 905007) \
+    XX(CODE_DEVICE_CLOCK_SKEW,              "Device clock is out of sync with the server", 403, 905008) \
     /* 906xxx - Stream/media server errors */                                                        \
     XX(CODE_STREAM_NOT_FOUND,               "Stream not found",                 404,         906001) \
     XX(CODE_STREAM_OFFLINE,                 "Stream offline",                   400,         906002) \

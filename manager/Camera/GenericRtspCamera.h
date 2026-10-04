@@ -97,6 +97,10 @@ public:
     // whether to enable ptz control, default true, permit ptz operation only when this option is true
     bool enablePTZControl = true;
 
+    // whether the server may set this camera's clock (maintenance cycle only), default true;
+    // onvif.clockSyncEnable=0 turns it off for every camera regardless
+    bool enableTimeSync = true;
+
     // whether to reserve pan axis when ptz operation
     bool reversePanAxis = false;
 
@@ -249,6 +253,7 @@ public:
                enableFailover == other.enableFailover &&
                preferedMediaServer == other.preferedMediaServer &&
                enablePTZControl == other.enablePTZControl &&
+               enableTimeSync == other.enableTimeSync &&
                motionPreRecordSec == other.motionPreRecordSec &&
                motionPostRecordSec == other.motionPostRecordSec &&
                recordSchedules == other.recordSchedules &&

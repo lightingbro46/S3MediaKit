@@ -21,12 +21,22 @@ static ApiErrCode failureCode(DeviceFailure failure, ApiErrCode fallback) {
         case DeviceFailure::AuthMethodUnsupported: return ApiErrCode::CODE_DEVICE_AUTH_METHOD_NOT_ALLOWED;
         case DeviceFailure::Unreachable: return ApiErrCode::CODE_DEVICE_UNREACHABLE;
         case DeviceFailure::Timeout: return ApiErrCode::CODE_DEVICE_TIMEOUT;
+        case DeviceFailure::ClockSkew: return ApiErrCode::CODE_DEVICE_CLOCK_SKEW;
         default: return fallback;
     }
 }
 
 static ApiErrCode failureCode(const OnvifControl::Ptr &ptr, ApiErrCode fallback) {
     return failureCode(ptr->lastFailure(), fallback);
+}
+
+std::function<DeviceClockReading()> CameraController::clockReader() const {
+    auto onvif_ctr = _onvif_ctr;
+    if (!onvif_ctr) {
+        return nullptr;
+    }
+    // Only reads atomics, so the caller may run it on any thread.
+    return [onvif_ctr]() { return onvif_ctr->clockReading(); };
 }
 
 SockException CameraController::controllerNotReady() const {
@@ -37,6 +47,7 @@ SockException CameraController::controllerNotReady() const {
         case DeviceFailure::AuthMethodUnsupported: reason = "device only offers HTTP Basic authentication"; break;
         case DeviceFailure::Unreachable: reason = "device unreachable"; break;
         case DeviceFailure::Timeout: reason = "device did not respond"; break;
+        case DeviceFailure::ClockSkew: reason = "device clock is out of sync with the server"; break;
         default: break;
     }
     string msg = "Device controller is not ready";
@@ -134,6 +145,7 @@ void CameraController::setupController(const CameraOption &option) {
                 sync_config.sdCardSyncRetryCount != _sd_sync_config.sdCardSyncRetryCount;
             // Connection unchanged — update PTZ settings in-place, no reconnect needed
             _enablePTZControl = option.enablePTZControl;
+            _enableTimeSync   = option.enableTimeSync;
             _reversePanAxis   = option.reversePanAxis;
             _reverseTiltAxis  = option.reverseTiltAxis;
             _ptzMode          = option.ptzMode;
@@ -185,6 +197,7 @@ void CameraController::setupController(const CameraOption &option) {
     _address      = address;
     _ctrl_option  = ControllerOption::from(option);
     _enablePTZControl = option.enablePTZControl;
+    _enableTimeSync   = option.enableTimeSync;
     _reversePanAxis   = option.reversePanAxis;
     _reverseTiltAxis  = option.reverseTiltAxis;
     _ptzMode          = option.ptzMode;
@@ -242,10 +255,17 @@ void CameraController::onManager() {
     // own web page is slowed down to `profileResyncIntervalSec`.
     const bool resync_profiles = !was_ready || hasPendingProfileConfig() || profile_resync_sec <= 0 ||
                                  now - _last_profile_resync >= static_cast<uint64_t>(profile_resync_sec);
+    // The camera clock is only ever set from here, never from an API command. Off for the whole
+    // server (onvif.clockSyncEnable) or for this camera (CameraOption::enableTimeSync).
+    GET_CONFIG(bool, clock_sync_enable, OnvifCtrl::kClockSyncEnable);
+    const bool time_sync = clock_sync_enable && _enableTimeSync;
+    // A command that found the clock off asks for it to be set now rather than at the next interval.
+    // Taken even when syncing is off, so a stale request does not fire once it is turned back on.
+    const bool sync_wanted = onvif_ctr->takeClockSyncWanted();
     // The clock check is the other thing the old cycle did every 60 s; a camera clock drifts far
     // too slowly to need that, but it still has to happen while the camera stays connected.
-    const bool sync_clock = !was_ready || clock_sync_sec <= 0 ||
-                            now - _last_clock_sync >= static_cast<uint64_t>(clock_sync_sec);
+    const bool sync_clock = time_sync && (!was_ready || sync_wanted || clock_sync_sec <= 0 ||
+                            now - _last_clock_sync >= static_cast<uint64_t>(clock_sync_sec));
     if (resync_profiles) {
         _last_profile_resync = now;
     }
@@ -254,7 +274,7 @@ void CameraController::onManager() {
     }
 
     // ONVIF connect() is a blocking SOAP/HTTP call: run it on the camera's serial device queue.
-    postDeviceTask([weak_self, onvif_ctr, was_ready, resync_profiles, sync_clock]() {
+    postDeviceTask([weak_self, onvif_ctr, was_ready, resync_profiles, sync_clock, time_sync]() {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
             return;
@@ -279,8 +299,9 @@ void CameraController::onManager() {
         // reconnect to device
         if (onvif_ctr->connect()) {
             InfoL << "Onvif controller of device " << tuple.shortUrl() << " (" << address << ") connected";
-            // set camera time manual
-            onvif_ctr->setCameraTimeManual();
+            if (sync_clock) {
+                onvif_ctr->setCameraTimeManual();
+            }
             // Reads the profiles here; decisions on _poller, queued before onControllerReady below.
             strong_self->syncMediaProfile(onvif_ctr);
             
@@ -305,6 +326,11 @@ void CameraController::onManager() {
         } else {
             auto err_msg = onvif_ctr->getSoapErrMsg();
             WarnL << "Onvif controller of device " << tuple.shortUrl() << " (" << address << ") connect failed: " << err_msg;
+            // Rejected with the camera clock far off: it will never accept us until its clock is
+            // set, so set it now; the next cycle connects again.
+            if (time_sync && onvif_ctr->lastFailure() == DeviceFailure::ClockSkew) {
+                onvif_ctr->setCameraTimeManual();
+            }
             strong_self->onControllerReady(false, err_msg, nullptr);
         }
     });

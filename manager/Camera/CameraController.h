@@ -27,6 +27,11 @@ public:
     
     void PTZMove(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
 
+    // Reads the camera clock last measured by a rejected command (for CODE_DEVICE_CLOCK_SKEW
+    // responses). Get it on _poller; the returned function may run on any thread. Null without a
+    // controller.
+    std::function<DeviceClockReading()> clockReader() const;
+
     void ImageMoveControl(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
 
     void RelayOutputControl(const std::string &strDirect, const std::string &relayToken, const std::function<void(const toolkit::SockException &ex)> &cb);
@@ -166,6 +171,7 @@ private:
     bool _reversePanAxis = false;
     bool _reverseTiltAxis = false;
     bool _enablePTZControl = true;
+    bool _enableTimeSync = true; // CameraOption::enableTimeSync; read on _poller only
     OnvifPTZProfile::PTZPresetMap _userPresets; // user defined preset list, used for preset operation when device does not support get preset api or preset info is incomplete
     // whether to keep config of profile and stream changed from camera web page, default false, 
     // if true then when camera report controller ready with new profile and stream config, 

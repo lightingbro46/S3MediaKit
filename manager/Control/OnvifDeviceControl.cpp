@@ -22,6 +22,8 @@ namespace OnvifCtrl {
 const string kClockOffsetTtlSec = ONVIF_CTRL_FIELD"clockOffsetTtlSec";
 const string kProfileResyncIntervalSec = ONVIF_CTRL_FIELD"profileResyncIntervalSec";
 const string kClockSyncIntervalSec = ONVIF_CTRL_FIELD"clockSyncIntervalSec";
+const string kClockSkewThresholdSec = ONVIF_CTRL_FIELD"clockSkewThresholdSec";
+const string kClockSyncEnable = ONVIF_CTRL_FIELD"clockSyncEnable";
 
 static onceToken token([]() {
     // How long a camera's clock offset stays usable before it is measured again.
@@ -39,6 +41,12 @@ static onceToken token([]() {
     // slowly, so once an hour corrects it long before the drift matters, while the round trip this
     // costs no longer runs on every cycle. <= 0 checks the clock on every cycle.
     mINI::Instance()[kClockSyncIntervalSec] = 3600;
+    // A camera rejecting our WS-Security signature looks the same whether the password is wrong or
+    // its clock is off. Off by this much or more, the failure is reported as a clock problem.
+    mINI::Instance()[kClockSkewThresholdSec] = 30;
+    // Whether the maintenance cycle may set a camera clock at all (only ever from that cycle,
+    // never from an API command).
+    mINI::Instance()[kClockSyncEnable] = 1;
 });
 } // namespace OnvifCtrl
 
@@ -57,7 +65,16 @@ struct HttpAuthChallenge {
     bool digest;    // a Digest challenge http_da can answer
     bool basic;     // a Basic challenge
     char realm[256]; // realm of the Digest challenge
+    time_t date;    // HTTP Date header of the last response (camera clock, UTC), 0 = none
 };
+
+// RFC 7231 IMF-fixdate, e.g. "Sun, 04 Oct 2026 08:12:03 GMT". 0 when it does not parse.
+static time_t parseHttpDate(const char *val) {
+    struct tm tm_val;
+    memset(&tm_val, 0, sizeof(tm_val));
+    const char *end = strptime(val, "%a, %d %b %Y %H:%M:%S", &tm_val);
+    return end ? timegm(&tm_val) : 0;
+}
 
 static HttpAuthChallenge *lookupHttpAuthChallenge(struct soap *soap) {
     return static_cast<HttpAuthChallenge *>(soap_lookup_plugin(soap, kHttpAuthChallengeId));
@@ -85,6 +102,8 @@ static int httpAuthParseHeader(struct soap *soap, const char *key, const char *v
         } else if (!soap_tag_cmp(val, "Basic*")) {
             data->basic = true;
         }
+    } else if (key && val && !soap_tag_cmp(key, "Date")) {
+        data->date = parseHttpDate(val);
     }
     return data->fparsehdr(soap, key, val);
 }
@@ -242,6 +261,7 @@ int OnvifControl::callWithAuth(const std::function<int()> &call) {
     std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     // reportError() sets it again if this call fails.
     _last_failure = static_cast<int>(DeviceFailure::None);
+    _measured_this_call = false;
     if (_http_auth) {
         // Also covers a second call after one setCredentials(): the first response cleared the
         // HTTP credentials gSOAP keeps.
@@ -254,8 +274,51 @@ int OnvifControl::callWithAuth(const std::function<int()> &call) {
         }
         _http_auth->apply();
         ret = call();
+    } else if (ret != SOAP_OK && rejectedSignature(ret) && resignWithFreshClock()) {
+        _http_auth->apply();
+        ret = call();
     }
     return ret;
+}
+
+bool OnvifControl::rejectedSignature(int soap_error) {
+    if (!_http_auth || _http_auth->sentCredentials() || _http_auth->basicRefused()) {
+        return false;
+    }
+    // A bare 401 (no challenge we could answer) or a SOAP fault naming the credentials.
+    if (soap_error == 401) {
+        return true;
+    }
+    std::ostringstream oss;
+    soap_stream_fault(_m_soap, oss);
+    return isAuthOrTimestampFault(oss.str());
+}
+
+bool OnvifControl::resignWithFreshClock() {
+    // Same threshold as setCredentials() uses to sign with the camera clock at all.
+    static const time_t kResignDeltaSec = 5;
+    const time_t signed_offset = _signed_offset;
+    if (!measureCameraClock()) {
+        return false;
+    }
+    const time_t offset = _clock_offset.load(std::memory_order_relaxed);
+    const time_t delta = offset > signed_offset ? offset - signed_offset : signed_offset - offset;
+    if (delta < kResignDeltaSec) {
+        // Signing again would send the same signature: most likely the password is wrong, and
+        // another attempt would only count against the camera's lockout.
+        return false;
+    }
+    InfoL << "Onvif device " << _strDeviceIp << " rejected a request signed " << signed_offset
+          << " s off the local clock; its clock is " << offset << " s off, signing again";
+    return setCredentials();
+}
+
+DeviceClockReading OnvifControl::clockReading() const {
+    DeviceClockReading reading;
+    reading.server_time = _reading_server_time.load(std::memory_order_acquire);
+    reading.offset_sec = _reading_offset.load(std::memory_order_relaxed);
+    reading.from_http_date = _reading_from_date.load(std::memory_order_relaxed);
+    return reading;
 }
 
 OnvifControl::OnvifControl(std::string strDeviceIp, std::string strUsername, std::string strPassword)
@@ -1269,10 +1332,17 @@ bool OnvifControl::isAuthOrTimestampFault(const std::string &fault) {
     return false;
 }
 
-DeviceFailure OnvifControl::classifyFailure(int soap_error, const std::string &fault, bool basic_refused) {
-    switch (soap_error) {
+DeviceFailure OnvifControl::classifyFailure(const FailureContext &ctx) {
+    switch (ctx.soap_error) {
         case 401:
-            return basic_refused ? DeviceFailure::AuthMethodUnsupported : DeviceFailure::Unauthorized;
+            if (ctx.basic_refused) {
+                return DeviceFailure::AuthMethodUnsupported;
+            }
+            if (ctx.http_credentials_sent) {
+                return DeviceFailure::Unauthorized;
+            }
+            // A bare 401 to WS-Security: handled as a rejected signature below.
+            break;
         // Some cameras answer a locked or disabled account with 403.
         case 403:
             return DeviceFailure::Unauthorized;
@@ -1285,10 +1355,32 @@ DeviceFailure OnvifControl::classifyFailure(int soap_error, const std::string &f
         case SOAP_EOF:
             return DeviceFailure::Timeout;
         default:
+            // A SOAP fault (any HTTP status) saying the WS-Security credentials were rejected.
+            if (!isAuthOrTimestampFault(ctx.fault)) {
+                return DeviceFailure::Other;
+            }
             break;
     }
-    // A SOAP fault (any HTTP status) saying the WS-Security credentials were rejected.
-    return isAuthOrTimestampFault(fault) ? DeviceFailure::Unauthorized : DeviceFailure::Other;
+    // The WS-Security signature was rejected: wrong credentials and a camera clock too far off look
+    // the same, unless the camera names the timestamp or its clock was measured far off.
+    std::string lower(ctx.fault);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    if (lower.find("messageexpired") != std::string::npos) {
+        return DeviceFailure::ClockSkew;
+    }
+    const time_t skew = ctx.clock_offset < 0 ? -ctx.clock_offset : ctx.clock_offset;
+    if (ctx.clock_known && skew >= ctx.skew_threshold_sec) {
+        return DeviceFailure::ClockSkew;
+    }
+    return DeviceFailure::Unauthorized;
+}
+
+DeviceFailure OnvifControl::classifyFailure(int soap_error, const std::string &fault, bool basic_refused) {
+    FailureContext ctx;
+    ctx.soap_error = soap_error;
+    ctx.fault = fault;
+    ctx.basic_refused = basic_refused;
+    return classifyFailure(ctx);
 }
 
 void OnvifControl::reportError() {
@@ -1298,28 +1390,90 @@ void OnvifControl::reportError() {
     // A 401 to a request that already carried HTTP credentials means wrong user or password,
     // not a clock problem: keep the offset.
     const bool http_auth_rejected = _m_soap->error == 401 && _http_auth && _http_auth->sentCredentials();
-    _last_failure = static_cast<int>(
-        classifyFailure(_m_soap->error, _soapErrMsg, _http_auth && _http_auth->basicRefused()));
+    FailureContext ctx;
+    ctx.soap_error = _m_soap->error;
+    ctx.fault = _soapErrMsg;
+    ctx.basic_refused = _http_auth && _http_auth->basicRefused();
+    ctx.http_credentials_sent = _http_auth && _http_auth->sentCredentials();
+    if (_measured_this_call) {
+        const auto reading = clockReading();
+        ctx.clock_known = reading.valid();
+        ctx.clock_offset = reading.offset_sec;
+    }
+    GET_CONFIG(int, skew_threshold_sec, OnvifCtrl::kClockSkewThresholdSec);
+    ctx.skew_threshold_sec = skew_threshold_sec;
+    _last_failure = static_cast<int>(classifyFailure(ctx));
     if (!http_auth_rejected && OnvifControl::isAuthOrTimestampFault(_soapErrMsg)) {
         invalidateClockOffset();
     }
     WarnL << "Oops, something went wrong: " << oss.str();
 }
 
+// An own soap context talking to the camera's device service, for requests that must not disturb
+// _m_soap (the error of the request being handled) or that run while it does not exist.
+struct LocalDeviceSoap {
+    explicit LocalDeviceSoap(const std::string &url) : endpoint(url) {
+        soap = soap_new();
+        soap->connect_timeout = soap->recv_timeout = soap->send_timeout = 10;
+        soap_register_plugin(soap, soap_wsse);
+        OnvifHttpAuth::attach(soap);
+        proxy = new DeviceBindingProxy(soap);
+        proxy->soap_endpoint = endpoint.c_str();
+    }
+    // Proxy before soap_free: its destructor still uses the context.
+    ~LocalDeviceSoap() {
+        delete proxy;
+        soap_destroy(soap);
+        soap_end(soap);
+        soap_free(soap);
+    }
+    std::string endpoint;
+    struct soap *soap;
+    DeviceBindingProxy *proxy;
+};
+
+static bool isNetworkError(int soap_error) {
+    return soap_error == SOAP_TCP_ERROR || soap_error == SOAP_UDP_ERROR || soap_error == SOAP_SSL_ERROR
+        || soap_error == SOAP_EOF;
+}
+
 bool OnvifControl::getCameraTime() {
     if (!_proxyDevice || !_m_soap) {
         return false;
     }
-    _tds__GetSystemDateAndTime* req = soap_new__tds__GetSystemDateAndTime(_m_soap, -1);
+    bool request_failed = false;
+    if (readCameraClock(_m_soap, _proxyDevice, request_failed)) {
+        return true;
+    }
+    if (request_failed) {
+        reportError();
+    } else {
+        WarnL << "Invalid camera time response";
+    }
+    return false;
+}
+
+bool OnvifControl::readCameraClock(struct soap *soap, DeviceBindingProxy *proxy, bool &request_failed) {
+    request_failed = false;
+    auto challenge = lookupHttpAuthChallenge(soap);
+    if (challenge) {
+        challenge->date = 0;
+    }
+    _tds__GetSystemDateAndTime* req = soap_new__tds__GetSystemDateAndTime(soap, -1);
     _tds__GetSystemDateAndTimeResponse resp;
 
-    if (_proxyDevice->GetSystemDateAndTime(req, resp)) {
-        reportError();
+    if (proxy->GetSystemDateAndTime(req, resp)) {
+        request_failed = true;
+        // ONVIF lets anyone read the clock, but some cameras want credentials even for this, and
+        // signing needs the very clock we cannot read. Their refusal still carries a Date header.
+        if (challenge && challenge->date && !isNetworkError(soap->error)) {
+            setCameraClock(challenge->date, true, true);
+            return true;
+        }
         return false;
     }
 
     if (!resp.SystemDateAndTime) {
-        WarnL << "Invalid camera time response";
         return false;
     }
 
@@ -1350,11 +1504,7 @@ bool OnvifControl::getCameraTime() {
     if (resp.SystemDateAndTime->UTCDateTime) {
         time_t t = buildTime(resp.SystemDateAndTime->UTCDateTime, true);
         if (t > 0) {
-            _camTimeInfo.cam_time = t;
-            int offset_cam = parse_timezone_offset_seconds(_camTimeInfo.TZ);
-            int offset_sys = get_system_offset_seconds();
-            _camTimeInfo.cam_sys_time = _camTimeInfo.cam_time + offset_cam - offset_sys;
-            cacheClockOffset();
+            setCameraClock(t, true, false);
             return true;
         }
     }
@@ -1362,14 +1512,47 @@ bool OnvifControl::getCameraTime() {
     if (resp.SystemDateAndTime->LocalDateTime) {
         time_t t = buildTime(resp.SystemDateAndTime->LocalDateTime, false);
         if (t > 0) {
-            _camTimeInfo.cam_time = t;
-            _camTimeInfo.cam_sys_time = t;
-            cacheClockOffset();
+            setCameraClock(t, false, false);
             return true;
         }
     }
 
     return false;
+}
+
+void OnvifControl::setCameraClock(time_t camera_time, bool is_utc, bool from_http_date) {
+    _camTimeInfo.cam_time = camera_time;
+    if (is_utc) {
+        int offset_cam = parse_timezone_offset_seconds(_camTimeInfo.TZ);
+        int offset_sys = get_system_offset_seconds();
+        _camTimeInfo.cam_sys_time = _camTimeInfo.cam_time + offset_cam - offset_sys;
+    } else {
+        _camTimeInfo.cam_sys_time = camera_time;
+    }
+    cacheClockOffset();
+
+    // The reading reports the clock the way the maintenance cycle keeps it in sync (cam_sys_time,
+    // see setCameraTimeManual()), not the raw UTC offset used for signing: a camera this server set
+    // to its own wall clock in another time zone is not skewed.
+    const time_t now = time(nullptr);
+    _reading_offset.store(_camTimeInfo.cam_sys_time - now, std::memory_order_relaxed);
+    _reading_from_date.store(from_http_date, std::memory_order_relaxed);
+    _reading_server_time.store(now != 0 ? now : 1, std::memory_order_release);
+}
+
+bool OnvifControl::measureCameraClock() {
+    LocalDeviceSoap local(deviceServiceUrl());
+    bool request_failed = false;
+    _measured_this_call = readCameraClock(local.soap, local.proxy, request_failed);
+    if (!_measured_this_call) {
+        return false;
+    }
+    const time_t skew = _reading_offset.load(std::memory_order_relaxed);
+    // Same threshold as setCameraTimeManual(). Only flagged: the maintenance cycle sets the clock.
+    if (skew >= 10 || skew <= -10) {
+        _clock_sync_wanted = true;
+    }
+    return true;
 }
 
 void OnvifControl::cacheClockOffset() {
@@ -1487,15 +1670,22 @@ void OnvifControl::installSoapHook(struct soap* soap, time_t offset) {
 
         std::string xml(buf, len);
 
-        if (ctx->enabled && xml.find("wsse:Security") != std::string::npos) {
+        // Only the wsu:Timestamp, which soap_wsse_add_Timestamp() stamps with the local clock. The
+        // UsernameToken's wsu:Created is already the camera time and is covered by the password
+        // digest: rewriting it a second later broke the signature.
+        const size_t ts_begin = xml.find("<wsu:Timestamp");
+        const size_t ts_end = ts_begin == std::string::npos ? std::string::npos : xml.find("</wsu:Timestamp>", ts_begin);
+        if (ctx->enabled && ts_end != std::string::npos) {
 
             time_t now = time(nullptr) + ctx->offset;
 
             std::string created = makeUtcTime(now);
             std::string expires = makeUtcTime(now + 10);
 
-            replaceTagValue(xml, "wsu:Created", created);
-            replaceTagValue(xml, "wsu:Expires", expires);
+            std::string timestamp = xml.substr(ts_begin, ts_end - ts_begin);
+            replaceTagValue(timestamp, "wsu:Created", created);
+            replaceTagValue(timestamp, "wsu:Expires", expires);
+            xml.replace(ts_begin, ts_end - ts_begin, timestamp);
         }
 
         return ctx->original_fsend(soap, xml.c_str(), xml.size());
@@ -1504,32 +1694,18 @@ void OnvifControl::installSoapHook(struct soap* soap, time_t offset) {
 
 void OnvifControl::setCameraTimeManual() {
     std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
-    if (!_proxyDevice) return;
-
-    soap *local_soap = soap_new();
-    local_soap->connect_timeout = local_soap->recv_timeout = local_soap->send_timeout = 10; // timeout connection for 10 seconds
-    soap_register_plugin(local_soap, soap_wsse);
-    OnvifHttpAuth::attach(local_soap);
-
-    // RAII guard: ensures local_soap and proxy are freed on ALL exit paths,
-    // including early returns when getCameraTime() fails or time is in sync.
-    // Proxy is deleted before soap_free to avoid a use-after-free in the
-    // proxy destructor.
-    struct Guard {
-        soap *s;
-        DeviceBindingProxy *p;
-        ~Guard() {
-            delete p;
-            if (s) { soap_destroy(s); soap_end(s); soap_free(s); }
-        }
-    } guard{local_soap, new DeviceBindingProxy(local_soap)};
-    DeviceBindingProxy *proxy = guard.p;
-    proxy->soap_endpoint = _proxyDevice->soap_endpoint;
-    // Declared after the guard so it is released before local_soap is freed. Not shared with
+    // Called from the maintenance cycle only, connected or not: a camera whose clock is too far
+    // off to accept us never connects, and setting its clock is how it recovers. Uses its own soap
+    // context, so neither _m_soap nor the reason the last connect failed is touched.
+    LocalDeviceSoap local(deviceServiceUrl());
+    struct soap *local_soap = local.soap;
+    DeviceBindingProxy *proxy = local.proxy;
+    // Declared after `local` so it is released before local_soap is freed. Not shared with
     // _m_soap: a fresh http_da starts its nonce count again, which the camera takes as a replay.
     OnvifHttpAuth http_auth(local_soap, _strDeviceIp);
 
-    if (!getCameraTime() || _camTimeInfo.TZ.empty()) {
+    bool request_failed = false;
+    if (!readCameraClock(local_soap, proxy, request_failed) || _camTimeInfo.TZ.empty()) {
         return;
     }
 
@@ -1571,9 +1747,12 @@ void OnvifControl::setCameraTimeManual() {
             if (ret != SOAP_OK) {
                 WarnL << "Set camera time failed, ret " << ret;
             } else {
+                InfoL << "Onvif device " << _strDeviceIp << " clock set, it was "
+                      << (_camTimeInfo.cam_sys_time - now) << " s off";
                 // The camera clock just moved, so the offset measured above no
                 // longer describes it. Let the next operation measure it again.
                 invalidateClockOffset();
+                _reading_server_time.store(0, std::memory_order_release);
             }
         }
     }
@@ -1590,6 +1769,7 @@ bool OnvifControl::setCredentials() {
     const bool have_offset = clockOffset(offset_time);
     const time_t drift = offset_time < 0 ? -offset_time : offset_time;
     const bool need_update_time = have_offset && drift >= 5;
+    _signed_offset = need_update_time ? offset_time : 0;
 
     // The hook rewrites wsu:Created/wsu:Expires on the way out, so it has to stay
     // in step with the timestamp the digest was computed over: refreshed when we
