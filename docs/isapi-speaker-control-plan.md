@@ -2,7 +2,8 @@
 
 Ngày lập: 2026-10-04. Nhánh đề xuất: tiếp trên `feature/psi-controller` (cần `CameraDeviceControl`, `PsiaControl` và
 logic chọn/khoá giao thức của plan PSIA, chưa merge `develop`).
-Trạng thái: **chờ chốt câu hỏi ở mục 8**, chưa code.
+Trạng thái (2026-10-04): I0–I3, S1–S3, S5 xong theo đề xuất mặc định của mục 8 (user không trả lời Q1–Q6). S4
+(two-way audio ISAPI) và E (thiết bị thật) chưa làm. Kết quả ở mục 9.
 
 Hai phần:
 - **Phần I — ISAPI cho camera.** ISAPI là REST/XML của Hikvision (`/ISAPI/...`), phát triển từ PSIA. Thêm giao thức
@@ -284,4 +285,59 @@ Mỗi câu có đề xuất kèm theo. Câu nào không trả lời thì làm th
 
 ## 9. Kết quả
 
-(chưa bắt đầu)
+Q1–Q6 làm theo đề xuất: thứ tự `onvif,isapi,psia`; ONVIF `AUTH_FAILED` lúc dò vẫn thử tiếp; S4 để khi có thiết bị
+Hikvision; URL `/Streaming/Channels/<id>`; API file loa Hikvision để sau; chưa giãn chu kỳ sau `AUTH_FAILED`.
+
+**I0 — xong (mock), chưa spike thiết bị thật.** `psia_mock.py --dialect isapi` (namespace Hikvision, DeviceInfo
+không có manufacturer, channel không có `rtspPortNo`, `adminAccesses`, TwoWayAudio open/close/audioData, mở lần hai
+403 `deviceBusy`), `--onvif-401`, `--audio-out`. Kiểm bằng `curl --digest`. Chưa đo 401/404 ONVIF trên Hikvision
+thật (R1) — làm ở bước E.
+
+**I1–I2 — xong.** Khác plan:
+- Bảng tên `HttpXmlDialect` (không phải `HttpXmlPaths`) vì có thêm tên giao thức, khoá timeout, đường RTSP và
+  manufacturer mặc định, ngoài đường dẫn.
+- `IsapiControl` override đúng một điểm `defaultRtspPort()`; URL, codec và manufacturer (`Hikvision`, vì
+  `deviceName` của Hikvision là tên người dùng đặt) đi qua bảng.
+- `IsapiControl` nằm trong `PsiaDeviceControl.{h,cpp}` (không thêm file, không phải reconfigure).
+- Unit: `IsapiParseTest`, `IsapiMockTest` (chạy với mock), `CameraProtocolTest` thêm 3 case (ONVIF 401 → ISAPI,
+  ISAPI 401 dừng và báo lỗi ONVIF, ONVIF đã khoá không đổi).
+
+**S1 — xong, không đổi hành vi.** `makeDeviceControl`, `parseProtocolOrder`, `probeControlProtocols`,
+`ProtocolLock` trong `CameraDeviceControl.{h,cpp}`. `ProtocolLock` có `setSetting`/`restore` riêng thay cho
+`configure(setting, last)`, vì camera đặt hai thứ ở hai thời điểm. `CameraProtocolTest` giữ nguyên và đạt,
+thêm `ProtocolLockTest`, `ProtocolOrderTest`.
+
+**S2–S3 — xong, một commit.** Khác plan / cần biết:
+- Trước đây `SpeakerStatistic` **không lưu** `isOnvifDevice` (đọc nhưng không ghi) và `load()` không khôi phục
+  caps. Nay lưu `isOnvifDevice` + `controlProtocol` và khôi phục hai field đó. Loa cũ chưa có dữ liệu nên lần đầu
+  sau nâng cấp dò `AUTO` (ONVIF trước), kết quả như cũ với loa ONVIF.
+- Âm lượng (`audioVolumeInfo` từ plugin) chỉ cập nhật vào caps khi kết nối lại, không còn mỗi 60 s, vì loa online
+  chỉ `probeConnection`. Giá trị đặt qua API vẫn ghi thẳng vào statistic như trước.
+- `onvifUsername/onvifPassword` của option chỉ ghi khi loa chạy ONVIF.
+- `runVendorOp`: lỗi "file chưa sẵn sàng" và "upload hỏng" của `playAudioFileByVendorApi` nay disconnect trước khi
+  trả lời (trước đây bỏ phiên hãng mở).
+- Unit: `SpeakerProtocolTest` 6 case trong `test_camera_controller.cpp` (dùng chung fake); target link thêm
+  `ext-plugin`.
+
+**I3 — chạy thật đạt (2026-10-04).** MediaServer Debug (harness `e2e_real`) + `psia_mock.py --dialect isapi
+--onvif-401 --rtsp-port 18554` + `rtsp_source.py`, luồng `rtsp://127.0.0.1:18554/Streaming/Channels/101|102`:
+- `AUTO`: ONVIF `AUTH_FAILED` (401) → ISAPI connect, khoá ISAPI (`Hikvision DS-2DE4425IW-DE, 2 streaming channel(s)`).
+- API qua ISAPI đều `code 0`: `ptz_control` left/zoomIn, `get_presets`, `goto_preset` (camera + người dùng),
+  `set_preset`, `imageMoveControl` focusIn/irisOut, `relayOutputControl` relayOn, `onvifGetConfigProfiles` (URL
+  `rtsp://127.0.0.1:18554/Streaming/Channels/101`, khớp URL luồng đã cấu hình; tuỳ chọn encoder từ capabilities),
+  `onvifSetVideoConfigs` kênh 102. State mock khớp (kênh 102 1280x720/768/10 fps, relay high, preset 2, giờ lệch
+  300 s đặt lại `manual`). Mọi request đi dưới `/ISAPI/...`, có `GET /ISAPI/Security/adminAccesses`.
+- Restart: `AUTO` dùng ngay ISAPI, không dò.
+- Đổi camera sang mock PSIA: `ISAPI` cố định báo `NOT_THIS_PROTOCOL`, không thử giao thức khác; đổi sang `AUTO`
+  → ONVIF 404 → ISAPI 404 → PSIA, log đổi giao thức ISAPI → PSIA (xoá profile config/rule/preset/stream_settings).
+- Hồi quy ONVIF: trỏ sang `onvif_mock.py` → `AUTO` ra ONVIF ngay.
+- Không crash. Chưa chạy `onvifApplyVideoConfigRule` (cần API key; luồng rule chung với PSIA đã chạy ở plan PSIA).
+- Loa chưa chạy thật: harness `e2e_real` chỉ dựng camera. Phần loa có unit test.
+
+**S5 — xong.** `docs/camera-control-protocol.md` (ISAPI, luật 401 lúc dò, ánh xạ ISAPI, mục Loa, config),
+`conf/config.ini` (`[camera]` order mới, `[speaker]`, `[isapi]`).
+
+**S4 — chưa làm** (theo Q3): `AudioBackchannelInfo`, `IsapiTwoWayAudioPusher`. Mock đã sẵn TwoWayAudio.
+
+**E — chưa làm:** camera Hikvision tắt ONVIF ở `AUTO` (đo R1), Hikvision ở `ISAPI` (PTZ relative), camera ONVIF
+thật, loa Bosch hồi quy (đặc biệt `runVendorOp` và ép ONVIF).
