@@ -28,6 +28,8 @@ luồng video config rule (áp, xác nhận, rollback). --state ghi thêm cấu 
 của từng thiết bị dưới khoá "encoders".
 """
 import argparse
+import base64
+import hashlib
 import json
 import os
 import re
@@ -529,6 +531,71 @@ def op_GetConfigurationOptions(dev, body, port):
 HANDLERS = {name[3:]: fn for name, fn in list(globals().items()) if name.startswith("op_")}
 
 
+# ------------------------------------------------------------ HTTP auth
+# --auth digest/basic mô phỏng camera đặt xác thực dịch vụ ONVIF là "digest" (hoặc chỉ Basic):
+# bỏ qua WS-Security, request thiếu/sai Authorization bị 401 kèm challenge. Mặc định "none"
+# giữ hành vi cũ (không kiểm tra gì). GetSystemDateAndTime luôn không cần xác thực (chuẩn ONVIF).
+# Nonce riêng cho từng thiết bị (theo IP đích) như camera thật; dùng chung thì camera này làm
+# hết hạn nonce của camera khác ngay giữa lúc nhận challenge và gửi lại.
+class DigestNonces:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.gen = defaultdict(lambda: 1)
+        self.used = defaultdict(int)
+
+    def current(self, ip):
+        with self.lock:
+            return "s3mk%08x" % self.gen[ip]
+
+    def consume(self, ip, ttl_uses):
+        with self.lock:
+            self.used[ip] += 1
+            if ttl_uses > 0 and self.used[ip] >= ttl_uses:
+                self.gen[ip] += 1
+                self.used[ip] = 0
+
+
+NONCES = DigestNonces()
+
+
+def _auth_params(s):
+    out = {}
+    for m in re.finditer(r'([A-Za-z0-9_-]+)\s*=\s*("([^"]*)"|[^,\s]+)', s):
+        out[m.group(1).lower()] = m.group(3) if m.group(3) is not None else m.group(2)
+    return out
+
+
+def check_http_auth(ip, header, path):
+    """Trả (ok, stale)."""
+    a = REG.args
+    if a.auth == "basic":
+        expect = "Basic " + base64.b64encode(("%s:%s" % (a.auth_user, a.auth_pass)).encode()).decode()
+        return header == expect, False
+    if not header.lower().startswith("digest "):
+        return False, False
+    p = _auth_params(header[7:])
+    if p.get("nonce") != NONCES.current(ip):
+        return False, True
+    md5 = lambda x: hashlib.md5(x.encode()).hexdigest()
+    ha1 = md5("%s:%s:%s" % (a.auth_user, "s3mk-onvif-mock", a.auth_pass))
+    ha2 = md5("POST:%s" % p.get("uri", ""))
+    if p.get("qop"):
+        expect = md5(":".join([ha1, p["nonce"], p.get("nc", ""), p.get("cnonce", ""), p["qop"], ha2]))
+    else:
+        expect = md5(":".join([ha1, p["nonce"], ha2]))
+    if p.get("uri") != path or p.get("response") != expect or p.get("username") != a.auth_user:
+        return False, False
+    NONCES.consume(ip, a.nonce_uses)
+    return True, False
+
+
+def auth_challenge(ip, stale):
+    if REG.args.auth == "basic":
+        return 'Basic realm="s3mk-onvif-mock"'
+    return ('Digest realm="s3mk-onvif-mock", qop="auth", nonce="%s", opaque="0f0f"%s'
+            % (NONCES.current(ip), ", stale=TRUE" if stale else ""))
+
+
 # -------------------------------------------------------------------- HTTP
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -564,6 +631,17 @@ class Handler(BaseHTTPRequestHandler):
         if REG.args.verbose:
             sys.stderr.write("[onvif] %s %s %s\n" % (ip, self.path, op or "<?>"))
             sys.stderr.flush()
+
+        if REG.args.auth != "none" and op != "GetSystemDateAndTime":
+            ok, stale = check_http_auth(ip, self.headers.get("Authorization", ""), self.path)
+            if not ok:
+                with REG.lock:
+                    REG.counts["_http_401"] += 1
+                self.send_response(401)
+                self.send_header("WWW-Authenticate", auth_challenge(ip, stale))
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
 
         if op in policy.get("fail_ops", []):
             with REG.lock:
@@ -657,6 +735,12 @@ def main():
     ap.add_argument("--stats-sec", type=float, default=15.0)
     ap.add_argument("--stream-base", default=None,
                     help="vd rtsp://127.0.0.1:18554: GetStreamUri trả URL luồng của harness")
+    ap.add_argument("--auth", choices=["none", "digest", "basic"], default="none",
+                    help="digest/basic: bắt buộc xác thực HTTP như camera đặt chế độ \"digest\"")
+    ap.add_argument("--auth-user", default="admin")
+    ap.add_argument("--auth-pass", default="admin")
+    ap.add_argument("--nonce-uses", type=int, default=0,
+                    help="digest: nonce hết hạn sau N request hợp lệ (0 = không hết hạn)")
     ap.add_argument("--verbose", action="store_true")
     REG = Registry(ap.parse_args())
     REG.reload()

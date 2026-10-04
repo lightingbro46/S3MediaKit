@@ -3,6 +3,8 @@
 
 #include <map>
 #include <memory>
+#include <string>
+#include <vector>
 #include <functional>
 #include <initializer_list>
 #include "Common/Parser.h"
@@ -26,6 +28,12 @@ std::string print_to_string(const char (&str_fmt)[sz], ARGS &&...args) {
     ret.resize(size);
     return ret;
 }
+
+namespace OnvifAuth {
+// 1 lets ONVIF requests answer a camera that only offers HTTP Basic authentication. Basic sends
+// the password in clear text over plain HTTP, so it is off by default and such a camera is refused.
+extern const std::string kAllowHttpBasicAuth;
+} // namespace OnvifAuth
 
 class SoapObject;
 
@@ -60,8 +68,22 @@ public:
     static std::string createSoapRequest(const std::string &body, const std::string &user_name = "", const std::string &passwd = "");
 
     using SoapRequestCB = std::function<void(const SoapObject &node, const SoapErr &err)>;
+    /**
+     * Post a SOAP request. With user_name set, a 401 challenge (a camera whose ONVIF service only
+     * accepts HTTP Digest ignores WS-Security) is answered and the request sent once more.
+     */
     static void sendSoapRequest(const std::string &url, const std::string &action, const std::string &body,
-                                const SoapRequestCB &func = nullptr, float timeout_sec = 10);
+                                const SoapRequestCB &func = nullptr, float timeout_sec = 10,
+                                const std::string &user_name = "", const std::string &pwd = "");
+
+    /**
+     * Authorization header value answering one of the WWW-Authenticate challenges of a 401
+     * response: RFC 2617 Digest (MD5 or MD5-sess, qop "auth" or none, nc 00000001), else Basic
+     * when allow_basic. Empty when none of them can be answered.
+     */
+    static std::string makeHttpAuthorization(const std::vector<std::string> &challenges, const std::string &method,
+                                             const std::string &uri, const std::string &user_name,
+                                             const std::string &pwd, const std::string &cnonce, bool allow_basic);
 
 
     using onGetProfilesResponseTuple = std::tuple<std::string/*profile_name*/, std::string /*codec*/, int /*width*/, int /*height*/>;

@@ -2,7 +2,9 @@
 #define S3PLUGINKIT_ONVIFCONTROL_H
 
 #include <atomic>
+#include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include "soapDeviceBindingProxy.h"
@@ -29,6 +31,8 @@ extern const std::string kClockSyncIntervalSec;
 } // namespace OnvifCtrl
 
 namespace managerkit {
+
+struct OnvifHttpAuth;
 
 struct OnvifDeviceInfo {
     std::string manufacturer;
@@ -658,6 +662,14 @@ private:
     bool setCredentials();
 
     /**
+     * Run one authenticated gSOAP call on _m_soap, after setCredentials(). A camera whose ONVIF
+     * service only accepts HTTP Digest ignores WS-Security and answers 401 with a challenge: the
+     * challenge is learnt and the call sent once more, and every later call carries the Digest
+     * header up front. Returns the gSOAP result of the last attempt.
+     */
+    int callWithAuth(const std::function<int()> &call);
+
+    /**
      * get device information by soap protocol
      */
     bool getDeviceInformation();
@@ -804,6 +816,8 @@ private:
     SDCardInformation _sdCardInfo;
 private:
     soap   *_m_soap = nullptr;  //Soap for onvif
+    // HTTP authentication learnt from _m_soap's 401 challenges; lives and dies with _m_soap.
+    std::unique_ptr<OnvifHttpAuth> _http_auth;
     DeviceBindingProxy  *_proxyDevice  = nullptr;    //Device API
     MediaBindingProxy   *_proxyMedia   = nullptr;    //Media API
     Media2BindingProxy   *_proxyMedia2   = nullptr;  //Media2 API
