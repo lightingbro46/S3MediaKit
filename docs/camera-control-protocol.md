@@ -119,6 +119,8 @@ lần thử đó:
 | `controlProtocol` | Giao thức của controller vừa thử: `ONVIF`, `ISAPI`, `PSIA`; rỗng khi không có |
 | `error` | Rỗng khi kết nối được; không thì `AUTH_FAILED` (sai tài khoản), `UNREACHABLE`, `NOT_THIS_PROTOCOL`, `OTHER` |
 | `msg` | Lỗi chi tiết của thiết bị, ví dụ `ISAPI GET /ISAPI/System/deviceInfo: HTTP 401` |
+| `code` | Nguyên nhân theo mã lỗi thiết bị: `905004` sai tài khoản, `905005` không kết nối được, `905006` không trả lời, `905007` chỉ có Basic, `905008` lệch giờ; `0` khi kết nối được hoặc không có nguyên nhân cụ thể |
+| `clock` | Chỉ khi `code` = `905008`: `serverTime`, `cameraTime`, `clockOffsetSec`, `source` như `data` của lỗi `905008` |
 
 Thiết bị không tồn tại trả `905001`; thiết bị chưa cấu hình điều khiển (camera RTSP thuần) trả `code 0`,
 `finished=true`, `connected=false`, `msg` ghi lý do. Camera đang chạy lệnh PTZ dài thì trả ngay `msg` "busy", không
@@ -197,6 +199,10 @@ Loa IP chọn giao thức theo đúng luật của camera (cùng `ProtocolLock` 
 - Loa đang online thì mỗi chu kỳ 60 giây chỉ gửi một request kiểm tra (`probeConnection`), không chạy lại toàn bộ
   `connect()`. Chỉ khi kiểm tra lỗi mới kết nối lại và đăng ký lại backchannel.
 - Giao thức đang dùng lưu ở capabilities của loa (`controlProtocol`) và được khôi phục khi khởi động.
+- Đồng bộ giờ như camera (khi kết nối, mỗi `onvif.clockSyncIntervalSec`, ngay khi kết nối thất bại vì lệch giờ;
+  lượt dò AUTO lệch giờ ở lại ONVIF). Tắt từng loa bằng `speakerAdvanceConfig.onvif.enableTimeSync=false`
+  (mặc định `true`, có trong `makeSpeakerOptionJson`). Mã lỗi khi loa chưa sẵn sàng: xem
+  [api-device-control-errors.md](api-device-control-errors.md) mục "Loa".
 - Backchannel (`supportsAudioBackchannel`, chế độ phát `BACKCHANNEL`) theo giao thức đang dùng:
   - ONVIF: RTSP backchannel như trước (`BackchannelPusher`).
   - ISAPI: two-way audio Hikvision (`IsapiTwoWayAudioPusher`). Có khi `GET /ISAPI/System/TwoWayAudio/channels` trả
