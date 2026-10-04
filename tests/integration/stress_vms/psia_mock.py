@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mock camera PSIA (REST/XML dưới /PSIA, xác thực HTTP Digest) cho PsiaControl.
+"""Mock camera PSIA (REST/XML dưới /PSIA, xác thực HTTP Digest) cho PsiaControl và IsapiControl.
 
 Một camera ảo trên một cổng. Mọi đường dẫn ngoài /PSIA trả 404, nên ONVIF
 (/onvif/device_service) báo "không phải giao thức này" và chế độ AUTO chuyển sang PSIA.
@@ -19,8 +19,21 @@ Phủ những gì PsiaControl gọi:
     PUT  /PSIA/System/Video/inputs/channels/<ch>/focus|iris
     GET  /PSIA/IO/outputs,  PUT /PSIA/IO/outputs/<id>/trigger
 
+--dialect isapi: camera Hikvision ISAPI thay cho PSIA. Phục vụ cùng các tài nguyên dưới /ISAPI
+(PTZ ở /ISAPI/PTZCtrl, relay ở /ISAPI/System/IO/outputs), namespace Hikvision, DeviceInfo không
+có manufacturer, StreamingChannel không có rtspPortNo (cổng RTSP đọc ở /ISAPI/Security/adminAccesses).
+Thêm two-way audio:
+    GET  /ISAPI/System/TwoWayAudio/channels
+    PUT  /ISAPI/System/TwoWayAudio/channels/<id>/open|close
+    PUT  /ISAPI/System/TwoWayAudio/channels/<id>/audioData  (byte ghi nối vào --audio-out)
+Đường /PSIA trả 404 ở dialect isapi và ngược lại.
+
+--onvif-401: /onvif/device_service trả 401 + Digest challenge thay cho 404, giống Hikvision tắt
+ONVIF hoặc chưa tạo user ONVIF (ONVIF báo AUTH_FAILED lúc dò AUTO).
+
 Dùng:
     psia_mock.py [--port 18680] [--user admin --password admin123] [--basic]
+                 [--dialect psia|isapi] [--onvif-401] [--audio-out PATH]
                  [--rtsp-port 554] [--no-ptz] [--state PATH] [--verbose]
 
 --state ghi JSON (mỗi lần có request): cấu hình encoder hiện tại, vị trí PTZ, trạng thái
@@ -37,7 +50,22 @@ import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 NS = "urn:psialliance-org"
+NS_ISAPI = "http://www.hikvision.com/ver20/XMLSchema"
 REALM = "psia-mock"
+
+
+def to_psia_path(path, dialect):
+    """Đường ISAPI → đường PSIA tương ứng để dùng chung bảng route; None nếu sai dialect."""
+    if dialect == "psia":
+        return path if path.startswith("/PSIA/") else None
+    if not path.startswith("/ISAPI/"):
+        return None
+    rest = path[len("/ISAPI"):]
+    if rest.startswith("/PTZCtrl/"):
+        rest = "/PTZ/" + rest[len("/PTZCtrl/"):]
+    elif rest.startswith("/System/IO/"):
+        rest = "/IO/" + rest[len("/System/IO/"):]
+    return "/PSIA" + rest
 
 
 def md5(s):
@@ -67,6 +95,12 @@ def status(code=1, string="OK", sub="ok"):
             '</ResponseStatus>' % (NS, code, string, sub))
 
 
+def use_dialect(dialect):
+    global NS
+    if dialect == "isapi":
+        NS = NS_ISAPI
+
+
 class Camera:
     def __init__(self, args):
         self.args = args
@@ -81,6 +115,9 @@ class Camera:
         self.time_set = []
         self.requests = []
         self.nonces = set()
+        self.isapi = args.dialect == "isapi"
+        self.two_way_open = False
+        self.audio_bytes = 0
 
     def dump(self):
         if not self.args.state:
@@ -91,6 +128,8 @@ class Camera:
             "presets": self.presets,
             "outputs": self.outputs,
             "time_set": self.time_set,
+            "two_way_open": self.two_way_open,
+            "audio_bytes": self.audio_bytes,
             "requests": self.requests,
         }
         tmp = self.args.state + ".tmp"
@@ -100,6 +139,15 @@ class Camera:
 
     # ── XML documents ────────────────────────────────────────────────────────────────────────
     def device_info(self):
+        if self.isapi:
+            # Hikvision: deviceName là tên người dùng đặt, không có manufacturer.
+            return ('<?xml version="1.0" encoding="UTF-8"?>'
+                    '<DeviceInfo version="2.0" xmlns="%s">'
+                    '<deviceName>IP CAMERA</deviceName><deviceID>88a1c2d3-0000-0000-0000-000000000002</deviceID>'
+                    '<model>DS-2DE4425IW-DE</model><serialNumber>DS-2DE4425IW-DE20261004AAWRISAPIMOCK</serialNumber>'
+                    '<macAddress>02:00:00:00:00:02</macAddress><firmwareVersion>V5.7.3</firmwareVersion>'
+                    '<firmwareReleasedDate>build 221122</firmwareReleasedDate><deviceType>IPCamera</deviceType>'
+                    '</DeviceInfo>' % NS)
         return ('<?xml version="1.0" encoding="UTF-8"?>'
                 '<DeviceInfo version="1.0" xmlns="%s">'
                 '<deviceName>PSIA Mock</deviceName><deviceID>88a1c2d3-0000-0000-0000-000000000001</deviceID>'
@@ -112,9 +160,10 @@ class Camera:
         c = self.channels[cid]
         def opt(attr):
             return (" " + attr) if caps else ""
+        rtsp = "" if self.isapi else "<rtspPortNo>%d</rtspPortNo>" % self.args.rtsp_port
         return ('<StreamingChannel version="1.0" xmlns="%s">'
                 '<id>%s</id><channelName>Camera %s</channelName><enabled>true</enabled>'
-                '<Transport><rtspPortNo>%d</rtspPortNo><maxPacketSize>1446</maxPacketSize>'
+                '<Transport>%s<maxPacketSize>1446</maxPacketSize>'
                 '<ControlProtocolList><ControlProtocol><streamingTransport>RTSP</streamingTransport></ControlProtocol>'
                 '</ControlProtocolList></Transport>'
                 '<Video><enabled>true</enabled><videoInputChannelID>1</videoInputChannelID>'
@@ -127,7 +176,7 @@ class Camera:
                 '<vendorExtension>keep-me</vendorExtension></Video>'
                 '<Audio><enabled>false</enabled><audioCompressionType>G.711ulaw</audioCompressionType></Audio>'
                 '</StreamingChannel>'
-                % (NS, cid, cid, self.args.rtsp_port,
+                % (NS, cid, cid, rtsp,
                    opt('opt="H.264,H.265,MJPEG"'), c["codec"],
                    opt('opt="1920,1280,640"'), c["width"],
                    opt('opt="1080,720,360"'), c["height"],
@@ -163,7 +212,12 @@ class Camera:
                 self.dump()
 
     def _route(self, method, path, body):
-        if not path.startswith("/PSIA/"):
+        if self.isapi:
+            special = self._isapi_only(method, path, body)
+            if special is not None:
+                return special
+        path = to_psia_path(path, self.args.dialect)
+        if path is None:
             return 404, ""
         if path == "/PSIA/System/deviceInfo" and method == "GET":
             return 200, self.device_info()
@@ -229,6 +283,42 @@ class Camera:
             self.outputs[m.group(1)] = text(ET.fromstring(body), "outputState")
             return 200, status()
         return 404, status(4, "Invalid Operation", "notSupport")
+
+    def _isapi_only(self, method, path, body):
+        """Tài nguyên chỉ ISAPI có; None nếu không phải."""
+        if path == "/ISAPI/Security/adminAccesses" and method == "GET":
+            return 200, ('<?xml version="1.0" encoding="UTF-8"?><AdminAccessProtocolList version="2.0" xmlns="%s">'
+                         '<AdminAccessProtocol><id>1</id><enabled>true</enabled><protocol>HTTP</protocol>'
+                         '<portNo>%d</portNo></AdminAccessProtocol>'
+                         '<AdminAccessProtocol><id>2</id><enabled>true</enabled><protocol>HTTPS</protocol>'
+                         '<portNo>443</portNo></AdminAccessProtocol>'
+                         '<AdminAccessProtocol><id>4</id><enabled>true</enabled><protocol>RTSP</protocol>'
+                         '<portNo>%d</portNo></AdminAccessProtocol>'
+                         '</AdminAccessProtocolList>' % (NS, self.args.port, self.args.rtsp_port))
+        if path == "/ISAPI/System/TwoWayAudio/channels" and method == "GET":
+            return 200, ('<?xml version="1.0" encoding="UTF-8"?><TwoWayAudioChannelList version="2.0" xmlns="%s">'
+                         '<TwoWayAudioChannel><id>1</id><enabled>%s</enabled>'
+                         '<audioCompressionType>G.711ulaw</audioCompressionType>'
+                         '<speakerVolume>50</speakerVolume><noisereduce>false</noisereduce>'
+                         '</TwoWayAudioChannel></TwoWayAudioChannelList>'
+                         % (NS, "true" if self.two_way_open else "false"))
+        m = re.match(r"^/ISAPI/System/TwoWayAudio/channels/(\w+)/(open|close|audioData)$", path)
+        if m and method == "PUT":
+            if m.group(1) != "1":
+                return 404, status(4, "Invalid Operation", "invalidID")
+            if m.group(2) == "open":
+                if self.two_way_open:
+                    return 403, status(4, "Invalid Operation", "deviceBusy")
+                self.two_way_open = True
+                return 200, ('<?xml version="1.0" encoding="UTF-8"?><TwoWayAudioSession version="2.0" xmlns="%s">'
+                             '<sessionId>1</sessionId></TwoWayAudioSession>' % NS)
+            if m.group(2) == "close":
+                self.two_way_open = False
+                return 200, status()
+            if not self.two_way_open:
+                return 403, status(4, "Invalid Operation", "notOpen")
+            return 200, status()
+        return None
 
     def _ptz(self, method, sub, body):
         if sub == "capabilities" and method == "GET":
@@ -318,18 +408,60 @@ def make_handler(cam, args):
             self.end_headers()
             self.wfile.write(data)
 
+        def _challenge(self):
+            nonce = md5("%f%d" % (time.time(), id(self)))
+            cam.nonces.add(nonce)
+            challenge = ('Basic realm="%s"' % REALM) if args.basic else \
+                ('Digest realm="%s", qop="auth", nonce="%s", opaque="0123"' % (REALM, nonce))
+            return self._send(401, status(4, "Invalid Operation", "unAuthorized"),
+                              {"WWW-Authenticate": challenge})
+
+        def _audio_data(self):
+            # Dữ liệu G.711 gửi liên tục trên một kết nối; không có Content-Length thì đọc tới khi đóng.
+            length = self.headers.get("Content-Length")
+            out = open(args.audio_out, "ab") if args.audio_out else None
+            total = 0
+            try:
+                remaining = int(length) if length is not None else None
+                while remaining is None or remaining > 0:
+                    chunk = self.rfile.read1(4096) if remaining is None else self.rfile.read(min(4096, remaining))
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if remaining is not None:
+                        remaining -= len(chunk)
+                    if out:
+                        out.write(chunk)
+                    with cam.lock:
+                        cam.audio_bytes += len(chunk)
+            finally:
+                if out:
+                    out.close()
+                with cam.lock:
+                    cam.dump()
+            return total
+
         def _serve(self):
+            if self.path.startswith("/onvif/") and args.onvif_401:
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                return self._challenge()
+            if to_psia_path(self.path.split("?", 1)[0], args.dialect) is None:
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                return self._send(404, "")
+            streaming = cam.isapi and self.command == "PUT" and self.path.endswith("/audioData")
+            if streaming and self._authorized():
+                with cam.lock:
+                    is_open = cam.two_way_open
+                if not is_open:
+                    self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                    return self._send(403, status(4, "Invalid Operation", "notOpen"))
+                self._audio_data()
+                code, xml = cam.handle(self.command, self.path, "")
+                return self._send(code, xml)
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
-            if not self.path.startswith("/PSIA/"):
-                return self._send(404, "")
             if not self._authorized():
-                nonce = md5("%f%d" % (time.time(), id(self)))
-                cam.nonces.add(nonce)
-                challenge = ('Basic realm="%s"' % REALM) if args.basic else \
-                    ('Digest realm="%s", qop="auth", nonce="%s", opaque="0123"' % (REALM, nonce))
-                return self._send(401, status(4, "Invalid Operation", "unAuthorized"),
-                                  {"WWW-Authenticate": challenge})
+                return self._challenge()
             try:
                 code, xml = cam.handle(self.command, self.path, body)
             except ET.ParseError:
@@ -351,16 +483,20 @@ def main():
     ap.add_argument("--user", default="admin")
     ap.add_argument("--password", default="admin123")
     ap.add_argument("--basic", action="store_true", help="Basic thay cho Digest")
+    ap.add_argument("--dialect", choices=["psia", "isapi"], default="psia")
+    ap.add_argument("--onvif-401", action="store_true", help="ONVIF trả 401 thay cho 404 (Hikvision tắt ONVIF)")
+    ap.add_argument("--audio-out", default=None, help="file nhận byte two-way audio (dialect isapi)")
     ap.add_argument("--rtsp-port", type=int, default=554)
     ap.add_argument("--no-ptz", action="store_true")
     ap.add_argument("--clock-skew", type=int, default=0, help="giây camera chậm hơn đồng hồ thật")
     ap.add_argument("--state", default=None)
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
+    use_dialect(args.dialect)
     cam = Camera(args)
     server = ThreadingHTTPServer((args.host, args.port), make_handler(cam, args))
-    print("psia_mock listening on %s:%d (%s)" % (args.host, args.port, "Basic" if args.basic else "Digest"),
-          flush=True)
+    print("psia_mock listening on %s:%d (%s, %s)" % (args.host, args.port, args.dialect,
+                                                     "Basic" if args.basic else "Digest"), flush=True)
     server.serve_forever()
 
 
