@@ -150,6 +150,7 @@ bool SpeakerStatisticHelper::getParams(const string &json_str, SpeakerStatistic 
     option.autoMediaPort = ret["autoMediaPort"].asBool();
     option.audioPlaybackMode = ret["audioPlaybackMode"].asInt();
     option.controlProtocol = controlProtocolSetting(ret["controlProtocol"].asString());
+    option.enableTimeSync = ret.isMember("enableTimeSync") ? ret["enableTimeSync"].asBool() : true;
     stats.option = option;
 
     stats.connect = ret["connect"].asBool();
@@ -214,6 +215,7 @@ string SpeakerStatisticHelper::getParamsString(const SpeakerStatistic &stats) {
     root["autoMediaPort"] = stats.option.autoMediaPort;
     root["audioPlaybackMode"] = stats.option.audioPlaybackMode;
     root["controlProtocol"] = stats.option.controlProtocol;
+    root["enableTimeSync"] = stats.option.enableTimeSync;
 
     // add params
     Json::Value params = Json::arrayValue;

@@ -100,7 +100,10 @@ private:
     // Device queue: hands `result` to finishReconnect() on _poller.
     void postReconnectResult(const ReconnectResult &result);
     // Device queue: capabilities, backchannel and the connected event after a successful connect().
-    void publishConnected(const DeviceControl::Ptr &device_ctr, const ConnectContext &ctx);
+    // `sync_clock`: set the device clock first (onvif.clockSyncEnable and the speaker's enableTimeSync).
+    void publishConnected(const DeviceControl::Ptr &device_ctr, const ConnectContext &ctx, bool sync_clock);
+    // onvif.clockSyncEnable and SpeakerOption::enableTimeSync: whether the server may set the clock.
+    bool timeSyncEnabled() const;
 
     // ================== Vendor-specific operations ==================
     // Owner poller: the device a vendor operation runs on, or nullptr after answering `cb`.
@@ -150,6 +153,8 @@ private:
     std::string _address;
     ControllerOption _ctrl_option;
     std::string _device_name;
+    bool _enableTimeSync = true; // SpeakerOption::enableTimeSync; read on _poller only
+    uint64_t _last_clock_sync = 0; // when the maintenance cycle last checked the clock; _poller only
 };
 
 } // namespace managerkit

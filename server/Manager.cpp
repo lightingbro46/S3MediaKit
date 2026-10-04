@@ -896,6 +896,11 @@ static void fromJson(SpeakerOption &option, const Json::Value &data) {
             option.controlProtocol = controlProtocolSetting(adv["control"]["protocol"].asString());
         }
 
+        if (adv.isMember("onvif") && !adv["onvif"].isNull()) {
+            const Json::Value &onvif = adv["onvif"];
+            GET_OPTION_PROPERTY(option, enableTimeSync, onvif, enableTimeSync)
+        }
+
         if (adv.isMember("mediaPort") && !adv["mediaPort"].isNull()) {
             const Json::Value &mp = adv["mediaPort"];
 
@@ -1889,6 +1894,7 @@ Json::Value makeSpeakerOptionJson(const SpeakerOption &option) {
     val["autoMediaPort"]           = option.autoMediaPort;
     val["audioPlaybackMode"]       = option.audioPlaybackMode;
     val["controlProtocol"]         = option.controlProtocol;
+    val["enableTimeSync"]          = option.enableTimeSync;
 
     // Web access
     val["webPort"]                 = option.webPort;

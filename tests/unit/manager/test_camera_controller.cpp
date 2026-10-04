@@ -1292,6 +1292,8 @@ public:
     }
 
     std::atomic<int> live{0};
+    // takeClockSyncWanted() of the fakes: a command found the device clock off.
+    std::atomic<bool> sync_wanted{false};
     // probeConnection() of a connected fake succeeds; off, every cycle runs a full connect().
     std::atomic<bool> probe_ok{false};
 
@@ -1335,6 +1337,7 @@ public:
     bool isConnected() const override { return _connected; }
     bool isControlled() const override { return false; }
     DeviceFailure lastFailure() const override { return _world->failure(_protocol); }
+    bool takeClockSyncWanted() override { return _world->sync_wanted.exchange(false); }
     void setCameraTimeManual() override { _world->log(std::string("settime ") + controlProtocolToString(_protocol)); }
     OnvifDeviceInfo getDeviceInfo() override { return OnvifDeviceInfo(); }
     OnvifMediaProfileMap getMediaProfilesInfo() override { return OnvifMediaProfileMap(); }
@@ -1921,9 +1924,11 @@ protected:
         _poller->sync([speaker]() { speaker->stopController(); });
     }
 
-    void setup(const std::string &protocol, const std::string &last = "", const std::string &manufacturer = "ONVIF") {
+    void setup(const std::string &protocol, const std::string &last = "", const std::string &manufacturer = "ONVIF",
+               bool time_sync = true) {
         SpeakerOption option;
         option.manufacturer = manufacturer;
+        option.enableTimeSync = time_sync;
         option.ip = "127.0.0.1";
         option.port = 1;
         option.controlProtocol = protocol;
@@ -2180,5 +2185,75 @@ TEST_F(CameraControllerTest, ServerConfigTurnsClockSyncOffForEveryCamera) {
     ASSERT_TRUE(waitFor([&]() { return sawCall(fake, "Connect"); }));
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     EXPECT_EQ(0, countCalls(fake, "SetCameraTime"));
+    setClockSyncEnable(true);
+}
+
+// ── Speaker clock: set by the maintenance cycle like a camera's ──────────────
+
+TEST_F(SpeakerProtocolTest, ClockIsSetOnConnectThenOnlyWhenDue) {
+    setup("ONVIF");
+    _world->probe_ok = true;
+    cycle();
+    EXPECT_TRUE(_speaker->isReady());
+    EXPECT_EQ(1, _world->count("settime ONVIF"));
+    // Still connected, interval not due: the cycle only probes.
+    cycle();
+    EXPECT_EQ(1, _world->count("probe ONVIF"));
+    EXPECT_EQ(1, _world->count("settime ONVIF"));
+}
+
+TEST_F(SpeakerProtocolTest, ClockOffFoundByACommandIsSetByTheNextCycle) {
+    setup("ONVIF");
+    _world->probe_ok = true;
+    cycle();
+    _world->sync_wanted = true;
+    cycle();
+    EXPECT_EQ(2, _world->count("settime ONVIF"));
+    cycle();
+    EXPECT_EQ(2, _world->count("settime ONVIF")) << "flag consumed";
+}
+
+TEST_F(SpeakerProtocolTest, ConnectRejectedForTheClockSetsIt) {
+    setup("ONVIF");
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::OTHER);
+    _world->setFailure(ControlProtocol::ONVIF, DeviceFailure::ClockSkew);
+    cycle();
+    EXPECT_FALSE(_speaker->isReady());
+    EXPECT_EQ(1, _world->count("settime ONVIF"));
+
+    _world->clear();
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    _world->setFailure(ControlProtocol::ONVIF, DeviceFailure::Unauthorized);
+    cycle();
+    EXPECT_EQ(0, _world->count("settime ONVIF")) << "a wrong password leaves the clock alone";
+}
+
+TEST_F(SpeakerProtocolTest, AutoProbeRejectedForTheClockSetsItAndStaysOnOnvif) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::OTHER);
+    _world->setFailure(ControlProtocol::ONVIF, DeviceFailure::ClockSkew);
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::NONE);
+    setup("");
+    cycle();
+    auto events = _world->events();
+    EXPECT_TRUE(contains(events, "settime ONVIF"));
+    EXPECT_FALSE(contains(events, "create ISAPI"));
+    EXPECT_EQ(ControlProtocol::NONE, current());
+}
+
+TEST_F(SpeakerProtocolTest, SpeakerOptionTurnsClockSyncOff) {
+    setup("ONVIF", "", "ONVIF", false);
+    cycle();
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::OTHER);
+    _world->setFailure(ControlProtocol::ONVIF, DeviceFailure::ClockSkew);
+    cycle();
+    EXPECT_EQ(0, _world->count("settime ONVIF"));
+}
+
+TEST_F(SpeakerProtocolTest, ServerConfigTurnsClockSyncOffForSpeakers) {
+    setClockSyncEnable(false);
+    setup("ONVIF");
+    cycle();
+    EXPECT_TRUE(_speaker->isReady());
+    EXPECT_EQ(0, _world->count("settime ONVIF"));
     setClockSyncEnable(true);
 }

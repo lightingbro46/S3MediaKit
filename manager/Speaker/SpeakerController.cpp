@@ -5,6 +5,7 @@
 #include "Backchannel/BackchannelManager.h"
 #include "Common/StrUtil.h"
 #include "Common/DeviceFailureCode.h"
+#include "Control/OnvifDeviceControl.h"
 
 using namespace std;
 using namespace toolkit;
@@ -144,6 +145,8 @@ void SpeakerController::setupController(const SpeakerOption &option) {
     _address         = address;
     _device_name     = option.name;
     _ctrl_option     = ControllerOption::from(option);
+    _enableTimeSync  = option.enableTimeSync;
+    _last_clock_sync = 0;
     _lock.setSetting(option.controlProtocol);
 
     if (!setupDeviceController()) {
@@ -183,6 +186,12 @@ void SpeakerController::stopController() {
     DebugL << "Closed speaker controller for device: " << _tuple.shortUrl() << " (" << _address << ")";
 }
 
+bool SpeakerController::timeSyncEnabled() const {
+    // The clock is only ever set by the maintenance cycle, never by an API command, as for cameras.
+    GET_CONFIG(bool, clock_sync_enable, OnvifCtrl::kClockSyncEnable);
+    return clock_sync_enable && _enableTimeSync;
+}
+
 SpeakerController::ConnectContext SpeakerController::connectContext() const {
     ConnectContext ctx;
     ctx.vendor = _vendor_ctr;
@@ -216,10 +225,20 @@ void SpeakerController::onManager() {
     auto ctx = connectContext();
     // A speaker that is up only needs one request to confirm it, not the whole connect() handshake.
     const bool was_ready = _ready.load() && device_ctr->isConnected();
+    GET_CONFIG(int, clock_sync_sec, OnvifCtrl::kClockSyncIntervalSec);
+    const bool time_sync = timeSyncEnabled();
+    // A command that found the clock off asks for it to be set now rather than at the next interval.
+    // Taken even when syncing is off, so a stale request does not fire once it is turned back on.
+    const bool sync_wanted = device_ctr->takeClockSyncWanted();
+    const bool sync_clock = time_sync && (!was_ready || sync_wanted || clock_sync_sec <= 0 ||
+                            now - _last_clock_sync >= static_cast<uint64_t>(clock_sync_sec));
+    if (sync_clock) {
+        _last_clock_sync = now;
+    }
     std::weak_ptr<SpeakerController> weak_self = shared_from_this();
 
     // connect() is a blocking SOAP/HTTP call: run it on the speaker's serial device queue.
-    _device_queue->post([weak_self, device_ctr, ctx, was_ready]() {
+    _device_queue->post([weak_self, device_ctr, ctx, was_ready, sync_clock, time_sync]() {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
             return;
@@ -228,6 +247,9 @@ void SpeakerController::onManager() {
         result.finished = true;
         result.protocol = controlProtocolToString(device_ctr->protocol());
         if (was_ready && device_ctr->probeConnection()) {
+            if (sync_clock) {
+                device_ctr->setCameraTimeManual();
+            }
             result.connected = true;
             result.msg = "connected";
             strong_self->postReconnectResult(result);
@@ -237,7 +259,7 @@ void SpeakerController::onManager() {
         auto address = strong_self->_address;
         // reconnect to device
         if (device_ctr->connect()) {
-            strong_self->publishConnected(device_ctr, ctx);
+            strong_self->publishConnected(device_ctr, ctx, sync_clock);
             result.connected = true;
             result.msg = "connected";
         } else {
@@ -251,6 +273,11 @@ void SpeakerController::onManager() {
                     self->onConnectResult(device_ctr, err);
                 }
             }, false);
+            // Rejected with the device clock far off: it will never accept us until its clock is
+            // set, so set it now; the next cycle connects again.
+            if (time_sync && device_ctr->lastFailure() == DeviceFailure::ClockSkew) {
+                device_ctr->setCameraTimeManual();
+            }
             strong_self->onControllerReady(false, err_msg, nullptr);
             result.error = err;
             result.msg = err_msg;
@@ -293,7 +320,7 @@ void SpeakerController::postReconnectResult(const ReconnectResult &result) {
     }, false);
 }
 
-void SpeakerController::publishConnected(const DeviceControl::Ptr &device_ctr, const ConnectContext &ctx) {
+void SpeakerController::publishConnected(const DeviceControl::Ptr &device_ctr, const ConnectContext &ctx, bool sync_clock) {
     InfoL << controlProtocolToString(device_ctr->protocol()) << " controller of speaker " << _tuple.shortUrl()
           << " (" << _address << ") connected";
     std::weak_ptr<SpeakerController> weak_self = shared_from_this();
@@ -302,6 +329,9 @@ void SpeakerController::publishConnected(const DeviceControl::Ptr &device_ctr, c
             self->onConnectResult(device_ctr, ConnectError::NONE);
         }
     }, false);
+    if (sync_clock) {
+        device_ctr->setCameraTimeManual();
+    }
 
     auto caps = std::make_shared<DeviceCapabilities>();
     caps->isOnvifDevice = device_ctr->protocol() == ControlProtocol::ONVIF;
@@ -327,15 +357,20 @@ void SpeakerController::startProtocolProbe() {
     const auto order = parseProtocolOrder(order_str);
     const string address = _address;
     auto ctx = connectContext();
+    // A speaker that just connected always gets its clock checked, as in onManager().
+    const bool time_sync = timeSyncEnabled();
+    if (time_sync) {
+        _last_clock_sync = time(nullptr);
+    }
     std::weak_ptr<SpeakerController> weak_self = shared_from_this();
-    _device_queue->post([weak_self, order, address, ctx]() {
+    _device_queue->post([weak_self, order, address, ctx, time_sync]() {
         auto self = weak_self.lock();
         if (!self) {
             return;
         }
         auto result = probeControlProtocols(order, [&](ControlProtocol protocol) {
             return self->createDeviceControl(protocol, address, ctx.username, ctx.password);
-        }, self->_tuple.shortUrl() + " (" + address + ")");
+        }, self->_tuple.shortUrl() + " (" + address + ")", time_sync);
         DeviceControl::Ptr winner = result.winner;
         const std::string err_msg = result.err_msg;
         const ConnectError err = result.err;
@@ -351,7 +386,7 @@ void SpeakerController::startProtocolProbe() {
             }
         }, false);
         if (winner) {
-            self->publishConnected(winner, ctx);
+            self->publishConnected(winner, ctx, time_sync);
         } else {
             self->onControllerReady(false, err_msg, nullptr);
         }
