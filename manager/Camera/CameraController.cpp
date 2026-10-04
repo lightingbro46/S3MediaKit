@@ -2,7 +2,6 @@
 #include "Common/BlockingExecutors.h"
 #include "server/WebApiErrCode.h"
 #include "Local/MediaGapFillManager.h"
-#include "Control/PsiaDeviceControl.h"
 #include "Util/onceToken.h"
 #include "Util/util.h"
 #include "Common/config.h"
@@ -23,12 +22,7 @@ CameraController::CameraController(const DeviceTuple &tuple, const toolkit::Even
 
 CameraDeviceControl::Ptr CameraController::createDeviceControl(ControlProtocol protocol, const std::string &address,
                                                                const std::string &username, const std::string &password) {
-    switch (protocol) {
-        case ControlProtocol::ONVIF: return std::make_shared<OnvifControl>(address, username, password);
-        case ControlProtocol::PSIA: return std::make_shared<PsiaControl>(address, username, password);
-        case ControlProtocol::ISAPI: return std::make_shared<IsapiControl>(address, username, password);
-        default: return nullptr;
-    }
+    return makeDeviceControl(protocol, address, username, password);
 }
 
 // Only ONVIF provides the SD card replay that MediaGapFillManager drives.
@@ -141,9 +135,8 @@ void CameraController::setupController(const CameraOption &option) {
         _device_ctr.reset();
         _configured = false;
         // A changed address or credentials may mean another protocol now: AUTO probes again.
-        _auto_locked = false;
+        _lock.unlock();
         _probing = false;
-        _not_this_protocol_count = 0;
         _last_reconnect_time = 0;
         ++_ctrl_generation;
     }
@@ -168,6 +161,7 @@ void CameraController::setupController(const CameraOption &option) {
     // save controller option and PTZ settings for later use
     _address      = address;
     _ctrl_option  = ControllerOption::from(option);
+    _lock.setSetting(option.controlProtocol);
     _enablePTZControl = option.enablePTZControl;
     _reversePanAxis   = option.reversePanAxis;
     _reverseTiltAxis  = option.reverseTiltAxis;
@@ -180,10 +174,7 @@ void CameraController::setupController(const CameraOption &option) {
     // One controller, one protocol: the fixed one, or the one AUTO locked to. An AUTO camera without
     // a lock gets its controller from the probe in onManager().
     // todo: create plugin from manufactor and model
-    ControlProtocol protocol = controlProtocolFromString(option.controlProtocol);
-    if (protocol == ControlProtocol::NONE && _auto_locked) {
-        protocol = _last_protocol;
-    }
+    ControlProtocol protocol = _lock.fixedOrLocked();
     if (protocol != ControlProtocol::NONE) {
         _device_ctr = createDeviceControl(protocol, address, option.username, option.password);
     }
@@ -196,12 +187,7 @@ void CameraController::setupController(const CameraOption &option) {
 
 void CameraController::setLastControlProtocol(const std::string &protocol) {
     CHECK(_poller->isCurrentThread(), "setLastControlProtocol must be called on the owner poller");
-    _last_protocol = controlProtocolFromString(protocol);
-    _auto_locked = _last_protocol != ControlProtocol::NONE;
-}
-
-bool CameraController::isAutoProtocol() const {
-    return controlProtocolFromString(_ctrl_option.controlProtocol) == ControlProtocol::NONE;
+    _lock.restore(controlProtocolFromString(protocol));
 }
 
 void CameraController::stopController() {  
@@ -223,7 +209,7 @@ void CameraController::stopController() {
 
 void CameraController::onManager() {
     // Always called from the Timer which runs on _poller - no dispatch needed.
-    if (!_configured || (!_device_ctr && !isAutoProtocol())) {
+    if (!_configured || (!_device_ctr && !_lock.isAuto())) {
         onControllerReady(false, "Not supported", std::make_shared<DeviceCapabilities>());
         return;
     }
@@ -349,28 +335,10 @@ void CameraController::publishConnected(const CameraDeviceControl::Ptr &device_c
     onControllerReady(true, "connected", std::move(caps));
 }
 
-// Protocols AUTO tries, from camera.control_auto_order; unknown names are skipped, an empty list
-// falls back to ONVIF, ISAPI, PSIA.
-static std::vector<ControlProtocol> autoProtocolOrder() {
-    GET_CONFIG(string, order_str, CameraControl::kAutoOrder);
-    std::vector<ControlProtocol> order;
-    for (auto &name : split(order_str, ",")) {
-        ControlProtocol protocol = controlProtocolFromString(trim(name));
-        if (protocol != ControlProtocol::NONE && std::find(order.begin(), order.end(), protocol) == order.end()) {
-            order.push_back(protocol);
-        }
-    }
-    if (order.empty()) {
-        order.push_back(ControlProtocol::ONVIF);
-        order.push_back(ControlProtocol::ISAPI);
-        order.push_back(ControlProtocol::PSIA);
-    }
-    return order;
-}
-
 void CameraController::startProtocolProbe() {
     _probing = true;
-    const auto order = autoProtocolOrder();
+    GET_CONFIG(string, order_str, CameraControl::kAutoOrder);
+    const auto order = parseProtocolOrder(order_str);
     const uint64_t generation = _ctrl_generation.load();
     const string address = _address;
     const string username = _ctrl_option.username;
@@ -381,39 +349,11 @@ void CameraController::startProtocolProbe() {
         if (!self) {
             return;
         }
-        CameraDeviceControl::Ptr winner;
-        std::string err_msg = "No control protocol answered";
-        // Set when ONVIF rejected the credentials: the error reported if no other protocol connects.
-        std::string onvif_auth_err;
-        for (auto protocol : order) {
-            auto device_ctr = self->createDeviceControl(protocol, address, username, password);
-            if (!device_ctr) {
-                continue;
-            }
-            if (device_ctr->connect()) {
-                winner = device_ctr;
-                break;
-            }
-            ConnectError err = device_ctr->lastConnectError();
-            err_msg = std::string(controlProtocolToString(protocol)) + ": " + device_ctr->lastError();
-            InfoL << "Probe " << controlProtocolToString(protocol) << " on device " << self->_tuple.shortUrl()
-                  << " (" << address << "): " << connectErrorToString(err);
-            // Destroyed before the next protocol is tried: never two controllers on one camera.
-            device_ctr.reset();
-            if (protocol == ControlProtocol::ONVIF && err == ConnectError::AUTH_FAILED) {
-                // A Hikvision camera with ONVIF disabled, or without an ONVIF user, answers 401 to
-                // ONVIF while its web account still works for ISAPI.
-                onvif_auth_err = err_msg;
-                continue;
-            }
-            if (err != ConnectError::NOT_THIS_PROTOCOL) {
-                // Unreachable, or the password is wrong: that says nothing about the protocol.
-                break;
-            }
-        }
-        if (!winner && !onvif_auth_err.empty()) {
-            err_msg = onvif_auth_err;
-        }
+        auto result = probeControlProtocols(order, [&](ControlProtocol protocol) {
+            return self->createDeviceControl(protocol, address, username, password);
+        }, self->_tuple.shortUrl() + " (" + address + ")");
+        CameraDeviceControl::Ptr winner = result.winner;
+        const std::string err_msg = result.err_msg;
         if (winner && self->_ctrl_generation.load() != generation) {
             winner.reset(); // the option changed meanwhile
         }
@@ -448,29 +388,21 @@ void CameraController::onConnectResult(const CameraDeviceControl::Ptr &device_ct
         return;
     }
     if (err == ConnectError::NONE) {
-        _not_this_protocol_count = 0;
         onProtocolConnected(device_ctr->protocol());
         return;
     }
-    if (!isAutoProtocol()) {
-        // A fixed protocol is never swapped for the other one, whatever the camera answers.
-        return;
-    }
-    if (err != ConnectError::NOT_THIS_PROTOCOL) {
-        _not_this_protocol_count = 0;
-        return;
-    }
     GET_CONFIG(int, reprobe_failures, CameraControl::kReprobeFailures);
-    if (++_not_this_protocol_count < std::max(1, reprobe_failures)) {
+    if (!_lock.onConnectError(err, reprobe_failures)) {
         return;
     }
     unlockProtocol(string("Device no longer answers ") + controlProtocolToString(device_ctr->protocol()));
 }
 
 void CameraController::onProtocolConnected(ControlProtocol protocol) {
-    if (_last_protocol != ControlProtocol::NONE && _last_protocol != protocol) {
+    const ControlProtocol previous = _lock.last();
+    if (_lock.onConnected(protocol)) {
         // Profile tokens and PTZ coordinates of one protocol mean nothing in the other.
-        const string err_msg = string("Camera control protocol changed from ") + controlProtocolToString(_last_protocol) +
+        const string err_msg = string("Camera control protocol changed from ") + controlProtocolToString(previous) +
                                " to " + controlProtocolToString(protocol);
         WarnL << "Device " << _tuple.shortUrl() << " (" << _address << "): " << err_msg
               << ", dropping its profile configs, video config rules and user presets";
@@ -486,8 +418,6 @@ void CameraController::onProtocolConnected(ControlProtocol protocol) {
         _profileConfigMap.clear();
         _userPresets.clear();
     }
-    _last_protocol = protocol;
-    _auto_locked = true;
 }
 
 void CameraController::unlockProtocol(const std::string &reason) {
@@ -498,8 +428,7 @@ void CameraController::unlockProtocol(const std::string &reason) {
     _ready = false;
     onControllerReady(false, "Control protocol changed", nullptr);
     _device_ctr.reset();
-    _auto_locked = false;
-    _not_this_protocol_count = 0;
+    _lock.unlock();
     _last_reconnect_time = 0;
     ++_ctrl_generation;
 }

@@ -1624,3 +1624,63 @@ TEST(ControlProtocolSettingTest, UnknownValuesMeanAuto) {
     EXPECT_EQ("AUTO", controlProtocolSetting("HIKVISION"));
     EXPECT_EQ("AUTO", controlProtocolSetting("AUTO"));
 }
+
+// ── ProtocolLock / parseProtocolOrder: the selection rules camera and speaker share ─────────────
+
+TEST(ProtocolLockTest, FixedSettingIsUsedAndNeverUnlocks) {
+    ProtocolLock lock;
+    lock.setSetting("isapi");
+    EXPECT_FALSE(lock.isAuto());
+    EXPECT_EQ(ControlProtocol::ISAPI, lock.fixedOrLocked());
+    for (int i = 0; i < 10; ++i) {
+        EXPECT_FALSE(lock.onConnectError(ConnectError::NOT_THIS_PROTOCOL, 5));
+    }
+    EXPECT_EQ(ControlProtocol::ISAPI, lock.fixedOrLocked());
+}
+
+TEST(ProtocolLockTest, AutoProbesUntilConnectedThenStaysLocked) {
+    ProtocolLock lock;
+    lock.setSetting("AUTO");
+    EXPECT_TRUE(lock.isAuto());
+    EXPECT_EQ(ControlProtocol::NONE, lock.fixedOrLocked());
+    EXPECT_FALSE(lock.onConnected(ControlProtocol::PSIA)) << "first connect is not a change";
+    EXPECT_EQ(ControlProtocol::PSIA, lock.fixedOrLocked());
+    EXPECT_FALSE(lock.onConnected(ControlProtocol::PSIA));
+    EXPECT_TRUE(lock.onConnected(ControlProtocol::ISAPI));
+    EXPECT_EQ(ControlProtocol::ISAPI, lock.last());
+}
+
+TEST(ProtocolLockTest, RestoredProtocolLocksAutoAtOnce) {
+    ProtocolLock lock;
+    lock.restore(ControlProtocol::ONVIF);
+    lock.setSetting("");
+    EXPECT_EQ(ControlProtocol::ONVIF, lock.fixedOrLocked());
+    lock.restore(ControlProtocol::NONE);
+    EXPECT_EQ(ControlProtocol::NONE, lock.fixedOrLocked());
+}
+
+TEST(ProtocolLockTest, OnlyConsecutiveNotThisProtocolUnlocks) {
+    ProtocolLock lock;
+    lock.restore(ControlProtocol::ONVIF);
+    EXPECT_FALSE(lock.onConnectError(ConnectError::NOT_THIS_PROTOCOL, 3));
+    EXPECT_FALSE(lock.onConnectError(ConnectError::NOT_THIS_PROTOCOL, 3));
+    EXPECT_FALSE(lock.onConnectError(ConnectError::UNREACHABLE, 3)) << "resets the count";
+    EXPECT_FALSE(lock.onConnectError(ConnectError::AUTH_FAILED, 3));
+    EXPECT_FALSE(lock.onConnectError(ConnectError::NOT_THIS_PROTOCOL, 3));
+    EXPECT_FALSE(lock.onConnectError(ConnectError::NOT_THIS_PROTOCOL, 3));
+    EXPECT_TRUE(lock.onConnectError(ConnectError::NOT_THIS_PROTOCOL, 3));
+    lock.unlock();
+    EXPECT_EQ(ControlProtocol::NONE, lock.fixedOrLocked());
+    EXPECT_EQ(ControlProtocol::ONVIF, lock.last()) << "kept to detect the change on the next connect";
+    // A successful connect resets the count too; 0 or less means "at the first one".
+    lock.onConnected(ControlProtocol::ONVIF);
+    EXPECT_TRUE(lock.onConnectError(ConnectError::NOT_THIS_PROTOCOL, 0));
+}
+
+TEST(ProtocolOrderTest, UnknownAndRepeatedNamesAreSkipped) {
+    typedef std::vector<ControlProtocol> Order;
+    EXPECT_EQ((Order{ControlProtocol::ISAPI, ControlProtocol::ONVIF}), parseProtocolOrder(" isapi , foo,ONVIF,isapi"));
+    const Order fallback{ControlProtocol::ONVIF, ControlProtocol::ISAPI, ControlProtocol::PSIA};
+    EXPECT_EQ(fallback, parseProtocolOrder(""));
+    EXPECT_EQ(fallback, parseProtocolOrder("auto,none"));
+}

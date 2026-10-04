@@ -1,6 +1,10 @@
 #include "CameraDeviceControl.h"
 #include <algorithm>
 #include <strings.h>
+#include "Control/OnvifDeviceControl.h"
+#include "Control/PsiaDeviceControl.h"
+#include "Util/logger.h"
+#include "Util/util.h"
 
 namespace managerkit {
 
@@ -77,6 +81,111 @@ std::string bitrateRangeToString(int minBitrate, int maxBitrate) {
         result += std::to_string(value);
     }
     return result;
+}
+
+CameraDeviceControl::Ptr makeDeviceControl(ControlProtocol protocol, const std::string &address,
+                                           const std::string &username, const std::string &password) {
+    switch (protocol) {
+        case ControlProtocol::ONVIF: return std::make_shared<OnvifControl>(address, username, password);
+        case ControlProtocol::PSIA: return std::make_shared<PsiaControl>(address, username, password);
+        case ControlProtocol::ISAPI: return std::make_shared<IsapiControl>(address, username, password);
+        default: return nullptr;
+    }
+}
+
+std::vector<ControlProtocol> parseProtocolOrder(const std::string &order_str) {
+    std::vector<ControlProtocol> order;
+    for (auto &name : toolkit::split(order_str, ",")) {
+        ControlProtocol protocol = controlProtocolFromString(toolkit::trim(name));
+        if (protocol != ControlProtocol::NONE && std::find(order.begin(), order.end(), protocol) == order.end()) {
+            order.push_back(protocol);
+        }
+    }
+    if (order.empty()) {
+        order.push_back(ControlProtocol::ONVIF);
+        order.push_back(ControlProtocol::ISAPI);
+        order.push_back(ControlProtocol::PSIA);
+    }
+    return order;
+}
+
+ProtocolProbeResult probeControlProtocols(const std::vector<ControlProtocol> &order,
+                                          const DeviceControlFactory &factory, const std::string &log_name) {
+    ProtocolProbeResult result;
+    result.err_msg = "No control protocol answered";
+    // Set when ONVIF rejected the credentials: the error reported if no other protocol connects.
+    std::string onvif_auth_err;
+    for (auto protocol : order) {
+        auto device_ctr = factory(protocol);
+        if (!device_ctr) {
+            continue;
+        }
+        if (device_ctr->connect()) {
+            result.winner = device_ctr;
+            break;
+        }
+        ConnectError err = device_ctr->lastConnectError();
+        result.err_msg = std::string(controlProtocolToString(protocol)) + ": " + device_ctr->lastError();
+        InfoL << "Probe " << controlProtocolToString(protocol) << " on device " << log_name << ": "
+              << connectErrorToString(err);
+        // Destroyed before the next protocol is tried: never two controllers on one device.
+        device_ctr.reset();
+        if (protocol == ControlProtocol::ONVIF && err == ConnectError::AUTH_FAILED) {
+            // A Hikvision camera with ONVIF disabled, or without an ONVIF user, answers 401 to
+            // ONVIF while its web account still works for ISAPI.
+            onvif_auth_err = result.err_msg;
+            continue;
+        }
+        if (err != ConnectError::NOT_THIS_PROTOCOL) {
+            // Unreachable, or the password is wrong: that says nothing about the protocol.
+            break;
+        }
+    }
+    if (!result.winner && !onvif_auth_err.empty()) {
+        result.err_msg = onvif_auth_err;
+    }
+    return result;
+}
+
+void ProtocolLock::setSetting(const std::string &setting) {
+    _fixed = controlProtocolFromString(setting);
+}
+
+void ProtocolLock::restore(ControlProtocol last) {
+    _last = last;
+    _locked = last != ControlProtocol::NONE;
+}
+
+void ProtocolLock::unlock() {
+    _locked = false;
+    _not_this_protocol_count = 0;
+}
+
+ControlProtocol ProtocolLock::fixedOrLocked() const {
+    if (_fixed != ControlProtocol::NONE) {
+        return _fixed;
+    }
+    return _locked ? _last : ControlProtocol::NONE;
+}
+
+bool ProtocolLock::onConnected(ControlProtocol protocol) {
+    bool changed = _last != ControlProtocol::NONE && _last != protocol;
+    _last = protocol;
+    _locked = true;
+    _not_this_protocol_count = 0;
+    return changed;
+}
+
+bool ProtocolLock::onConnectError(ConnectError err, int reprobe_failures) {
+    if (!isAuto()) {
+        // A fixed protocol is never swapped for another one, whatever the device answers.
+        return false;
+    }
+    if (err != ConnectError::NOT_THIS_PROTOCOL) {
+        _not_this_protocol_count = 0;
+        return false;
+    }
+    return ++_not_this_protocol_count >= std::max(1, reprobe_failures);
 }
 
 } // namespace managerkit

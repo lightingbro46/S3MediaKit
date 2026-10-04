@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <ctime>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -429,6 +430,61 @@ public:
     virtual SDCardInformation getSDCardInfo() { return SDCardInformation(); }
     virtual OnvifAudioOutputProfile getAudioOutputProfile() const { return OnvifAudioOutputProfile(); }
     virtual OnvifAudioInputProfile getAudioInputProfile() const { return OnvifAudioInputProfile(); }
+};
+
+// ── Protocol selection shared by every controller (camera, speaker) ─────────────────────────────
+
+// ONVIF → OnvifControl, PSIA → PsiaControl, ISAPI → IsapiControl, NONE → nullptr.
+CameraDeviceControl::Ptr makeDeviceControl(ControlProtocol protocol, const std::string &address,
+                                           const std::string &username, const std::string &password);
+
+// "onvif,isapi,psia" → protocols in that order. Unknown names and repeats are skipped; an empty
+// result falls back to ONVIF, ISAPI, PSIA.
+std::vector<ControlProtocol> parseProtocolOrder(const std::string &order_str);
+
+struct ProtocolProbeResult {
+    CameraDeviceControl::Ptr winner; // connected controller, null when none answered
+    std::string err_msg;             // why, when there is no winner
+};
+typedef std::function<CameraDeviceControl::Ptr(ControlProtocol)> DeviceControlFactory;
+// Blocking, for the device queue: connects the protocols of `order` in turn and returns the first
+// that connects. At most one controller is alive at a time: a loser is destroyed before the next is
+// created. Moves on only when the device said "not this protocol", or when ONVIF rejected the
+// credentials (a Hikvision camera with ONVIF off answers 401); the error reported then is ONVIF's.
+ProtocolProbeResult probeControlProtocols(const std::vector<ControlProtocol> &order,
+                                          const DeviceControlFactory &factory, const std::string &log_name);
+
+// Which protocol a device is controlled with, and when AUTO probes again. Plain data, no thread or
+// timer: the owner calls it on its own poller.
+class ProtocolLock {
+public:
+    // The controlProtocol option: AUTO|ONVIF|PSIA|ISAPI, anything else is AUTO.
+    void setSetting(const std::string &setting);
+    // Protocol the device connected with before a restart: an AUTO device starts locked to it.
+    void restore(ControlProtocol last);
+    // Forgets the lock (address, credentials or protocol setting changed; or the device stopped
+    // answering the locked protocol): AUTO probes on the next cycle.
+    void unlock();
+
+    bool isAuto() const { return _fixed == ControlProtocol::NONE; }
+    // Protocol to create the controller with directly; NONE means probe.
+    ControlProtocol fixedOrLocked() const;
+    // Protocol of the last successful connect, NONE before any.
+    ControlProtocol last() const { return _last; }
+
+    // A controller connected with `protocol`. True when it differs from the previous protocol: the
+    // owner drops the state that only made sense in the old one.
+    bool onConnected(ControlProtocol protocol);
+    // A connect() of the current controller failed. True when AUTO must unlock and probe again:
+    // `reprobe_failures` NOT_THIS_PROTOCOL in a row (any other failure resets the count). A fixed
+    // protocol never unlocks.
+    bool onConnectError(ConnectError err, int reprobe_failures);
+
+private:
+    ControlProtocol _fixed = ControlProtocol::NONE;
+    ControlProtocol _last = ControlProtocol::NONE;
+    bool _locked = false;
+    int _not_this_protocol_count = 0;
 };
 
 } // namespace managerkit
