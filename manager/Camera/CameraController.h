@@ -24,7 +24,7 @@ public:
 
     void setupController(const CameraOption &option);
 
-    // Protocol the camera was controlled with before ("ONVIF", "PSIA", "" = unknown), from the saved
+    // Protocol the camera was controlled with before ("ONVIF", "PSIA", "ISAPI", "" = unknown), from the saved
     // capabilities: an AUTO camera starts locked to it instead of probing. Call before setupController().
     void setLastControlProtocol(const std::string &protocol);
 

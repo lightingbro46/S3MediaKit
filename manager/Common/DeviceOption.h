@@ -15,7 +15,7 @@ struct DeviceOption {
     bool autoWebPort = true;
     std::string username;
     std::string password;
-    // Protocol the device is controlled with: "AUTO" | "ONVIF" | "PSIA". AUTO tries the protocols of
+    // Protocol the device is controlled with: "AUTO" | "ONVIF" | "PSIA" | "ISAPI". AUTO tries the protocols of
     // `camera.control_auto_order` and keeps the first one that answers.
     std::string controlProtocol = "AUTO";
 };
@@ -130,7 +130,7 @@ struct AudioVolumeInfo {
 struct DeviceCapabilities {
     // Controlled through ONVIF right now (SD card replay and audio backchannel need it).
     bool isOnvifDevice = false;
-    // Protocol the device is controlled with right now: "", "ONVIF" or "PSIA".
+    // Protocol the device is controlled with right now: "", "ONVIF", "PSIA" or "ISAPI".
     std::string controlProtocol;
     OnvifProfile onvifProfile;
     bool supportsSdCardPlayback = false;

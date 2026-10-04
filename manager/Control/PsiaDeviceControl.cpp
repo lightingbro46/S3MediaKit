@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
+#include <strings.h>
 #include <thread>
 #include "stdsoap2.h"
 #include "plugin/httpda.h"
@@ -26,6 +27,15 @@ static onceToken token([]() {
     mINI::Instance()[kRequestTimeoutMs] = 5000;
 });
 } // namespace PsiaCtrl
+
+namespace IsapiCtrl {
+#define ISAPI_CTRL_FIELD "isapi."
+const string kRequestTimeoutMs = ISAPI_CTRL_FIELD"request_timeout_ms";
+
+static onceToken token([]() {
+    mINI::Instance()[kRequestTimeoutMs] = 5000;
+});
+} // namespace IsapiCtrl
 
 namespace managerkit {
 
@@ -134,7 +144,7 @@ bool isResponseStatusOk(const ResponseStatus &status) {
     return status.statusCode == 1 || status.statusCode == 7;
 }
 
-bool parseDeviceInfo(const std::string &xml, OnvifDeviceInfo &out) {
+bool parseDeviceInfo(const std::string &xml, OnvifDeviceInfo &out, const std::string &default_manufacturer) {
     pugi::xml_document doc;
     if (!load(doc, xml)) {
         return false;
@@ -145,7 +155,7 @@ bool parseDeviceInfo(const std::string &xml, OnvifDeviceInfo &out) {
     }
     out.manufacturer = text(node, "manufacturer");
     if (out.manufacturer.empty()) {
-        out.manufacturer = text(node, "deviceName");
+        out.manufacturer = default_manufacturer.empty() ? text(node, "deviceName") : default_manufacturer;
     }
     if (out.manufacturer.empty()) {
         out.manufacturer = "PSIA";
@@ -165,8 +175,8 @@ std::string codecFromPsia(const std::string &psia) {
             up += static_cast<char>(toupper(static_cast<unsigned char>(c)));
         }
     }
-    if (up == "H264") return "H264";
-    if (up == "H265" || up == "HEVC") return "H265";
+    if (up == "H264" || up == "SMART264") return "H264";
+    if (up == "H265" || up == "HEVC" || up == "SMART265") return "H265";
     if (up == "MJPEG" || up == "JPEG") return "JPEG";
     if (up == "MPEG4") return "MPEG4";
     return psia;
@@ -189,7 +199,8 @@ static int bitrateOf(const pugi::xml_node &video) {
     return atoi((!first.empty() ? first : second).c_str());
 }
 
-static bool parseChannel(const pugi::xml_node &channel, const std::string &host, OnvifMediaProfile &profile) {
+static bool parseChannel(const pugi::xml_node &channel, const std::string &host, const std::string &rtsp_path,
+                         int default_rtsp_port, OnvifMediaProfile &profile) {
     pugi::xml_node video = child(channel, "Video");
     std::string id = text(channel, "id");
     if (!video || id.empty()) {
@@ -220,7 +231,7 @@ static bool parseChannel(const pugi::xml_node &channel, const std::string &host,
                        : acodec.find("AAC") != std::string::npos ? "AAC" : acodec;
     }
 
-    int rtsp_port = 554;
+    int rtsp_port = default_rtsp_port;
     pugi::xml_node transport = child(channel, "Transport");
     if (transport) {
         int port = atoi(text(transport, "rtspPortNo").c_str());
@@ -228,11 +239,12 @@ static bool parseChannel(const pugi::xml_node &channel, const std::string &host,
             rtsp_port = port;
         }
     }
-    profile.url = "rtsp://" + host + ":" + std::to_string(rtsp_port) + "/PSIA/Streaming/channels/" + id;
+    profile.url = "rtsp://" + host + ":" + std::to_string(rtsp_port) + rtsp_path + id;
     return true;
 }
 
-bool parseStreamingChannels(const std::string &xml, const std::string &host, OnvifMediaProfileMap &out) {
+bool parseStreamingChannels(const std::string &xml, const std::string &host, OnvifMediaProfileMap &out,
+                            const std::string &rtsp_path, int default_rtsp_port) {
     pugi::xml_document doc;
     if (!load(doc, xml)) {
         return false;
@@ -249,7 +261,7 @@ bool parseStreamingChannels(const std::string &xml, const std::string &host, Onv
     out.clear();
     for (const auto &channel : channels) {
         OnvifMediaProfile profile;
-        if (parseChannel(channel, host, profile)) {
+        if (parseChannel(channel, host, rtsp_path, default_rtsp_port, profile)) {
             out.push_back(profile);
         }
     }
@@ -509,6 +521,26 @@ std::string parseFirstPtzChannel(const std::string &xml) {
     return "";
 }
 
+int parseRtspPort(const std::string &xml) {
+    pugi::xml_document doc;
+    if (!load(doc, xml)) {
+        return 0;
+    }
+    std::vector<pugi::xml_node> entries;
+    findAll(root(doc), "AdminAccessProtocol", entries);
+    for (const auto &node : entries) {
+        std::string enabled = text(node, "enabled");
+        if (strcasecmp(text(node, "protocol").c_str(), "RTSP") != 0 || (!enabled.empty() && !isTrue(enabled))) {
+            continue;
+        }
+        int port = atoi(text(node, "portNo").c_str());
+        if (port > 0 && port < 65536) {
+            return port;
+        }
+    }
+    return 0;
+}
+
 ConnectError classifyConnectError(int http_status, int soap_error, bool is_device_info) {
     if (http_status == 0) {
         // No HTTP answer at all: refused, reset, timed out.
@@ -618,10 +650,46 @@ bool applyManualTime(const std::string &time_xml, time_t now, std::string &out, 
 
 using namespace psia_detail;
 
+const HttpXmlDialect &HttpXmlDialect::psia() {
+    static const HttpXmlDialect dialect = {
+        "PSIA",
+        &PsiaCtrl::kRequestTimeoutMs,
+        "/PSIA/System/deviceInfo",
+        "/PSIA/Streaming/channels",
+        "/PSIA/PTZ/channels",
+        "/PSIA/System/Video/inputs/channels",
+        "/PSIA/IO/outputs",
+        "/PSIA/System/time",
+        "/PSIA/Streaming/channels/",
+        "",
+    };
+    return dialect;
+}
+
+const HttpXmlDialect &HttpXmlDialect::isapi() {
+    static const HttpXmlDialect dialect = {
+        "ISAPI",
+        &IsapiCtrl::kRequestTimeoutMs,
+        "/ISAPI/System/deviceInfo",
+        "/ISAPI/Streaming/channels",
+        "/ISAPI/PTZCtrl/channels",
+        "/ISAPI/System/Video/inputs/channels",
+        "/ISAPI/System/IO/outputs",
+        "/ISAPI/System/time",
+        "/Streaming/Channels/",
+        // Hikvision's DeviceInfo has no manufacturer, and deviceName is whatever the user named it.
+        "Hikvision",
+    };
+    return dialect;
+}
+
 // ── PsiaControl ───────────────────────────────────────────────────────────────────────────────────
 
 PsiaControl::PsiaControl(std::string address, std::string username, std::string password)
-    : _address(std::move(address)), _username(std::move(username)), _password(std::move(password)) {
+    : PsiaControl(HttpXmlDialect::psia(), std::move(address), std::move(username), std::move(password)) {}
+
+PsiaControl::PsiaControl(const HttpXmlDialect &dialect, std::string address, std::string username, std::string password)
+    : _dialect(dialect), _address(std::move(address)), _username(std::move(username)), _password(std::move(password)) {
     _host = _address.substr(0, _address.rfind(':') == std::string::npos ? _address.size() : _address.rfind(':'));
 }
 
@@ -646,7 +714,7 @@ int PsiaControl::request(const char *method, const std::string &path, const std:
     _lastSoapError = 0;
     if (!_soap) {
         _soap = soap_new();
-        GET_CONFIG(int, timeout_ms, PsiaCtrl::kRequestTimeoutMs);
+        int timeout_ms = mINI::Instance()[*_dialect.timeoutKey].as<int>();
         // gSOAP takes negative values as microseconds.
         int timeout = timeout_ms > 0 ? -timeout_ms * 1000 : -5000000;
         _soap->connect_timeout = _soap->recv_timeout = _soap->send_timeout = timeout;
@@ -708,10 +776,10 @@ int PsiaControl::request(const char *method, const std::string &path, const std:
             continue;
         }
         if (status == 0) {
-            setError(std::string("PSIA ") + method + " " + path + " failed: soap error " + std::to_string(err));
+            setError(std::string(_dialect.name) + " " + method + " " + path + " failed: soap error " + std::to_string(err));
         } else if (status / 100 != 2) {
             ResponseStatus rs;
-            std::string err_msg = std::string("PSIA ") + method + " " + path + ": HTTP " + std::to_string(status);
+            std::string err_msg = std::string(_dialect.name) + " " + method + " " + path + ": HTTP " + std::to_string(status);
             if (parseResponseStatus(response, rs)) {
                 err_msg += " " + rs.statusString + " (" + rs.subStatusCode + ")";
             }
@@ -733,7 +801,7 @@ bool PsiaControl::put(const std::string &path, const std::string &body) {
     }
     ResponseStatus rs;
     if (parseResponseStatus(response, rs) && !isResponseStatusOk(rs)) {
-        setError("PSIA PUT " + path + ": " + rs.statusString + " (" + rs.subStatusCode + ")");
+        setError(std::string(_dialect.name) + " PUT " + path + ": " + rs.statusString + " (" + rs.subStatusCode + ")");
         return false;
     }
     return true;
@@ -741,11 +809,11 @@ bool PsiaControl::put(const std::string &path, const std::string &body) {
 
 bool PsiaControl::readDeviceInfo(OnvifDeviceInfo &info) {
     std::string xml;
-    if (!get("/PSIA/System/deviceInfo", xml)) {
+    if (!get(_dialect.deviceInfo, xml)) {
         return false;
     }
-    if (!parseDeviceInfo(xml, info)) {
-        setError("PSIA /PSIA/System/deviceInfo: the answer is not a DeviceInfo document");
+    if (!parseDeviceInfo(xml, info, _dialect.defaultManufacturer)) {
+        setError(std::string(_dialect.name) + " " + _dialect.deviceInfo + ": the answer is not a DeviceInfo document");
         return false;
     }
     return true;
@@ -753,16 +821,16 @@ bool PsiaControl::readDeviceInfo(OnvifDeviceInfo &info) {
 
 bool PsiaControl::readProfiles(OnvifMediaProfileMap &profiles) {
     std::string xml;
-    if (!get("/PSIA/Streaming/channels", xml)) {
+    if (!get(_dialect.channels, xml)) {
         return false;
     }
-    if (!parseStreamingChannels(xml, _host, profiles)) {
-        setError("PSIA /PSIA/Streaming/channels: the answer is not a StreamingChannelList");
+    if (!parseStreamingChannels(xml, _host, profiles, _dialect.rtspPath, defaultRtspPort())) {
+        setError(std::string(_dialect.name) + " " + _dialect.channels + ": the answer is not a StreamingChannelList");
         return false;
     }
     for (auto &profile : profiles) {
         std::string caps;
-        if (get("/PSIA/Streaming/channels/" + profile.token + "/capabilities", caps)) {
+        if (get(std::string(_dialect.channels) + "/" + profile.token + "/capabilities", caps)) {
             parseChannelCapabilities(caps, profile);
         }
     }
@@ -772,7 +840,8 @@ bool PsiaControl::readProfiles(OnvifMediaProfileMap &profiles) {
 void PsiaControl::readPtz() {
     std::string xml;
     std::string channel;
-    if (get("/PSIA/PTZ/channels", xml)) {
+    const std::string ptz_root = _dialect.ptzChannels;
+    if (get(ptz_root, xml)) {
         channel = parseFirstPtzChannel(xml);
     }
     PtzSpace space;
@@ -780,15 +849,15 @@ void PsiaControl::readPtz() {
     OnvifImageProfile image;
     if (!channel.empty()) {
         std::string caps;
-        if (get("/PSIA/PTZ/channels/" + channel + "/capabilities", caps)) {
+        if (get(ptz_root + "/" + channel + "/capabilities", caps)) {
             parsePtzCapabilities(caps, space, profile);
         }
         std::string presets;
-        if (get("/PSIA/PTZ/channels/" + channel + "/presets", presets) && parsePresets(presets, profile.presetMap)) {
+        if (get(ptz_root + "/" + channel + "/presets", presets) && parsePresets(presets, profile.presetMap)) {
             profile.isPresetEnable = true;
         }
         profile.isHomePresetEnable = profile.isAbsMoveEnable || profile.isRelMoveEnable || profile.isConsMoveEnable;
-        // PSIA has no capability flag for the lens: a camera with a PTZ channel gets focus and iris,
+        // PSIA/ISAPI have no capability flag for the lens: a camera with a PTZ channel gets focus and iris,
         // and a camera that rejects the command reports the error then.
         image.isFocusConsEnable = image.isFocusEnable = true;
         image.isIrisEnable = true;
@@ -805,7 +874,7 @@ void PsiaControl::readPtz() {
 void PsiaControl::readOutputs() {
     std::string xml;
     std::vector<OnvifRelayOutputProfile> outputs;
-    if (get("/PSIA/IO/outputs", xml)) {
+    if (get(_dialect.outputs, xml)) {
         parseOutputs(xml, outputs);
     }
     std::lock_guard<std::mutex> lck(_state_mtx);
@@ -818,7 +887,7 @@ bool PsiaControl::connect() {
     OnvifDeviceInfo info;
     if (!readDeviceInfo(info)) {
         _lastConnectError = classifyConnectError(_lastStatus, _lastSoapError, false);
-        WarnL << "PSIA connect to " << _address << " failed (" << connectErrorToString(_lastConnectError.load())
+        WarnL << _dialect.name << " connect to " << _address << " failed (" << connectErrorToString(_lastConnectError.load())
               << "): " << lastError();
         disconnect();
         return false;
@@ -826,7 +895,7 @@ bool PsiaControl::connect() {
     OnvifMediaProfileMap profiles;
     if (!readProfiles(profiles)) {
         _lastConnectError = ConnectError::OTHER;
-        WarnL << "PSIA connect to " << _address << " failed reading the streaming channels: " << lastError();
+        WarnL << _dialect.name << " connect to " << _address << " failed reading the streaming channels: " << lastError();
         disconnect();
         return false;
     }
@@ -839,7 +908,7 @@ bool PsiaControl::connect() {
     readOutputs();
     _lastConnectError = ConnectError::NONE;
     _connected = true;
-    InfoL << "PSIA device " << _address << ": " << info.manufacturer << " " << info.model << ", "
+    InfoL << _dialect.name << " device " << _address << ": " << info.manufacturer << " " << info.model << ", "
           << profiles.size() << " streaming channel(s)";
     return true;
 }
@@ -870,7 +939,7 @@ bool PsiaControl::probeConnection() {
         return false;
     }
     if (info != getDeviceInfo()) {
-        WarnL << "PSIA device " << _address << " reports a different identity than the one we connected to";
+        WarnL << _dialect.name << " device " << _address << " reports a different identity than the one we connected to";
         return false;
     }
     return true;
@@ -902,12 +971,12 @@ bool PsiaControl::refreshMediaProfiles() {
 
 bool PsiaControl::getVideoEncoderConfigByToken(const std::string &token, VideoEncoderConfig &config) {
     std::string xml;
-    if (!get("/PSIA/Streaming/channels/" + token, xml)) {
+    if (!get(std::string(_dialect.channels) + "/" + token, xml)) {
         return false;
     }
     OnvifMediaProfileMap profiles;
     if (!parseStreamingChannels(xml, _host, profiles) || profiles.empty()) {
-        setError("PSIA streaming channel " + token + " has no video");
+        setError(std::string(_dialect.name) + " streaming channel " + token + " has no video");
         return false;
     }
     const auto &profile = profiles.front();
@@ -922,13 +991,13 @@ bool PsiaControl::getVideoEncoderConfigByToken(const std::string &token, VideoEn
 
 bool PsiaControl::setVideoEncoderConfigByToken(const std::string &token, const VideoEncoderConfig &config) {
     std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
-    const std::string path = "/PSIA/Streaming/channels/" + token;
+    const std::string path = std::string(_dialect.channels) + "/" + token;
     std::string xml, updated;
     if (!get(path, xml)) {
         return false;
     }
     if (!applyVideoEncoderConfig(xml, config, updated)) {
-        setError("PSIA streaming channel " + token + " has no Video node");
+        setError(std::string(_dialect.name) + " streaming channel " + token + " has no Video node");
         return false;
     }
     return put(path, updated);
@@ -937,20 +1006,20 @@ bool PsiaControl::setVideoEncoderConfigByToken(const std::string &token, const V
 void PsiaControl::setCameraTimeManual() {
     std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     std::string xml, updated;
-    if (!get("/PSIA/System/time", xml)) {
+    if (!get(_dialect.time, xml)) {
         return;
     }
     time_t now = time(nullptr);
     time_t camera_utc = 0;
     if (!applyManualTime(xml, now, updated, camera_utc)) {
-        WarnL << "PSIA device " << _address << ": cannot read the camera time";
+        WarnL << _dialect.name << " device " << _address << ": cannot read the camera time";
         return;
     }
     if (std::llabs(static_cast<long long>(camera_utc - now)) < 10) {
         return;
     }
-    if (!put("/PSIA/System/time", updated)) {
-        WarnL << "PSIA device " << _address << ": set camera time failed: " << lastError();
+    if (!put(_dialect.time, updated)) {
+        WarnL << _dialect.name << " device " << _address << ": set camera time failed: " << lastError();
     }
 }
 
@@ -973,11 +1042,11 @@ bool PsiaControl::sendPtz(const std::string &sub, const std::string &body) {
         channel = _ptzChannel;
     }
     if (channel.empty()) {
-        setError("PSIA device has no PTZ channel");
+        setError(std::string(_dialect.name) + " device has no PTZ channel");
         return false;
     }
     onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
-    return put("/PSIA/PTZ/channels/" + channel + "/" + sub, body);
+    return put(std::string(_dialect.ptzChannels) + "/" + channel + "/" + sub, body);
 }
 
 static std::string num(float v) {
@@ -1048,15 +1117,15 @@ PtzMoveStatus PsiaControl::PTZ_GetStatus(float &pan, float &tilt, float &zoom) {
         space = _ptzSpace;
     }
     if (channel.empty()) {
-        setError("PSIA device has no PTZ channel");
+        setError(std::string(_dialect.name) + " device has no PTZ channel");
         return PtzMoveStatus::UNKNOWN;
     }
     std::string xml;
-    if (!get("/PSIA/PTZ/channels/" + channel + "/status", xml)) {
+    if (!get(std::string(_dialect.ptzChannels) + "/" + channel + "/status", xml)) {
         return PtzMoveStatus::UNKNOWN;
     }
     if (!parsePtzStatus(xml, space, pan, tilt, zoom)) {
-        setError("PSIA PTZ status has no absolute position");
+        setError(std::string(_dialect.name) + " PTZ status has no absolute position");
         return PtzMoveStatus::UNKNOWN;
     }
     // PSIA reports no movement state: a readable position is as good as ONVIF's IDLE.
@@ -1066,11 +1135,11 @@ PtzMoveStatus PsiaControl::PTZ_GetStatus(float &pan, float &tilt, float &zoom) {
 bool PsiaControl::PTZ_AuxiliaryCommand(const std::string &auxiliaryData) {
     int direction = auxiliaryData == "tt:Iris|open" ? 1 : auxiliaryData == "tt:Iris|close" ? -1 : 0;
     if (direction == 0) {
-        setError("PSIA does not support auxiliary command: " + auxiliaryData);
+        setError(std::string(_dialect.name) + " does not support auxiliary command: " + auxiliaryData);
         return false;
     }
     // ONVIF's iris auxiliary command is one step; PSIA moves the iris until told to stop.
-    const std::string path = "/PSIA/System/Video/inputs/channels/" + _videoInput + "/iris";
+    const std::string path = std::string(_dialect.videoInputs) + "/" + _videoInput + "/iris";
     onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
     if (!put(path, "<IrisData><iris>" + std::to_string(direction * 50) + "</iris></IrisData>")) {
         return false;
@@ -1099,12 +1168,12 @@ bool PsiaControl::enableIris() {
 bool PsiaControl::Imaging_FocusMove(float speed) {
     onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
     int value = static_cast<int>(std::lround(std::max(-1.0f, std::min(1.0f, speed)) * 100));
-    return put("/PSIA/System/Video/inputs/channels/" + _videoInput + "/focus",
+    return put(std::string(_dialect.videoInputs) + "/" + _videoInput + "/focus",
                "<FocusData><focus>" + std::to_string(value) + "</focus></FocusData>");
 }
 
 bool PsiaControl::Imaging_FocusStop() {
-    return put("/PSIA/System/Video/inputs/channels/" + _videoInput + "/focus", "<FocusData><focus>0</focus></FocusData>");
+    return put(std::string(_dialect.videoInputs) + "/" + _videoInput + "/focus", "<FocusData><focus>0</focus></FocusData>");
 }
 
 std::vector<OnvifRelayOutputProfile> PsiaControl::getRelayOutputProfiles() const {
@@ -1128,7 +1197,7 @@ bool PsiaControl::Relay_SetOutputState(const std::string &relayToken, bool activ
         }
     }
     onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
-    if (!put("/PSIA/IO/outputs/" + relayToken + "/trigger",
+    if (!put(std::string(_dialect.outputs) + "/" + relayToken + "/trigger",
              std::string("<IOPortData><outputState>") + (active ? "high" : "low") + "</outputState></IOPortData>")) {
         return false;
     }
@@ -1139,6 +1208,21 @@ bool PsiaControl::Relay_SetOutputState(const std::string &relayToken, bool activ
         }
     }
     return true;
+}
+
+// ── IsapiControl ──────────────────────────────────────────────────────────────────────────────────
+
+IsapiControl::IsapiControl(std::string address, std::string username, std::string password)
+    : PsiaControl(HttpXmlDialect::isapi(), std::move(address), std::move(username), std::move(password)) {}
+
+int IsapiControl::defaultRtspPort() {
+    std::string xml;
+    int port = get("/ISAPI/Security/adminAccesses", xml) ? parseRtspPort(xml) : 0;
+    if (port <= 0) {
+        DebugL << "ISAPI device " << _address << ": no RTSP port in adminAccesses, using 554";
+        return 554;
+    }
+    return port;
 }
 
 } // namespace managerkit

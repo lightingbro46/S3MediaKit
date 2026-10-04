@@ -355,7 +355,7 @@ struct SDCardInformation {
 using OnvifMediaProfileMap = std::vector<OnvifMediaProfile>;
 
 // Protocol a camera is controlled with. A camera is driven by at most one at a time.
-enum class ControlProtocol { NONE, ONVIF, PSIA };
+enum class ControlProtocol { NONE, ONVIF, PSIA, ISAPI };
 
 // Movement state reported by PTZ_GetStatus. UNKNOWN also means the status request failed.
 enum class PtzMoveStatus { IDLE, MOVING, UNKNOWN };
@@ -369,12 +369,12 @@ enum class ConnectError {
     OTHER
 };
 
-// "" for NONE, "ONVIF", "PSIA".
+// "" for NONE, "ONVIF", "PSIA", "ISAPI".
 const char *controlProtocolToString(ControlProtocol protocol);
 // Case-insensitive; anything else is NONE.
 ControlProtocol controlProtocolFromString(const std::string &str);
 const char *connectErrorToString(ConnectError err);
-// Normalizes a controlProtocol option: "ONVIF" or "PSIA" (any case), anything else is "AUTO".
+// Normalizes a controlProtocol option: "ONVIF", "PSIA" or "ISAPI" (any case), anything else is "AUTO".
 std::string controlProtocolSetting(const std::string &value);
 // Range "min ... max" in a few steps, as the encoder options report bitrates to the client.
 std::string bitrateRangeToString(int minBitrate, int maxBitrate);

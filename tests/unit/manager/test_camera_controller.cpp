@@ -1257,10 +1257,10 @@ public:
         return static_cast<int>(std::count(all.begin(), all.end(), event));
     }
     void setResult(ControlProtocol protocol, ConnectError err) {
-        (protocol == ControlProtocol::ONVIF ? _onvif : _psia) = static_cast<int>(err);
+        _results[static_cast<int>(protocol)] = static_cast<int>(err);
     }
     ConnectError result(ControlProtocol protocol) const {
-        return static_cast<ConnectError>((protocol == ControlProtocol::ONVIF ? _onvif : _psia).load());
+        return static_cast<ConnectError>(_results[static_cast<int>(protocol)].load());
     }
 
     std::atomic<int> live{0};
@@ -1268,8 +1268,11 @@ public:
 private:
     std::mutex _mtx;
     std::vector<std::string> _events;
-    std::atomic<int> _onvif{static_cast<int>(ConnectError::NONE)};
-    std::atomic<int> _psia{static_cast<int>(ConnectError::NONE)};
+    // Indexed by ControlProtocol. Not a Hikvision camera unless a test says so: ISAPI is not spoken.
+    std::atomic<int> _results[4] = {{static_cast<int>(ConnectError::NONE)},
+                                    {static_cast<int>(ConnectError::NONE)},
+                                    {static_cast<int>(ConnectError::NONE)},
+                                    {static_cast<int>(ConnectError::NOT_THIS_PROTOCOL)}};
 };
 
 class FakeProtocolControl : public CameraDeviceControl {
@@ -1490,19 +1493,55 @@ TEST_F(CameraProtocolTest, AutoFallsBackToPsiaOnlyAfterOnvifSaysNotThisProtocol)
     EXPECT_EQ(1, _world->count("connect PSIA live=1"));
 }
 
-TEST_F(CameraProtocolTest, AutoDoesNotTryPsiaWhenOnvifIsUnreachableOrRejectsThePassword) {
-    const ConnectError errors[] = {ConnectError::UNREACHABLE, ConnectError::AUTH_FAILED, ConnectError::OTHER};
+TEST_F(CameraProtocolTest, AutoDoesNotTryOtherProtocolsWhenOnvifIsUnreachable) {
+    const ConnectError errors[] = {ConnectError::UNREACHABLE, ConnectError::OTHER};
     setup("AUTO");
     for (auto err : errors) {
         _world->setResult(ControlProtocol::ONVIF, err);
         cycle();
     }
     auto events = _world->events();
-    EXPECT_EQ(3, _world->count("create ONVIF"));
+    EXPECT_EQ(2, _world->count("create ONVIF"));
+    EXPECT_FALSE(contains(events, "create ISAPI"));
     EXPECT_FALSE(contains(events, "create PSIA"));
     EXPECT_EQ(0, _world->live.load());
     EXPECT_EQ(ControlProtocol::NONE, current());
     EXPECT_FALSE(_controller->isReady());
+}
+
+// Hikvision with ONVIF disabled, or without an ONVIF user, answers 401 to ONVIF only.
+TEST_F(CameraProtocolTest, AutoTriesIsapiAfterOnvifRejectsThePassword) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::NONE);
+    setup("AUTO");
+    cycle();
+    auto events = _world->events();
+    EXPECT_LT(indexOf(events, "destroy ONVIF"), indexOf(events, "create ISAPI"));
+    EXPECT_EQ(1, _world->count("connect ISAPI live=1"));
+    EXPECT_FALSE(contains(events, "create PSIA"));
+    EXPECT_EQ(ControlProtocol::ISAPI, current());
+    EXPECT_TRUE(_controller->isReady());
+}
+
+TEST_F(CameraProtocolTest, AutoStopsWhenIsapiRejectsThePasswordAndReportsTheOnvifError) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::AUTH_FAILED);
+    setup("AUTO");
+    cycle();
+    auto events = _world->events();
+    EXPECT_EQ(1, _world->count("create ISAPI"));
+    EXPECT_FALSE(contains(events, "create PSIA")) << "a rejected password says nothing about the protocol";
+    EXPECT_TRUE(contains(events, "ready 0 ONVIF: AUTH_FAILED"));
+    EXPECT_EQ(ControlProtocol::NONE, current());
+}
+
+TEST_F(CameraProtocolTest, LockedOnvifStaysLockedWhenItRejectsThePassword) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::NONE);
+    setup("AUTO", "ONVIF");
+    for (int i = 0; i < 6; ++i) cycle();
+    EXPECT_FALSE(contains(_world->events(), "create ISAPI"));
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
 }
 
 TEST_F(CameraProtocolTest, AutoKeepsTheSavedProtocolWithoutProbing) {
@@ -1580,7 +1619,8 @@ TEST_F(CameraProtocolTest, CommandsDuringTheProbeReportTheDeviceOffline) {
 TEST(ControlProtocolSettingTest, UnknownValuesMeanAuto) {
     EXPECT_EQ("ONVIF", controlProtocolSetting("onvif"));
     EXPECT_EQ("PSIA", controlProtocolSetting("PSIA"));
+    EXPECT_EQ("ISAPI", controlProtocolSetting("isapi"));
     EXPECT_EQ("AUTO", controlProtocolSetting(""));
-    EXPECT_EQ("AUTO", controlProtocolSetting("ISAPI"));
+    EXPECT_EQ("AUTO", controlProtocolSetting("HIKVISION"));
     EXPECT_EQ("AUTO", controlProtocolSetting("AUTO"));
 }

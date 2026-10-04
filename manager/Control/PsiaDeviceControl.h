@@ -12,6 +12,11 @@ namespace PsiaCtrl {
 extern const std::string kRequestTimeoutMs;
 } // namespace PsiaCtrl
 
+namespace IsapiCtrl {
+// Timeout (milliseconds) of one ISAPI HTTP request: connect, send and receive each.
+extern const std::string kRequestTimeoutMs;
+} // namespace IsapiCtrl
+
 struct soap;
 struct http_da_info;
 
@@ -29,18 +34,21 @@ struct ResponseStatus {
 bool parseResponseStatus(const std::string &xml, ResponseStatus &out);
 bool isResponseStatusOk(const ResponseStatus &status);
 
-// DeviceInfo → OnvifDeviceInfo. False when the document is not a DeviceInfo.
-bool parseDeviceInfo(const std::string &xml, OnvifDeviceInfo &out);
+// DeviceInfo → OnvifDeviceInfo. False when the document is not a DeviceInfo. Without a
+// manufacturer node the manufacturer is `default_manufacturer`, or deviceName when that is empty.
+bool parseDeviceInfo(const std::string &xml, OnvifDeviceInfo &out, const std::string &default_manufacturer = "");
 
-// "H.264" → "H264", "H.265"/"H.265+" → "H265", "MJPEG" → "JPEG"; the ONVIF names the rest of the
-// server uses. Unknown names are returned unchanged.
+// "H.264"/"H.264+"/"Smart264" → "H264", "H.265"/"H.265+"/"Smart265" → "H265", "MJPEG" → "JPEG"; the
+// ONVIF names the rest of the server uses. Unknown names are returned unchanged.
 std::string codecFromPsia(const std::string &psia);
 // Inverse of codecFromPsia, for writing a channel back.
 std::string codecToPsia(const std::string &vcodec);
 
 // StreamingChannelList (or a single StreamingChannel) → one profile per channel that has video.
-// `host` is the camera IP the RTSP URL is built for.
-bool parseStreamingChannels(const std::string &xml, const std::string &host, OnvifMediaProfileMap &out);
+// The RTSP URL is rtsp://<host>:<port><rtsp_path><id>, port = the channel's rtspPortNo or else
+// `default_rtsp_port`.
+bool parseStreamingChannels(const std::string &xml, const std::string &host, OnvifMediaProfileMap &out,
+                            const std::string &rtsp_path = "/PSIA/Streaming/channels/", int default_rtsp_port = 554);
 
 // Encoder options from GET /PSIA/Streaming/channels/<id>/capabilities (opt=/min=/max= attributes).
 void parseChannelCapabilities(const std::string &xml, OnvifMediaProfile &profile);
@@ -76,6 +84,10 @@ bool parseOutputs(const std::string &xml, std::vector<OnvifRelayOutputProfile> &
 // First PTZ channel id of a PTZChannelList, empty when there is none.
 std::string parseFirstPtzChannel(const std::string &xml);
 
+// RTSP port of an ISAPI AdminAccessProtocolList (GET /ISAPI/Security/adminAccesses); 0 when it lists
+// no enabled RTSP entry.
+int parseRtspPort(const std::string &xml);
+
 // Classifies a failed GET /PSIA/System/deviceInfo. `http_status` is 0 when no HTTP answer came
 // back, `soap_error` is soap->error then; `is_device_info` tells whether a 200 carried a DeviceInfo.
 ConnectError classifyConnectError(int http_status, int soap_error, bool is_device_info);
@@ -89,6 +101,24 @@ bool parseLocalTime(const std::string &value, int default_offset, time_t &utc, b
 bool applyManualTime(const std::string &time_xml, time_t now, std::string &out, time_t &camera_utc);
 
 } // namespace psia_detail
+
+// What differs between the HTTP/XML protocols PsiaControl speaks: PSIA and its Hikvision offspring
+// ISAPI share the documents and the semantics, not the paths.
+struct HttpXmlDialect {
+    const char *name;                // "PSIA", for logs and error messages
+    const std::string *timeoutKey;   // config key of the request timeout
+    const char *deviceInfo;          // GET DeviceInfo
+    const char *channels;            // StreamingChannelList; "/<id>" and "/<id>/capabilities" below
+    const char *ptzChannels;         // PTZChannelList; "/<ch>/continuous|relative|..." below
+    const char *videoInputs;         // "/<ch>/focus|iris" below
+    const char *outputs;             // IOOutputPortList; "/<id>/trigger" below
+    const char *time;                // Time
+    const char *rtspPath;            // RTSP URL path before the channel id
+    const char *defaultManufacturer; // when DeviceInfo has no manufacturer; "" = deviceName
+
+    static const HttpXmlDialect &psia();
+    static const HttpXmlDialect &isapi();
+};
 
 // Camera control over PSIA (REST + XML under /PSIA, HTTP Digest with Basic fallback). Every call is
 // blocking and runs on the camera's device queue like OnvifControl. The cached capabilities are read
@@ -142,7 +172,13 @@ public:
     bool enableRelayOutput() override;
     bool Relay_SetOutputState(const std::string &relayToken, bool active) override;
 
-private:
+protected:
+    PsiaControl(const HttpXmlDialect &dialect, std::string address, std::string username, std::string password);
+
+    // RTSP port of the profile URLs when a channel does not report its own; called by connect()
+    // and refreshMediaProfiles() with the request lock held.
+    virtual int defaultRtspPort() { return 554; }
+
     // One HTTP exchange. Retries once with Digest credentials after a 401 challenge. Returns the HTTP
     // status (0 when the request did not complete) and sets _lastError on failure.
     int request(const char *method, const std::string &path, const std::string &body, std::string &response);
@@ -156,12 +192,13 @@ private:
     bool sendPtz(const std::string &sub, const std::string &body);
     void setError(const std::string &err);
 
-private:
+    const HttpXmlDialect &_dialect;
     std::string _address;     // ip[:port]
     std::string _host;        // ip
     std::string _username;
     std::string _password;
 
+private:
     // Serialises every request on the soap context; recursive because public calls nest.
     std::recursive_mutex _soap_mtx;
     struct soap *_soap = nullptr;
@@ -185,6 +222,22 @@ private:
 
     std::atomic<int> _isControlled {0};
     std::atomic<ConnectError> _lastConnectError {ConnectError::NONE};
+};
+
+// Camera control over Hikvision ISAPI (REST + XML under /ISAPI). ISAPI grew out of PSIA and keeps its
+// documents, so this is PsiaControl with the ISAPI paths; only the profile RTSP URL differs: the
+// channels do not report the RTSP port (read from /ISAPI/Security/adminAccesses instead) and the URL
+// is the rtsp://ip:port/Streaming/Channels/<id> form Hikvision users configure.
+class IsapiControl : public PsiaControl {
+public:
+    using Ptr = std::shared_ptr<IsapiControl>;
+
+    IsapiControl(std::string address, std::string username = "", std::string password = "");
+
+    ControlProtocol protocol() const override { return ControlProtocol::ISAPI; }
+
+protected:
+    int defaultRtspPort() override;
 };
 
 } // namespace managerkit

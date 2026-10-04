@@ -781,8 +781,9 @@ const string kAutoOrder = CAMERA_CONTROL_FIELD "control_auto_order";
 const string kReprobeFailures = CAMERA_CONTROL_FIELD "control_reprobe_failures";
 
 static onceToken token([]() {
-    // ONVIF first: every camera that worked before keeps working the same way.
-    mINI::Instance()[kAutoOrder] = "onvif,psia";
+    // ONVIF first: every camera that worked before keeps working the same way. ISAPI before PSIA:
+    // older Hikvision firmware answers both, and ISAPI is the more complete one.
+    mINI::Instance()[kAutoOrder] = "onvif,isapi,psia";
     // About 5 minutes at one reconnect per minute; a timeout or a rejected password never counts.
     mINI::Instance()[kReprobeFailures] = 5;
 });

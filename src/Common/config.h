@@ -1025,7 +1025,7 @@ extern const std::string kOnvifUsername;
 
 ////////////Camera control configuration///////////
 namespace CameraControl {
-// Protocols a camera with controlProtocol AUTO tries, in order, until one answers: "onvif,psia"
+// Protocols a camera with controlProtocol AUTO tries, in order, until one answers: "onvif,isapi,psia"
 extern const std::string kAutoOrder;
 // Connect failures of the "device does not speak this protocol" kind, in a row, after which a
 // camera locked by AUTO probes the protocols again

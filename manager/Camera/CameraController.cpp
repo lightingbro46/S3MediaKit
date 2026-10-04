@@ -26,6 +26,7 @@ CameraDeviceControl::Ptr CameraController::createDeviceControl(ControlProtocol p
     switch (protocol) {
         case ControlProtocol::ONVIF: return std::make_shared<OnvifControl>(address, username, password);
         case ControlProtocol::PSIA: return std::make_shared<PsiaControl>(address, username, password);
+        case ControlProtocol::ISAPI: return std::make_shared<IsapiControl>(address, username, password);
         default: return nullptr;
     }
 }
@@ -349,7 +350,7 @@ void CameraController::publishConnected(const CameraDeviceControl::Ptr &device_c
 }
 
 // Protocols AUTO tries, from camera.control_auto_order; unknown names are skipped, an empty list
-// falls back to ONVIF then PSIA.
+// falls back to ONVIF, ISAPI, PSIA.
 static std::vector<ControlProtocol> autoProtocolOrder() {
     GET_CONFIG(string, order_str, CameraControl::kAutoOrder);
     std::vector<ControlProtocol> order;
@@ -361,6 +362,7 @@ static std::vector<ControlProtocol> autoProtocolOrder() {
     }
     if (order.empty()) {
         order.push_back(ControlProtocol::ONVIF);
+        order.push_back(ControlProtocol::ISAPI);
         order.push_back(ControlProtocol::PSIA);
     }
     return order;
@@ -381,6 +383,8 @@ void CameraController::startProtocolProbe() {
         }
         CameraDeviceControl::Ptr winner;
         std::string err_msg = "No control protocol answered";
+        // Set when ONVIF rejected the credentials: the error reported if no other protocol connects.
+        std::string onvif_auth_err;
         for (auto protocol : order) {
             auto device_ctr = self->createDeviceControl(protocol, address, username, password);
             if (!device_ctr) {
@@ -396,10 +400,19 @@ void CameraController::startProtocolProbe() {
                   << " (" << address << "): " << connectErrorToString(err);
             // Destroyed before the next protocol is tried: never two controllers on one camera.
             device_ctr.reset();
+            if (protocol == ControlProtocol::ONVIF && err == ConnectError::AUTH_FAILED) {
+                // A Hikvision camera with ONVIF disabled, or without an ONVIF user, answers 401 to
+                // ONVIF while its web account still works for ISAPI.
+                onvif_auth_err = err_msg;
+                continue;
+            }
             if (err != ConnectError::NOT_THIS_PROTOCOL) {
                 // Unreachable, or the password is wrong: that says nothing about the protocol.
                 break;
             }
+        }
+        if (!winner && !onvif_auth_err.empty()) {
+            err_msg = onvif_auth_err;
         }
         if (winner && self->_ctrl_generation.load() != generation) {
             winner.reset(); // the option changed meanwhile

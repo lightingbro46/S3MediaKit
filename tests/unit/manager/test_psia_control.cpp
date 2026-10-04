@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include "Control/OnvifDeviceControl.h"
@@ -297,21 +298,55 @@ TEST(PsiaConnectErrorTest, OnlyAClearNonPsiaAnswerIsNotThisProtocol) {
     EXPECT_EQ(ConnectError::NONE, classifyConnectError(200, 0, true));
 }
 
-// Against tests/integration/stress_vms/psia_mock.py; skipped unless PSIA_MOCK_ADDR=ip:port is set.
-TEST(PsiaMockTest, ConnectReadWritePtzAndRelay) {
-    const char *addr = getenv("PSIA_MOCK_ADDR");
-    if (!addr || !*addr) {
-        GTEST_SKIP() << "PSIA_MOCK_ADDR not set";
-    }
-    PsiaControl wrong(addr, "admin", "wrong-password");
-    EXPECT_FALSE(wrong.connect());
-    EXPECT_EQ(ConnectError::AUTH_FAILED, wrong.lastConnectError());
+// Hikvision ISAPI documents: Hikvision namespace, no manufacturer, no rtspPortNo in the channels.
+TEST(IsapiParseTest, HikvisionDocuments) {
+    const std::string info =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<DeviceInfo version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">"
+        "<deviceName>Front door</deviceName><deviceID>48443830-3637</deviceID><model>DS-2CD2143G2-I</model>"
+        "<serialNumber>DS-2CD2143G2-I20220101AAWRJ00000001</serialNumber><macAddress>bc:ba:c2:00:00:01</macAddress>"
+        "<firmwareVersion>V5.7.3</firmwareVersion><deviceType>IPCamera</deviceType></DeviceInfo>";
+    OnvifDeviceInfo out;
+    ASSERT_TRUE(parseDeviceInfo(info, out, "Hikvision"));
+    EXPECT_EQ("Hikvision", out.manufacturer);
+    EXPECT_EQ("DS-2CD2143G2-I", out.model);
+    ASSERT_TRUE(parseDeviceInfo(info, out));
+    EXPECT_EQ("Front door", out.manufacturer) << "PSIA keeps the deviceName fallback";
 
-    PsiaControl ctr(addr, "admin", "admin123");
-    ASSERT_TRUE(ctr.connect()) << ctr.lastError();
-    EXPECT_TRUE(ctr.isConnected());
-    EXPECT_TRUE(ctr.probeConnection());
-    EXPECT_EQ("PSIA-MOCK-1", ctr.getDeviceInfo().model);
+    const std::string channels =
+        "<StreamingChannelList version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">"
+        "<StreamingChannel><id>101</id><channelName>Camera 01</channelName><enabled>true</enabled>"
+        "<Transport><maxPacketSize>1000</maxPacketSize></Transport>"
+        "<Video><enabled>true</enabled><videoCodecType>H.265</videoCodecType>"
+        "<videoResolutionWidth>2560</videoResolutionWidth><videoResolutionHeight>1440</videoResolutionHeight>"
+        "<videoQualityControlType>VBR</videoQualityControlType><vbrUpperCap>4096</vbrUpperCap>"
+        "<maxFrameRate>2000</maxFrameRate><SmartCodec><enabled>false</enabled></SmartCodec></Video>"
+        "</StreamingChannel></StreamingChannelList>";
+    OnvifMediaProfileMap profiles;
+    ASSERT_TRUE(parseStreamingChannels(channels, "10.0.0.5", profiles, "/Streaming/Channels/", 10554));
+    ASSERT_EQ(1u, profiles.size());
+    EXPECT_EQ("rtsp://10.0.0.5:10554/Streaming/Channels/101", profiles[0].url);
+    EXPECT_EQ("H265", profiles[0].vcodec);
+    EXPECT_EQ(4096, profiles[0].bitrate);
+    EXPECT_FLOAT_EQ(20.0f, profiles[0].fps);
+
+    const std::string access =
+        "<AdminAccessProtocolList xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">"
+        "<AdminAccessProtocol><id>1</id><enabled>true</enabled><protocol>HTTP</protocol><portNo>80</portNo></AdminAccessProtocol>"
+        "<AdminAccessProtocol><id>4</id><enabled>true</enabled><protocol>RTSP</protocol><portNo>10554</portNo></AdminAccessProtocol>"
+        "</AdminAccessProtocolList>";
+    EXPECT_EQ(10554, parseRtspPort(access));
+    EXPECT_EQ(0, parseRtspPort("<AdminAccessProtocolList><AdminAccessProtocol><protocol>RTSP</protocol>"
+                               "<enabled>false</enabled><portNo>554</portNo></AdminAccessProtocol></AdminAccessProtocolList>"));
+    EXPECT_EQ(0, parseRtspPort("<html/>"));
+
+    EXPECT_EQ("H264", codecFromPsia("Smart264"));
+    EXPECT_EQ("H265", codecFromPsia("Smart265"));
+    EXPECT_EQ("H264", codecFromPsia("H.264+"));
+}
+
+// The read/write/PTZ/relay sequence both dialects of psia_mock.py support; `ctr` is connected.
+static void exerciseMockCamera(PsiaControl &ctr) {
     auto profiles = ctr.getMediaProfilesInfo();
     ASSERT_EQ(2u, profiles.size());
     EXPECT_FALSE(profiles[0].vEncoderOptionMap.empty());
@@ -348,6 +383,58 @@ TEST(PsiaMockTest, ConnectReadWritePtzAndRelay) {
     EXPECT_TRUE(ctr.Relay_SetOutputState("1", true));
     EXPECT_FALSE(ctr.Relay_SetOutputState("9", true));
     ctr.setCameraTimeManual();
+}
+
+// Against tests/integration/stress_vms/psia_mock.py; skipped unless PSIA_MOCK_ADDR=ip:port is set.
+TEST(PsiaMockTest, ConnectReadWritePtzAndRelay) {
+    const char *addr = getenv("PSIA_MOCK_ADDR");
+    if (!addr || !*addr) {
+        GTEST_SKIP() << "PSIA_MOCK_ADDR not set";
+    }
+    PsiaControl wrong(addr, "admin", "wrong-password");
+    EXPECT_FALSE(wrong.connect());
+    EXPECT_EQ(ConnectError::AUTH_FAILED, wrong.lastConnectError());
+
+    PsiaControl ctr(addr, "admin", "admin123");
+    ASSERT_TRUE(ctr.connect()) << ctr.lastError();
+    EXPECT_TRUE(ctr.isConnected());
+    EXPECT_TRUE(ctr.probeConnection());
+    EXPECT_EQ("PSIA-MOCK-1", ctr.getDeviceInfo().model);
+    EXPECT_EQ(ControlProtocol::PSIA, ctr.protocol());
+    exerciseMockCamera(ctr);
+
+    // A PSIA camera has nothing under /ISAPI: AUTO moves on.
+    IsapiControl isapi(addr, "admin", "admin123");
+    EXPECT_FALSE(isapi.connect());
+    EXPECT_EQ(ConnectError::NOT_THIS_PROTOCOL, isapi.lastConnectError()) << isapi.lastError();
+}
+
+// Against psia_mock.py --dialect isapi --rtsp-port 8554; skipped unless ISAPI_MOCK_ADDR=ip:port is set.
+TEST(IsapiMockTest, ConnectReadWritePtzAndRelay) {
+    const char *addr = getenv("ISAPI_MOCK_ADDR");
+    if (!addr || !*addr) {
+        GTEST_SKIP() << "ISAPI_MOCK_ADDR not set";
+    }
+    IsapiControl wrong(addr, "admin", "wrong-password");
+    EXPECT_FALSE(wrong.connect());
+    EXPECT_EQ(ConnectError::AUTH_FAILED, wrong.lastConnectError());
+
+    IsapiControl ctr(addr, "admin", "admin123");
+    ASSERT_TRUE(ctr.connect()) << ctr.lastError();
+    EXPECT_TRUE(ctr.probeConnection());
+    EXPECT_EQ(ControlProtocol::ISAPI, ctr.protocol());
+    EXPECT_EQ("Hikvision", ctr.getDeviceInfo().manufacturer);
+    EXPECT_EQ("DS-2DE4425IW-DE", ctr.getDeviceInfo().model);
+    auto profiles = ctr.getMediaProfilesInfo();
+    ASSERT_EQ(2u, profiles.size());
+    // Port from /ISAPI/Security/adminAccesses: the mock's channels do not report one.
+    const std::string host(addr, strchr(addr, ':') ? strchr(addr, ':') - addr : strlen(addr));
+    EXPECT_EQ("rtsp://" + host + ":8554/Streaming/Channels/101", profiles[0].url);
+    exerciseMockCamera(ctr);
+
+    PsiaControl psia(addr, "admin", "admin123");
+    EXPECT_FALSE(psia.connect());
+    EXPECT_EQ(ConnectError::NOT_THIS_PROTOCOL, psia.lastConnectError()) << psia.lastError();
 }
 
 // A web server that is not PSIA (here: nothing under /PSIA) is NOT_THIS_PROTOCOL, so AUTO moves on.

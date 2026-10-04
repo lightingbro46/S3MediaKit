@@ -8,6 +8,7 @@ const char *controlProtocolToString(ControlProtocol protocol) {
     switch (protocol) {
         case ControlProtocol::ONVIF: return "ONVIF";
         case ControlProtocol::PSIA: return "PSIA";
+        case ControlProtocol::ISAPI: return "ISAPI";
         default: return "";
     }
 }
@@ -18,6 +19,9 @@ ControlProtocol controlProtocolFromString(const std::string &str) {
     }
     if (strcasecmp(str.c_str(), "PSIA") == 0) {
         return ControlProtocol::PSIA;
+    }
+    if (strcasecmp(str.c_str(), "ISAPI") == 0) {
+        return ControlProtocol::ISAPI;
     }
     return ControlProtocol::NONE;
 }
