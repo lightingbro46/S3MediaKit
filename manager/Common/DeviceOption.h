@@ -15,6 +15,9 @@ struct DeviceOption {
     bool autoWebPort = true;
     std::string username;
     std::string password;
+    // Protocol the device is controlled with: "AUTO" | "ONVIF" | "PSIA" | "ISAPI". AUTO tries the protocols of
+    // `camera.control_auto_order` and keeps the first one that answers.
+    std::string controlProtocol = "AUTO";
 };
 
 struct ControllerOption {
@@ -25,6 +28,7 @@ struct ControllerOption {
     bool autoWebPort = true;
     std::string username;
     std::string password;
+    std::string controlProtocol = "AUTO";
 
     static ControllerOption from(const DeviceOption &o) {
         ControllerOption c;
@@ -35,6 +39,7 @@ struct ControllerOption {
         c.autoWebPort  = o.autoWebPort;
         c.username     = o.username;
         c.password     = o.password;
+        c.controlProtocol = o.controlProtocol;
         return c;
     }
 
@@ -45,7 +50,8 @@ struct ControllerOption {
             && webPort      == o.webPort
             && autoWebPort  == o.autoWebPort
             && username     == o.username
-            && password     == o.password;
+            && password     == o.password
+            && controlProtocol == o.controlProtocol;
     }
     bool operator!=(const ControllerOption &o) const { return !(*this == o); }
 };
@@ -122,7 +128,10 @@ struct AudioVolumeInfo {
 };
 
 struct DeviceCapabilities {
+    // Controlled through ONVIF right now (SD card replay and audio backchannel need it).
     bool isOnvifDevice = false;
+    // Protocol the device is controlled with right now: "", "ONVIF", "PSIA" or "ISAPI".
+    std::string controlProtocol;
     OnvifProfile onvifProfile;
     bool supportsSdCardPlayback = false;
     bool supportsAudioBackchannel = false;
@@ -131,6 +140,7 @@ struct DeviceCapabilities {
 
     bool operator==(const DeviceCapabilities &o) const {
         return isOnvifDevice == o.isOnvifDevice
+            && controlProtocol == o.controlProtocol
             && onvifProfile == o.onvifProfile
             && supportsSdCardPlayback == o.supportsSdCardPlayback
             && supportsAudioBackchannel == o.supportsAudioBackchannel

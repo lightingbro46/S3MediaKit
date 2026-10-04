@@ -2,6 +2,7 @@
 #define CAMERA_CAMERACONTROLLER_H
 
 #include "GenericRtspCamera.h"
+#include "Control/DeviceControl.h"
 #include "Control/OnvifDeviceControl.h"
 #include "Common/SerialTaskQueue.h"
 
@@ -22,6 +23,15 @@ public:
     bool isReady() const;
 
     void setupController(const CameraOption &option);
+
+    // Protocol the camera was controlled with before ("ONVIF", "PSIA", "ISAPI", "" = unknown), from the saved
+    // capabilities: an AUTO camera starts locked to it instead of probing. Call before setupController().
+    void setLastControlProtocol(const std::string &protocol);
+
+    // Owner poller. Runs the reconnect cycle now instead of at the next interval, also while the
+    // camera is waiting out a rejected password (camera.control_auth_retry_sec), and reports the
+    // outcome of that attempt: for a client that just changed the password on the camera itself.
+    void reconnectNow(const ReconnectCallback &cb);
 
     void stopController();
     
@@ -84,9 +94,10 @@ public:
     bool reportRuleFailureIfPending(const std::string &profileToken, const std::string &err_code, const std::string &err_msg);
 
 protected:
-    // Creates the device control for `address`; unit tests override it to return a fake device.
-    virtual OnvifControl::Ptr createOnvifControl(const std::string &address, const std::string &username,
-                                                 const std::string &password);
+    // Creates the device control of `protocol` for `address` (null when the protocol is not
+    // supported); unit tests override it to return a fake device.
+    virtual DeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &address,
+                                                         const std::string &username, const std::string &password);
 
 private:
     friend class CameraControllerTestPeer; // unit tests drive the media profile sync directly
@@ -95,7 +106,31 @@ private:
 
     void onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps);
 
-    // Error for a command that needs the ONVIF controller while it is not connected: says why the
+    // ── Control protocol selection (all on _poller unless noted) ──
+    // AUTO without a lock: tries the protocols of camera.control_auto_order in one device task, keeping
+    // at most one controller alive, and hands the first that connects to onProbeDone.
+    void startProtocolProbe();
+    void onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
+                     ConnectError err, DeviceFailure failure,
+                     const DeviceClockReading &clock);
+    // Result of a connect() of the current controller: locks the protocol, or counts the failures that
+    // say the camera no longer speaks it (AUTO only).
+    void onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err);
+    // A controller connected with `protocol`: drops the profile/rule/preset state of the previous
+    // protocol when it differs, then locks AUTO to it.
+    void onProtocolConnected(ControlProtocol protocol);
+    // Feeds the pacer the result of a connect attempt; logs when the credentials start being rejected.
+    void onAuthResult(ConnectError err);
+    // Drops the current controller so that the next cycle probes the protocols again.
+    void unlockProtocol(const std::string &reason);
+    // Answers the reconnectNow() requests waiting for the attempt that just ended.
+    void finishReconnect(const ReconnectResult &result);
+    // Device queue: hands `result` to finishReconnect() on _poller.
+    void postReconnectResult(const ReconnectResult &result);
+    // Device queue: the work after a successful connect() — clock, profile sync, capabilities, events.
+    // `sync_clock`: set the camera clock first (onvif.clockSyncEnable and the camera's enableTimeSync).
+    void publishConnected(const DeviceControl::Ptr &device_ctr, bool sync_clock);
+    // Error for a command that needs the controller while it is not connected: says why the
     // last connect failed (credentials, network) when known, else CODE_DEVICE_OFFLINE.
     toolkit::SockException controllerNotReady() const;
 
@@ -110,8 +145,8 @@ private:
         bool is_rule = false;          // decision came from _ruleConfigMap, not _profileConfigMap
     };
     // Device queue: reads the profiles and hands them to applyMediaProfileSync on _poller.
-    void syncMediaProfile(const OnvifControl::Ptr &onvif_ctr);
-    void applyMediaProfileSync(const OnvifControl::Ptr &onvif_ctr, const OnvifMediaProfileMap &profiles);
+    void syncMediaProfile(const DeviceControl::Ptr &device_ctr);
+    void applyMediaProfileSync(const DeviceControl::Ptr &device_ctr, const OnvifMediaProfileMap &profiles);
     // _poller: stores a set result unless the entry changed meanwhile (e.g. setMediaProfileAsync).
     // `err_msg` carries the SOAP error of a failed set, reported for rule requests.
     void storeProfileSetResult(const ProfileSetRequest &request, bool ok, const std::string &err_msg = "");
@@ -155,14 +190,26 @@ private:
     uint64_t _ptz_generation = 0;
     std::atomic<bool> _ready { false };
     std::string _err_msg;
-    uint64_t _last_reconnect_time = 0;
+    // When the reconnect cycle runs next; slowed down while the camera rejects the credentials.
+    ReconnectPacer _pacer;
+    std::vector<ReconnectCallback> _reconnect_waiters;
     // Last time the maintenance cycle re-read the media profiles of this camera, and last time it
     // checked the camera clock; only touched on _poller. See OnvifCtrl::kProfileResyncIntervalSec
     // and OnvifCtrl::kClockSyncIntervalSec.
     uint64_t _last_profile_resync = 0;
     uint64_t _last_clock_sync = 0;
     toolkit::Timer::Ptr _timer_ctr;
-    OnvifControl::Ptr _onvif_ctr;
+    // The one controller of this camera, whatever its protocol; only set or reset on _poller.
+    DeviceControl::Ptr _device_ctr;
+    // setupController() accepted an address: there is a controller, or an AUTO probe to run.
+    bool _configured = false;
+    // Fixed protocol of the option, or the one AUTO locked to (restored by setLastControlProtocol).
+    ProtocolLock _lock;
+    bool _probing = false;
+    // lastFailure() of the controller the last failed AUTO probe reported; read when there is no controller.
+    DeviceFailure _probe_failure = DeviceFailure::None;
+    // Bumped whenever the controller is replaced, so a probe started for an older one is dropped.
+    std::atomic<uint64_t> _ctrl_generation { 0 };
     std::string _address;
     ControllerOption _ctrl_option;
     int _ptzMode = CameraOption::kPTZModeAuto;

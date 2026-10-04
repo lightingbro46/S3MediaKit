@@ -1,8 +1,12 @@
 #include "CameraController.h"
 #include "Common/BlockingExecutors.h"
 #include "server/WebApiErrCode.h"
+#include "Common/DeviceFailureCode.h"
 #include "Local/MediaGapFillManager.h"
 #include "Util/onceToken.h"
+#include "Util/util.h"
+#include "Common/config.h"
+#include <algorithm>
 
 using namespace std;
 using namespace toolkit;
@@ -13,57 +17,35 @@ namespace managerkit {
 // Posts a device task after a delay; `on_cancel` runs instead if the task no longer applies.
 using DelayedDeviceTask = function<void(int delay_ms, const function<void()> &task, const function<void()> &on_cancel)>;
 
-// A device command that failed because of the network or the credentials reports that, so the UI
-// can tell the user what to fix; any other failure keeps the command's own code.
-static ApiErrCode failureCode(DeviceFailure failure, ApiErrCode fallback) {
-    switch (failure) {
-        case DeviceFailure::Unauthorized: return ApiErrCode::CODE_DEVICE_UNAUTHORIZED;
-        case DeviceFailure::AuthMethodUnsupported: return ApiErrCode::CODE_DEVICE_AUTH_METHOD_NOT_ALLOWED;
-        case DeviceFailure::Unreachable: return ApiErrCode::CODE_DEVICE_UNREACHABLE;
-        case DeviceFailure::Timeout: return ApiErrCode::CODE_DEVICE_TIMEOUT;
-        case DeviceFailure::ClockSkew: return ApiErrCode::CODE_DEVICE_CLOCK_SKEW;
-        default: return fallback;
-    }
-}
-
-static ApiErrCode failureCode(const OnvifControl::Ptr &ptr, ApiErrCode fallback) {
-    return failureCode(ptr->lastFailure(), fallback);
+static ApiErrCode failureCode(const DeviceControl::Ptr &ptr, ApiErrCode fallback) {
+    return deviceFailureCode(ptr->lastFailure(), fallback);
 }
 
 std::function<DeviceClockReading()> CameraController::clockReader() const {
-    auto onvif_ctr = _onvif_ctr;
-    if (!onvif_ctr) {
+    auto device_ctr = _device_ctr;
+    if (!device_ctr) {
         return nullptr;
     }
     // Only reads atomics, so the caller may run it on any thread.
-    return [onvif_ctr]() { return onvif_ctr->clockReading(); };
+    return [device_ctr]() { return device_ctr->clockReading(); };
 }
 
 SockException CameraController::controllerNotReady() const {
-    const auto failure = _onvif_ctr ? _onvif_ctr->lastFailure() : DeviceFailure::None;
-    const char *reason = nullptr;
-    switch (failure) {
-        case DeviceFailure::Unauthorized: reason = "device rejected the username or password"; break;
-        case DeviceFailure::AuthMethodUnsupported: reason = "device only offers HTTP Basic authentication"; break;
-        case DeviceFailure::Unreachable: reason = "device unreachable"; break;
-        case DeviceFailure::Timeout: reason = "device did not respond"; break;
-        case DeviceFailure::ClockSkew: reason = "device clock is out of sync with the server"; break;
-        default: break;
-    }
-    string msg = "Device controller is not ready";
-    if (reason) {
-        msg += string(": ") + reason;
-    }
-    return SockException(Err_other, msg, failureCode(failure, ApiErrCode::CODE_DEVICE_OFFLINE));
+    return deviceNotReadyError(_device_ctr ? _device_ctr->lastFailure() : _probe_failure);
 }
 
 CameraController::CameraController(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller)
     : _tuple(tuple), _poller(poller),
       _device_queue(std::make_shared<SerialTaskQueue>(BlockingExecutors::device(), "camera " + tuple.shortUrl())) {}
 
-OnvifControl::Ptr CameraController::createOnvifControl(const std::string &address, const std::string &username,
-                                                       const std::string &password) {
-    return std::make_shared<OnvifControl>(address, username, password);
+DeviceControl::Ptr CameraController::createDeviceControl(ControlProtocol protocol, const std::string &address,
+                                                               const std::string &username, const std::string &password) {
+    return makeDeviceControl(protocol, address, username, password);
+}
+
+// Only ONVIF provides the SD card replay that MediaGapFillManager drives.
+static OnvifControl::Ptr asOnvif(const DeviceControl::Ptr &ctr) {
+    return std::dynamic_pointer_cast<OnvifControl>(ctr);
 }
 
 void CameraController::postDeviceTask(SerialTaskQueue::Task task) {
@@ -135,7 +117,7 @@ void CameraController::setupController(const CameraOption &option) {
     // Caller: GenericRtspCameraImp::setupController() via setCameraOption() which asserts isCurrentThread.
     CHECK(_poller->isCurrentThread(), "setupController must be called on the owner poller");
 
-    if (_onvif_ctr) {
+    if (_configured) {
         if (ControllerOption::from(option) == _ctrl_option) {
             const auto sync_config = SdCardSyncConfig::from(option);
             const bool sync_config_changed =
@@ -155,7 +137,7 @@ void CameraController::setupController(const CameraOption &option) {
             if (sync_config_changed) {
                 MediaGapFillManager::Instance().onManager(
                     _tuple.device_id, _ctrl_option.username, _ctrl_option.password,
-                    _onvif_ctr, _sd_sync_config, _ready.load());
+                    asOnvif(_device_ctr), _sd_sync_config, _ready.load());
             }
             DebugL << "Controller of device: " << _tuple.shortUrl() << " connection unchanged, updated PTZ settings in-place";
             return;
@@ -164,8 +146,21 @@ void CameraController::setupController(const CameraOption &option) {
         MediaGapFillManager::Instance().onManager(
             _tuple.device_id, std::string(), std::string(), nullptr,
             _sd_sync_config, false);
-        _onvif_ctr.reset();
         _ready = false;
+        if (controlProtocolSetting(option.controlProtocol) != controlProtocolSetting(_ctrl_option.controlProtocol)) {
+            // Nothing may keep using the old protocol's controller once the switch is published.
+            onControllerReady(false, "Control protocol changed", nullptr);
+        }
+        _device_ctr.reset();
+        _configured = false;
+        // A changed address or credentials may mean another protocol now: AUTO probes again.
+        _lock.unlock();
+        _probing = false;
+        _pacer.reset();
+        ++_ctrl_generation;
+        ReconnectResult pending;
+        pending.msg = "Device settings changed, connecting with the new settings";
+        finishReconnect(pending);
     }
 
     if (option.manufacturer == GENERIC_RTSP_CAMERA && option.ip.empty()) {
@@ -185,17 +180,10 @@ void CameraController::setupController(const CameraOption &option) {
         address += ":" + (option.webPort > 0 ? to_string(option.webPort) : "80");
     }
 
-    // create new controller, currently only support onvif controller
-    // todo: create plugin from manufactor and model
-    // todo: support PSI controller
-    _onvif_ctr = createOnvifControl(address, option.username, option.password);
-    DebugL << "Created Onvif controller for device: " << _tuple.shortUrl() << " (" << address << ")"
-        << ", username: " << (option.username.empty() ? "empty" : "******")
-        << ", password: " << (option.password.empty() ? "empty" : "******");
-
     // save controller option and PTZ settings for later use
     _address      = address;
     _ctrl_option  = ControllerOption::from(option);
+    _lock.setSetting(option.controlProtocol);
     _enablePTZControl = option.enablePTZControl;
     _enableTimeSync   = option.enableTimeSync;
     _reversePanAxis   = option.reversePanAxis;
@@ -204,6 +192,25 @@ void CameraController::setupController(const CameraOption &option) {
     _ptzSpeed         = option.ptzSpeed;
     _sd_sync_config   = SdCardSyncConfig::from(option);
     _keepConfigProfileAndStream = option.keepConfigProfileAndStream;
+    _configured = true;
+
+    // One controller, one protocol: the fixed one, or the one AUTO locked to. An AUTO camera without
+    // a lock gets its controller from the probe in onManager().
+    // todo: create plugin from manufactor and model
+    ControlProtocol protocol = _lock.fixedOrLocked();
+    if (protocol != ControlProtocol::NONE) {
+        _device_ctr = createDeviceControl(protocol, address, option.username, option.password);
+    }
+    DebugL << "Controller of device: " << _tuple.shortUrl() << " (" << address << ")"
+        << ", protocol setting: " << controlProtocolSetting(option.controlProtocol)
+        << ", using: " << (protocol == ControlProtocol::NONE ? "probe" : controlProtocolToString(protocol))
+        << ", username: " << (option.username.empty() ? "empty" : "******")
+        << ", password: " << (option.password.empty() ? "empty" : "******");
+}
+
+void CameraController::setLastControlProtocol(const std::string &protocol) {
+    CHECK(_poller->isCurrentThread(), "setLastControlProtocol must be called on the owner poller");
+    _lock.restore(controlProtocolFromString(protocol));
 }
 
 void CameraController::stopController() {  
@@ -215,31 +222,39 @@ void CameraController::stopController() {
         _sd_sync_config, false);
     
     _timer_ctr.reset();
-    _onvif_ctr.reset();
+    _device_ctr.reset();
+    _configured = false;
+    _probing = false;
+    ++_ctrl_generation;
     _ready = false;
     DebugL << "Closed camera controller for device: " << _tuple.shortUrl() << " (" << _address << ")";
 }
 
 void CameraController::onManager() {
     // Always called from the Timer which runs on _poller - no dispatch needed.
-    if (!_onvif_ctr) {
+    if (!_configured || (!_device_ctr && !_lock.isAuto())) {
         onControllerReady(false, "Not supported", std::make_shared<DeviceCapabilities>());
         return;
     }
 
-    if (_onvif_ctr->isControlled()) {
+    if (_device_ctr && _device_ctr->isControlled()) {
         // A PTZ or other blocking operation is in progress — skip
-        WarnL << "Onvif controller of device " << _tuple.shortUrl() << " (" << _address << ") is busy, skip reconnecting";
+        WarnL << "Device controller of " << _tuple.shortUrl() << " (" << _address << ") is busy, skip reconnecting";
         return;
     }
 
-    if (time(nullptr) - _last_reconnect_time < 60) {
-        // avoid reconnecting too frequently
+    GET_CONFIG(int, auth_retry_sec, CameraControl::kAuthRetrySec);
+    const uint64_t now = time(nullptr);
+    if (_probing || !_pacer.due(now, 60, auth_retry_sec)) {
+        // avoid reconnecting too frequently, and logging in with a rejected password even less often
         return;
     }
-    const uint64_t now = time(nullptr);
-    _last_reconnect_time = now;
-    auto onvif_ctr = _onvif_ctr;
+    _pacer.onAttempt(now);
+    if (!_device_ctr) {
+        startProtocolProbe();
+        return;
+    }
+    auto device_ctr = _device_ctr;
     std::weak_ptr<CameraController> weak_self = shared_from_this();
 
     // A camera that is already up does not need the whole connect() handshake again.
@@ -247,7 +262,7 @@ void CameraController::onManager() {
     // minute; at 300 cameras that alone kept the `device` pool busy and left
     // interactive commands (PTZ) queued behind it. The cycle now costs one
     // GetDeviceInformation, plus a profile re-read only when there is a reason for it.
-    const bool was_ready = _ready.load() && onvif_ctr->isConnected();
+    const bool was_ready = _ready.load() && device_ctr->isConnected();
     GET_CONFIG(int, profile_resync_sec, OnvifCtrl::kProfileResyncIntervalSec);
     GET_CONFIG(int, clock_sync_sec, OnvifCtrl::kClockSyncIntervalSec);
     // A config this server is still trying to push is retried on every cycle, exactly
@@ -261,7 +276,7 @@ void CameraController::onManager() {
     const bool time_sync = clock_sync_enable && _enableTimeSync;
     // A command that found the clock off asks for it to be set now rather than at the next interval.
     // Taken even when syncing is off, so a stale request does not fire once it is turned back on.
-    const bool sync_wanted = onvif_ctr->takeClockSyncWanted();
+    const bool sync_wanted = device_ctr->takeClockSyncWanted();
     // The clock check is the other thing the old cycle did every 60 s; a camera clock drifts far
     // too slowly to need that, but it still has to happen while the camera stays connected.
     const bool sync_clock = time_sync && (!was_ready || sync_wanted || clock_sync_sec <= 0 ||
@@ -273,8 +288,8 @@ void CameraController::onManager() {
         _last_clock_sync = now;
     }
 
-    // ONVIF connect() is a blocking SOAP/HTTP call: run it on the camera's serial device queue.
-    postDeviceTask([weak_self, onvif_ctr, was_ready, resync_profiles, sync_clock, time_sync]() {
+    // connect() is a blocking SOAP/HTTP call: run it on the camera's serial device queue.
+    postDeviceTask([weak_self, device_ctr, was_ready, resync_profiles, sync_clock, time_sync]() {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
             return;
@@ -282,62 +297,272 @@ void CameraController::onManager() {
         auto tuple = strong_self->_tuple;
         auto address = strong_self->_address;
 
-        if (was_ready && onvif_ctr->probeConnection()) {
+        if (was_ready && device_ctr->probeConnection()) {
             // Still the same camera, still answering, credentials still accepted.
             // Nothing to publish: onControllerReady() is level-based and already
             // holds `connected`, and the gap-fill provider stays registered (new gaps
             // are discovered by MediaGapFillManager::onDeviceStateChanged, not here).
             if (sync_clock) {
-                onvif_ctr->setCameraTimeManual();
+                device_ctr->setCameraTimeManual();
             }
-            if (resync_profiles && onvif_ctr->refreshMediaProfiles()) {
-                strong_self->syncMediaProfile(onvif_ctr);
+            if (resync_profiles && device_ctr->refreshMediaProfiles()) {
+                strong_self->syncMediaProfile(device_ctr);
             }
+            ReconnectResult result;
+            result.finished = result.connected = true;
+            result.protocol = controlProtocolToString(device_ctr->protocol());
+            result.msg = "connected";
+            strong_self->postReconnectResult(result);
             return;
         }
 
         // reconnect to device
-        if (onvif_ctr->connect()) {
-            InfoL << "Onvif controller of device " << tuple.shortUrl() << " (" << address << ") connected";
-            if (sync_clock) {
-                onvif_ctr->setCameraTimeManual();
-            }
-            // Reads the profiles here; decisions on _poller, queued before onControllerReady below.
-            strong_self->syncMediaProfile(onvif_ctr);
-            
-            // get device capabilities after connected
-            auto caps = std::make_shared<DeviceCapabilities>();
-            caps->isOnvifDevice = true;
-            caps->onvifProfile.deviceInfo          = onvif_ctr->getDeviceInfo();
-            caps->onvifProfile.mediaProfiles       = onvif_ctr->getMediaProfilesInfo();
-            caps->onvifProfile.ptzProfile          = onvif_ctr->getPTZProfile();
-            caps->onvifProfile.imageProfile        = onvif_ctr->getImageProfile();
-            caps->onvifProfile.relayOutputProfiles = onvif_ctr->getRelayOutputProfiles();
-            caps->onvifProfile.audioOutputProfile  = onvif_ctr->getAudioOutputProfile();
-            caps->onvifProfile.audioInputProfile   = onvif_ctr->getAudioInputProfile();
-            caps->supportsSdCardPlayback           = onvif_ctr->getSDCardInfo().isSDSupport();
-            // Register/refresh the provider before publishing the connected event.
-            // The event closes the device gap and immediately triggers discovery.
-            MediaGapFillManager::Instance().onManager(
-                tuple.device_id, strong_self->_ctrl_option.username,
-                strong_self->_ctrl_option.password, onvif_ctr,
-                strong_self->_sd_sync_config, true);
-            strong_self->onControllerReady(true, "connected", std::move(caps));
+        ReconnectResult result;
+        result.finished = true;
+        result.protocol = controlProtocolToString(device_ctr->protocol());
+        if (device_ctr->connect()) {
+            strong_self->publishConnected(device_ctr, sync_clock);
+            result.connected = true;
+            result.msg = "connected";
         } else {
-            auto err_msg = onvif_ctr->getSoapErrMsg();
-            WarnL << "Onvif controller of device " << tuple.shortUrl() << " (" << address << ") connect failed: " << err_msg;
+            auto err_msg = device_ctr->lastError();
+            auto err = device_ctr->lastConnectError();
+            WarnL << controlProtocolToString(device_ctr->protocol()) << " controller of device " << tuple.shortUrl()
+                  << " (" << address << ") connect failed (" << connectErrorToString(err) << "): " << err_msg;
+            std::weak_ptr<CameraController> weak = strong_self;
+            strong_self->_poller->async([weak, device_ctr, err]() {
+                if (auto self = weak.lock()) {
+                    self->onConnectResult(device_ctr, err);
+                }
+            }, false);
             // Rejected with the camera clock far off: it will never accept us until its clock is
             // set, so set it now; the next cycle connects again.
-            if (time_sync && onvif_ctr->lastFailure() == DeviceFailure::ClockSkew) {
-                onvif_ctr->setCameraTimeManual();
+            if (time_sync && device_ctr->lastFailure() == DeviceFailure::ClockSkew) {
+                device_ctr->setCameraTimeManual();
             }
             strong_self->onControllerReady(false, err_msg, nullptr);
+            result.error = err;
+            result.msg = err_msg;
+            result.failure = device_ctr->lastFailure();
+            result.clock = device_ctr->clockReading();
+        }
+        // Queued after onConnectResult: a waiter sees the pacer as this attempt left it.
+        strong_self->postReconnectResult(result);
+    });
+}
+
+void CameraController::reconnectNow(const ReconnectCallback &cb) {
+    CHECK(_poller->isCurrentThread(), "reconnectNow must be called on the owner poller");
+    if (!_configured || (!_device_ctr && !_lock.isAuto())) {
+        ReconnectResult result;
+        result.finished = true;
+        result.msg = "Device control is not configured";
+        cb(result);
+        return;
+    }
+    if (_device_ctr && _device_ctr->isControlled()) {
+        ReconnectResult result;
+        result.finished = true;
+        result.connected = _ready.load();
+        result.protocol = controlProtocolToString(_device_ctr->protocol());
+        result.msg = "Device controller is busy with another command, try again later";
+        cb(result);
+        return;
+    }
+    InfoL << "Reconnect of device " << _tuple.shortUrl() << " (" << _address << ") requested";
+    _reconnect_waiters.push_back(cb);
+    _pacer.reset();
+    // A probe already running answers the waiter when it ends.
+    onManager();
+}
+
+void CameraController::finishReconnect(const ReconnectResult &result) {
+    std::vector<ReconnectCallback> waiters;
+    waiters.swap(_reconnect_waiters);
+    for (auto &cb : waiters) {
+        cb(result);
+    }
+}
+
+void CameraController::postReconnectResult(const ReconnectResult &result) {
+    std::weak_ptr<CameraController> weak_self = shared_from_this();
+    _poller->async([weak_self, result]() {
+        if (auto self = weak_self.lock()) {
+            self->finishReconnect(result);
+        }
+    }, false);
+}
+
+void CameraController::publishConnected(const DeviceControl::Ptr &device_ctr, bool sync_clock) {
+    InfoL << controlProtocolToString(device_ctr->protocol()) << " controller of device " << _tuple.shortUrl()
+          << " (" << _address << ") connected";
+    // Queued ahead of the profile sync below: a protocol switch drops the old profile state first.
+    std::weak_ptr<CameraController> weak_self = shared_from_this();
+    _poller->async([weak_self, device_ctr]() {
+        if (auto self = weak_self.lock()) {
+            self->onConnectResult(device_ctr, ConnectError::NONE);
+        }
+    }, false);
+    if (sync_clock) {
+        device_ctr->setCameraTimeManual();
+    }
+    // Reads the profiles here; decisions on _poller, queued before onControllerReady below.
+    syncMediaProfile(device_ctr);
+
+    // get device capabilities after connected
+    auto caps = std::make_shared<DeviceCapabilities>();
+    caps->isOnvifDevice = device_ctr->protocol() == ControlProtocol::ONVIF;
+    caps->controlProtocol = controlProtocolToString(device_ctr->protocol());
+    caps->onvifProfile.deviceInfo          = device_ctr->getDeviceInfo();
+    caps->onvifProfile.mediaProfiles       = device_ctr->getMediaProfilesInfo();
+    caps->onvifProfile.ptzProfile          = device_ctr->getPTZProfile();
+    caps->onvifProfile.imageProfile        = device_ctr->getImageProfile();
+    caps->onvifProfile.relayOutputProfiles = device_ctr->getRelayOutputProfiles();
+    caps->onvifProfile.audioOutputProfile  = device_ctr->getAudioOutputProfile();
+    caps->onvifProfile.audioInputProfile   = device_ctr->getAudioInputProfile();
+    caps->supportsSdCardPlayback           = device_ctr->getSDCardInfo().isSDSupport();
+    // Register/refresh the provider before publishing the connected event.
+    // The event closes the device gap and immediately triggers discovery.
+    MediaGapFillManager::Instance().onManager(
+        _tuple.device_id, _ctrl_option.username,
+        _ctrl_option.password, asOnvif(device_ctr),
+        _sd_sync_config, true);
+    onControllerReady(true, "connected", std::move(caps));
+}
+
+void CameraController::startProtocolProbe() {
+    _probing = true;
+    GET_CONFIG(string, order_str, CameraControl::kAutoOrder);
+    const auto order = parseProtocolOrder(order_str);
+    const uint64_t generation = _ctrl_generation.load();
+    const string address = _address;
+    const string username = _ctrl_option.username;
+    const string password = _ctrl_option.password;
+    // Same switches as the clock sync of onManager(); a camera that just connected always gets it.
+    GET_CONFIG(bool, clock_sync_enable, OnvifCtrl::kClockSyncEnable);
+    const bool time_sync = clock_sync_enable && _enableTimeSync;
+    std::weak_ptr<CameraController> weak_self = shared_from_this();
+    postDeviceTask([weak_self, order, generation, address, username, password, time_sync]() {
+        auto self = weak_self.lock();
+        if (!self) {
+            return;
+        }
+        auto result = probeControlProtocols(order, [&](ControlProtocol protocol) {
+            return self->createDeviceControl(protocol, address, username, password);
+        }, self->_tuple.shortUrl() + " (" + address + ")", time_sync);
+        DeviceControl::Ptr winner = result.winner;
+        const std::string err_msg = result.err_msg;
+        const ConnectError err = result.err;
+        const DeviceFailure failure = result.failure;
+        const DeviceClockReading clock = result.clock;
+        if (winner && self->_ctrl_generation.load() != generation) {
+            winner.reset(); // the option changed meanwhile
+        }
+        std::weak_ptr<CameraController> weak = self;
+        self->_poller->async([weak, winner, generation, err_msg, err, failure, clock]() {
+            if (auto strong = weak.lock()) {
+                strong->onProbeDone(winner, generation, err_msg, err, failure, clock);
+            }
+        }, false);
+        if (winner) {
+            self->publishConnected(winner, time_sync);
+        } else {
+            self->onControllerReady(false, err_msg, nullptr);
         }
     });
 }
 
+void CameraController::onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
+                                   ConnectError err, DeviceFailure failure,
+                                   const DeviceClockReading &clock) {
+    if (generation != _ctrl_generation.load()) {
+        return;
+    }
+    _probe_failure = failure;
+    _probing = false;
+    ReconnectResult result;
+    result.finished = true;
+    if (!device_ctr) {
+        WarnL << "No control protocol for device " << _tuple.shortUrl() << " (" << _address << "): " << err_msg;
+        onAuthResult(err);
+        result.error = err;
+        result.msg = err_msg;
+        result.failure = failure;
+        result.clock = clock;
+        finishReconnect(result);
+        return;
+    }
+    _device_ctr = device_ctr;
+    result.connected = true;
+    result.protocol = controlProtocolToString(device_ctr->protocol());
+    result.msg = "connected";
+    // onConnectResult (queued by publishConnected) clears the credentials verdict.
+    finishReconnect(result);
+}
+
+void CameraController::onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err) {
+    if (!device_ctr || device_ctr != _device_ctr) {
+        return;
+    }
+    onAuthResult(err);
+    if (err == ConnectError::NONE) {
+        onProtocolConnected(device_ctr->protocol());
+        return;
+    }
+    GET_CONFIG(int, reprobe_failures, CameraControl::kReprobeFailures);
+    if (!_lock.onConnectError(err, reprobe_failures)) {
+        return;
+    }
+    unlockProtocol(string("Device no longer answers ") + controlProtocolToString(device_ctr->protocol()));
+}
+
+void CameraController::onProtocolConnected(ControlProtocol protocol) {
+    const ControlProtocol previous = _lock.last();
+    if (_lock.onConnected(protocol)) {
+        // Profile tokens and PTZ coordinates of one protocol mean nothing in the other.
+        const string err_msg = string("Camera control protocol changed from ") + controlProtocolToString(previous) +
+                               " to " + controlProtocolToString(protocol);
+        WarnL << "Device " << _tuple.shortUrl() << " (" << _address << "): " << err_msg
+              << ", dropping its profile configs, video config rules and user presets";
+        std::vector<string> rule_tokens;
+        for (const auto &it : _ruleReportMap) {
+            rule_tokens.push_back(it.first);
+        }
+        for (const auto &token : rule_tokens) {
+            reportRuleFailureIfPending(token, "DEVICE_PROTOCOL_CHANGED", err_msg);
+        }
+        _ruleConfigMap.clear();
+        _ruleReportMap.clear();
+        _profileConfigMap.clear();
+        _userPresets.clear();
+    }
+}
+
+void CameraController::unlockProtocol(const std::string &reason) {
+    WarnL << "Device " << _tuple.shortUrl() << " (" << _address << "): " << reason << ", probing the control protocols again";
+    MediaGapFillManager::Instance().onManager(
+        _tuple.device_id, std::string(), std::string(), nullptr,
+        _sd_sync_config, false);
+    _ready = false;
+    onControllerReady(false, "Control protocol changed", nullptr);
+    _device_ctr.reset();
+    _lock.unlock();
+    _pacer.reset();
+    ++_ctrl_generation;
+}
+
+void CameraController::onAuthResult(ConnectError err) {
+    const bool was_rejected = _pacer.authFailed();
+    _pacer.onResult(err);
+    if (_pacer.authFailed() && !was_rejected) {
+        GET_CONFIG(int, auth_retry_sec, CameraControl::kAuthRetrySec);
+        WarnL << "Device " << _tuple.shortUrl() << " (" << _address << ") rejected the credentials: next attempt in "
+              << auth_retry_sec << " s, or at once through /media/mserver/device/reconnect";
+    }
+}
+
 // ── Imaging control (focus / iris) ───────────────────────────────────────────
-static void onvifImageControl(const OnvifControl::Ptr &ptr, IMAGE_CONTROL_DIRECT direct, int speed,
+static void onvifImageControl(const DeviceControl::Ptr &ptr, IMAGE_CONTROL_DIRECT direct, int speed,
                               const function<void(const SockException &ex)> &cb, const DelayedDeviceTask &delayed) {
     switch (direct) {
         case IMAGE_CONTROL_DIRECT::FocusAuto:
@@ -353,7 +578,7 @@ static void onvifImageControl(const OnvifControl::Ptr &ptr, IMAGE_CONTROL_DIRECT
             float focusSpeed = (direct == IMAGE_CONTROL_DIRECT::FocusIn ? 1.0f : -1.0f)
                              * (speed > 0 ? speed / 100.0f : 0.5f);
             if (!ptr->Imaging_FocusMove(focusSpeed)) {
-                return cb(SockException(Err_other, "Imaging focus move failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_IMAGING_FOCUS_CONTROL_FAILED)));
+                return cb(SockException(Err_other, "Imaging focus move failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_IMAGING_FOCUS_CONTROL_FAILED)));
             }
             // Auto-stop after 1 second
             delayed(1000, [ptr, cb]() {
@@ -376,7 +601,7 @@ static void onvifImageControl(const OnvifControl::Ptr &ptr, IMAGE_CONTROL_DIRECT
             }
             std::string auxCmd = (direct == IMAGE_CONTROL_DIRECT::IrisIn) ? "tt:Iris|open" : "tt:Iris|close";
             if (!ptr->PTZ_AuxiliaryCommand(auxCmd)) {
-                return cb(SockException(Err_other, "Iris auxiliary command failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_IMAGING_IRIS_CONTROL_FAILED)));
+                return cb(SockException(Err_other, "Iris auxiliary command failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_IMAGING_IRIS_CONTROL_FAILED)));
             }
             return cb(SockException(Err_success, "Iris command success", ApiErrCode::CODE_SUCCESS));
         }
@@ -384,7 +609,7 @@ static void onvifImageControl(const OnvifControl::Ptr &ptr, IMAGE_CONTROL_DIRECT
 }
 
 // ── Relay output control ──────────────────────────────────────────────────────
-static void onvifRelayControl(const OnvifControl::Ptr &ptr, RELAY_OUTPUT_CONTROL direct, const std::string &token,
+static void onvifRelayControl(const DeviceControl::Ptr &ptr, RELAY_OUTPUT_CONTROL direct, const std::string &token,
                               const function<void(const SockException &ex)> &cb) {
     if (!ptr->enableRelayOutput()) {
         return cb(SockException(Err_other, "Device does not support relay output", ApiErrCode::CODE_DEVICE_NO_SUPPORT_RELAY_OUTPUT));
@@ -402,13 +627,13 @@ static void onvifRelayControl(const OnvifControl::Ptr &ptr, RELAY_OUTPUT_CONTROL
     }
     bool active = (direct == RELAY_OUTPUT_CONTROL::RelayOn);
     if (!ptr->Relay_SetOutputState(relayProfiles[idx].token, active)) {
-        return cb(SockException(Err_other, "Relay output control failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_RELAY_OUTPUT_FAILED)));
+        return cb(SockException(Err_other, "Relay output control failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_RELAY_OUTPUT_FAILED)));
     }
     return cb(SockException(Err_success, "Relay output control success", ApiErrCode::CODE_SUCCESS));
 }
 
 // ── Standard PTZ (pan / tilt / zoom) ─────────────────────────────────────────
-static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT direct, int speed,
+static void onvifPTZMove(const DeviceControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT direct, int speed,
                          const function<void(const SockException &ex)> &cb, const DelayedDeviceTask &delayed) {
     if (!ptr->enablePTZ()) {
         cb(SockException(Err_other, "Device does not support PTZ", ApiErrCode::CODE_DEVICE_NO_SUPPORT_PTZ));
@@ -422,7 +647,7 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
     if (direct == PTZ_DIRECT::Home) {
         // If Home command and preset is enabled, go to home preset if exist, otherwise go to home position
         if (!ptr->PTZ_GotoHomePosition(step, step, step)) {
-            cb(SockException(Err_other, "Device execute ptz goto home position failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_PTZ_GOTO_HOME_FAILED)));
+            cb(SockException(Err_other, "Device execute ptz goto home position failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_PTZ_GOTO_HOME_FAILED)));
             return;
         }
         return cb(SockException(Err_success, "Device execute ptz go to home success", ApiErrCode::CODE_SUCCESS));
@@ -431,10 +656,10 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
     if (profile.isAbsMoveEnable && (ptz_mode == CameraOption::kPTZAbsolutedMode || ptz_mode == CameraOption::kPTZModeAuto)) {
         float pan, tilt, zoom;
         auto status = ptr->PTZ_GetStatus(pan, tilt, zoom);
-        if (status != tt__MoveStatus__IDLE) {
-            auto err_msg = status == tt__MoveStatus__MOVING ? "Device is running ptz control" : ("Device ptz status unknown: " + ptr->getSoapErrMsg());
+        if (status != PtzMoveStatus::IDLE) {
+            auto err_msg = status == PtzMoveStatus::MOVING ? "Device is running ptz control" : ("Device ptz status unknown: " + ptr->lastError());
             // UNKNOWN is a failed GetStatus: report its network/credential cause when there is one.
-            auto code = status == tt__MoveStatus__MOVING ? ApiErrCode::CODE_DEVICE_IS_RUNNING_PTZ
+            auto code = status == PtzMoveStatus::MOVING ? ApiErrCode::CODE_DEVICE_IS_RUNNING_PTZ
                                                          : failureCode(ptr, ApiErrCode::CODE_DEVICE_IS_RUNNING_PTZ);
             cb(SockException(Err_other, err_msg, code));
             return;
@@ -454,7 +679,7 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
             default: break;
         }
         if (!ptr->PTZ_AbsoluteMove(pan, tilt, zoom, step, step, step)) {
-            cb(SockException(Err_other, "Device execute ptz absolute move failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_PTZ_ABSOLUTED_CONTROL_FAILED)));
+            cb(SockException(Err_other, "Device execute ptz absolute move failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_PTZ_ABSOLUTED_CONTROL_FAILED)));
             return;
         }
         // Execute success
@@ -478,7 +703,7 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
             default: break;
         }
         if (!ptr->PTZ_RelativeMove(pan, tilt, zoom , step, step, step)) {
-            cb(SockException(Err_other, "Device execute ptz relative move failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_PTZ_RELATIVE_CONTROL_FAILED)));
+            cb(SockException(Err_other, "Device execute ptz relative move failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_PTZ_RELATIVE_CONTROL_FAILED)));
             return;
         }
         // Execute success
@@ -504,7 +729,7 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
 
         int timeout_sec = 1;
         if (!ptr->PTZ_ContinuousMove(pan, tilt, zoom, timeout_sec)) {
-            cb(SockException(Err_other, "Device execute ptz continuous move failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_PTZ_CONTINUOUS_CONTROL_FAILED)));
+            cb(SockException(Err_other, "Device execute ptz continuous move failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_PTZ_CONTINUOUS_CONTROL_FAILED)));
             return;
         }
 
@@ -512,7 +737,7 @@ static void onvifPTZMove(const OnvifControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT 
         // then would cut that command short (the camera also stops by itself at the timeout).
         delayed(timeout_sec * 1000, [ptr, cb]() {
             if (!ptr->PTZ_Stop(true, true)) {
-                cb(SockException(Err_other, "Device execute stop ptz continuous move failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_PTZ_CONTINUOUS_CONTROL_FAILED)));
+                cb(SockException(Err_other, "Device execute stop ptz continuous move failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_PTZ_CONTINUOUS_CONTROL_FAILED)));
                 return;
             }
             // Execute success
@@ -553,9 +778,9 @@ void CameraController::PTZMove(const std::string &strDirect, int speed, const fu
 
     int ptz_speed = speed < 0 ? speed : static_cast<int>(_ptzSpeed);
 
-    if (_onvif_ctr && _onvif_ctr->isConnected()) {
+    if (_device_ctr && _device_ctr->isConnected()) {
         // Read state on _poller before dispatching to avoid data races.
-        auto onvif_ctr = _onvif_ctr;
+        auto device_ctr = _device_ctr;
         int ptz_mode   = _ptzMode;
         std::weak_ptr<CameraController> weak_self = shared_from_this();
         const uint64_t generation = ++_ptz_generation;
@@ -567,8 +792,8 @@ void CameraController::PTZMove(const std::string &strDirect, int speed, const fu
             }
             self->postDeviceTaskAfter(delay_ms, generation, task, on_cancel);
         };
-        postPriorityDeviceTask([onvif_ctr, ptz_mode, direct, ptz_speed, cb, delayed]() {
-            onvifPTZMove(onvif_ctr, ptz_mode, direct, ptz_speed, cb, delayed);
+        postPriorityDeviceTask([device_ctr, ptz_mode, direct, ptz_speed, cb, delayed]() {
+            onvifPTZMove(device_ctr, ptz_mode, direct, ptz_speed, cb, delayed);
         });
         return;
     }
@@ -598,8 +823,8 @@ void CameraController::ImageMoveControl(const std::string &strDirect, int speed,
         direct = IMAGE_CONTROL_DIRECT::FocusAuto;
     }
     
-    if (_onvif_ctr && _onvif_ctr->isConnected()) {
-        auto onvif_ctr = _onvif_ctr;
+    if (_device_ctr && _device_ctr->isConnected()) {
+        auto device_ctr = _device_ctr;
         std::weak_ptr<CameraController> weak_self = shared_from_this();
         DelayedDeviceTask delayed = [weak_self](int delay_ms, const function<void()> &task, const function<void()> &on_cancel) {
             auto self = weak_self.lock();
@@ -609,8 +834,8 @@ void CameraController::ImageMoveControl(const std::string &strDirect, int speed,
             }
             self->postDeviceTaskAfter(delay_ms, 0, task, on_cancel);
         };
-        postPriorityDeviceTask([onvif_ctr, direct, speed, cb, delayed]() {
-            onvifImageControl(onvif_ctr, direct, speed, cb, delayed);
+        postPriorityDeviceTask([device_ctr, direct, speed, cb, delayed]() {
+            onvifImageControl(device_ctr, direct, speed, cb, delayed);
         });
         return;
     }
@@ -631,10 +856,10 @@ void CameraController::RelayOutputControl(const std::string &strDirect, const st
         direct = RELAY_OUTPUT_CONTROL::RelayOff;
     }
 
-    if (_onvif_ctr && _onvif_ctr->isConnected()) {
-        auto onvif_ctr = _onvif_ctr;
-        postPriorityDeviceTask([onvif_ctr, relay_token, direct, cb]() {
-            onvifRelayControl(onvif_ctr, direct, relay_token, cb);
+    if (_device_ctr && _device_ctr->isConnected()) {
+        auto device_ctr = _device_ctr;
+        postPriorityDeviceTask([device_ctr, relay_token, direct, cb]() {
+            onvifRelayControl(device_ctr, direct, relay_token, cb);
         });
         return;
     }
@@ -661,28 +886,28 @@ bool CameraController::addUserPTZPreset(const std::string &presetToken, const st
     if (presetToken.empty() || presetName.empty()) {
         return false;
     }
-    if (!(_onvif_ctr && _onvif_ctr->isConnected())) {
+    if (!(_device_ctr && _device_ctr->isConnected())) {
         cb(controllerNotReady(), 0, 0, 0);
         return false;
     }
-    auto profile = _onvif_ctr->getPTZProfile();
+    auto profile = _device_ctr->getPTZProfile();
     if (!profile.isPresetEnable) {
         cb(SockException(Err_other, "Device does not support PTZ preset", ApiErrCode::CODE_DEVICE_NO_SUPPORT_PTZ_PRESET), 0, 0, 0);
         return false;
     }
-    auto onvif_ctr = _onvif_ctr;
+    auto device_ctr = _device_ctr;
     auto poller    = _poller;
     std::weak_ptr<CameraController> weak_self = shared_from_this();
     std::string token = presetToken;
     std::string name  = presetName;
     // Blocking SOAP — run it on the camera's serial device queue so _poller stays responsive.
-    postPriorityDeviceTask([weak_self, onvif_ctr, poller, token, name, cb]() {
+    postPriorityDeviceTask([weak_self, device_ctr, poller, token, name, cb]() {
         float p = 0, t = 0, z = 0;
         // PTZ_GetStatus returns UNKNOWN only on SOAP failure; IDLE/MOVING both indicate
         // the call succeeded and the coordinates are valid.
-        auto status = onvif_ctr->PTZ_GetStatus(p, t, z);
-        SockException result = (status == tt__MoveStatus__UNKNOWN)
-            ? SockException(Err_other, "Execute ptz get status failed: " + onvif_ctr->getSoapErrMsg(), failureCode(onvif_ctr, ApiErrCode::CODE_PTZ_GET_STATUS_FAILED))
+        auto status = device_ctr->PTZ_GetStatus(p, t, z);
+        SockException result = (status == PtzMoveStatus::UNKNOWN)
+            ? SockException(Err_other, "Execute ptz get status failed: " + device_ctr->lastError(), failureCode(device_ctr, ApiErrCode::CODE_PTZ_GET_STATUS_FAILED))
             : SockException(Err_success, "User preset added successfully", ApiErrCode::CODE_SUCCESS);
         poller->async([weak_self, token, name, p, t, z, result, cb]() mutable {
             auto self = weak_self.lock();
@@ -733,12 +958,12 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
             return;
         }
         auto &preset = it->second;
-        if (_onvif_ctr && _onvif_ctr->isConnected()) {
-            auto onvif_ctr = _onvif_ctr;
+        if (_device_ctr && _device_ctr->isConnected()) {
+            auto device_ctr = _device_ctr;
             float pan = preset.absPan, tilt = preset.absTilt, zoom = preset.absZoom;
-            postPriorityDeviceTask([onvif_ctr, pan, tilt, zoom, cb]() mutable {
-                if (!onvif_ctr->PTZ_AbsoluteMove(pan, tilt, zoom)) {
-                    cb(SockException(Err_other, "Device execute ptz goto user preset failed: " + onvif_ctr->getSoapErrMsg(), failureCode(onvif_ctr, ApiErrCode::CODE_PTZ_GOTO_USER_PRESET_FAILED)));
+            postPriorityDeviceTask([device_ctr, pan, tilt, zoom, cb]() mutable {
+                if (!device_ctr->PTZ_AbsoluteMove(pan, tilt, zoom)) {
+                    cb(SockException(Err_other, "Device execute ptz goto user preset failed: " + device_ctr->lastError(), failureCode(device_ctr, ApiErrCode::CODE_PTZ_GOTO_USER_PRESET_FAILED)));
                 } else {
                     cb(SockException(Err_success, "Device execute ptz goto user preset success", ApiErrCode::CODE_SUCCESS));
                 }
@@ -749,12 +974,12 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
             return;
         }
     } else {
-        if (_onvif_ctr && _onvif_ctr->isConnected()) {
-            auto onvif_ctr = _onvif_ctr;
+        if (_device_ctr && _device_ctr->isConnected()) {
+            auto device_ctr = _device_ctr;
             string token = presetToken;
-            postPriorityDeviceTask([onvif_ctr, token, cb]() {
-                if (!onvif_ctr->PTZ_GotoPreset(token, 0.5, 0.5, 0.5)) {
-                    cb(SockException(Err_other, "Device execute ptz goto preset failed: " + onvif_ctr->getSoapErrMsg(), failureCode(onvif_ctr, ApiErrCode::CODE_PTZ_GOTO_PRESET_FAILED)));
+            postPriorityDeviceTask([device_ctr, token, cb]() {
+                if (!device_ctr->PTZ_GotoPreset(token, 0.5, 0.5, 0.5)) {
+                    cb(SockException(Err_other, "Device execute ptz goto preset failed: " + device_ctr->lastError(), failureCode(device_ctr, ApiErrCode::CODE_PTZ_GOTO_PRESET_FAILED)));
                 } else {
                     cb(SockException(Err_success, "Device execute ptz goto preset success", ApiErrCode::CODE_SUCCESS));
                 }
@@ -767,10 +992,10 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
     }
 }
 
-static void onvifGetMediaProfile(const OnvifControl::Ptr &ptr, const string &profileToken, const std::function<void(const toolkit::SockException &ex, VideoEncoderConfig &config)> &cb) {
+static void onvifGetMediaProfile(const DeviceControl::Ptr &ptr, const string &profileToken, const std::function<void(const toolkit::SockException &ex, VideoEncoderConfig &config)> &cb) {
     VideoEncoderConfig config;
     if (!ptr->getVideoEncoderConfigByToken(profileToken, config)) {
-        cb(SockException(Err_other, "Device execute get media profile failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_ONVIF_GET_CONFIG_FAILED)), config);
+        cb(SockException(Err_other, "Device execute get media profile failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_ONVIF_GET_CONFIG_FAILED)), config);
         return;
     }
     cb(SockException(Err_success, "Device execute get media profile success", ApiErrCode::CODE_SUCCESS), config);
@@ -778,8 +1003,8 @@ static void onvifGetMediaProfile(const OnvifControl::Ptr &ptr, const string &pro
 
 void CameraController::getMediaProfileAsync(const string &profileToken, const std::function<void(const toolkit::SockException &ex, VideoEncoderConfig &config)> &cb) {
     // Caller (GenericRtspCameraImp::getMediaProfile) asserts isCurrentThread - no dispatch needed.
-    if (_onvif_ctr && _onvif_ctr->isConnected()) {
-        auto onvif_ctr = _onvif_ctr;
+    if (_device_ctr && _device_ctr->isConnected()) {
+        auto device_ctr = _device_ctr;
         auto poller = _poller;
         string token = profileToken;
         std::weak_ptr<CameraController> weak_self = shared_from_this();
@@ -790,8 +1015,8 @@ void CameraController::getMediaProfileAsync(const string &profileToken, const st
                 cb(ex, config_copy);
             });
         };
-        postDeviceTask([onvif_ctr, token, on_callback]() {
-            onvifGetMediaProfile(onvif_ctr, token, on_callback);
+        postDeviceTask([device_ctr, token, on_callback]() {
+            onvifGetMediaProfile(device_ctr, token, on_callback);
         });
         return;
     }
@@ -802,8 +1027,8 @@ void CameraController::getMediaProfileAsync(const string &profileToken, const st
 
 void CameraController::getSDCardInfoAsync(const std::function<void(const toolkit::SockException &ex, SDCardInformation &info)> &cb) {
     // Caller (GenericRtspCameraImp::getSDCardInfo) asserts isCurrentThread - no dispatch needed.
-    if (_onvif_ctr && _onvif_ctr->isConnected()) {
-        auto sdInfo = _onvif_ctr->getSDCardInfo();
+    if (_device_ctr && _device_ctr->isConnected()) {
+        auto sdInfo = _device_ctr->getSDCardInfo();
         cb(SockException(Err_success, "Get SD card info success", ApiErrCode::CODE_SUCCESS), sdInfo);
         return;
     }
@@ -812,9 +1037,9 @@ void CameraController::getSDCardInfoAsync(const std::function<void(const toolkit
     return;
 }
 
-static void onvifSetMediaProfile(const OnvifControl::Ptr &ptr, const string &profileToken, const VideoEncoderConfig &config, const function<void(const SockException &ex)> &cb, const function<void()> &on_success) { 
+static void onvifSetMediaProfile(const DeviceControl::Ptr &ptr, const string &profileToken, const VideoEncoderConfig &config, const function<void(const SockException &ex)> &cb, const function<void()> &on_success) { 
     if (!ptr->setVideoEncoderConfigByToken(profileToken, config)) {
-        cb(SockException(Err_other, "Device execute set media profile failed: " + ptr->getSoapErrMsg(), failureCode(ptr, ApiErrCode::CODE_ONVIF_SET_CONFIG_FAILED)));
+        cb(SockException(Err_other, "Device execute set media profile failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_ONVIF_SET_CONFIG_FAILED)));
         return;
     }
         
@@ -824,7 +1049,7 @@ static void onvifSetMediaProfile(const OnvifControl::Ptr &ptr, const string &pro
 
 void CameraController::setMediaProfileAsync(const string &profileToken, VideoEncoderConfig &config, const function<void(const SockException &ex)> &cb) {
     // Caller (GenericRtspCameraImp::setMediaProfile) asserts isCurrentThread - no dispatch needed.
-    if (_onvif_ctr && _onvif_ctr->isConnected()) {
+    if (_device_ctr && _device_ctr->isConnected()) {
         VideoEncoderConfig new_f_config;
         auto it = _profileConfigMap.find(profileToken);
         if (it != _profileConfigMap.end()) {
@@ -860,7 +1085,7 @@ void CameraController::setMediaProfileAsync(const string &profileToken, VideoEnc
             addProfileConfig(profileToken, new_f_config);
             return cb(SockException(Err_success, "Config saved, applied when the video config rule ends", ApiErrCode::CODE_ONVIF_SET_CONFIG_DEFERRED));
         }
-        auto onvif_ctr = _onvif_ctr;
+        auto device_ctr = _device_ctr;
         auto poller = _poller;
         std::weak_ptr<CameraController> weak_self = shared_from_this();
         auto on_success = [profileToken, new_f_config, poller, weak_self]() mutable {
@@ -870,8 +1095,8 @@ void CameraController::setMediaProfileAsync(const string &profileToken, VideoEnc
                 }
             });
         };
-        postDeviceTask([onvif_ctr, profileToken, config, cb, on_success]() {
-            onvifSetMediaProfile(onvif_ctr, profileToken, config, cb, on_success);
+        postDeviceTask([device_ctr, profileToken, config, cb, on_success]() {
+            onvifSetMediaProfile(device_ctr, profileToken, config, cb, on_success);
         });
         return;
     }    
@@ -900,23 +1125,23 @@ void CameraController::addProfileConfig(const std::string &profileToken, const V
     }
 }
 
-void CameraController::syncMediaProfile(const OnvifControl::Ptr &onvif_ctr) {
+void CameraController::syncMediaProfile(const DeviceControl::Ptr &device_ctr) {
     // Runs on the device queue: only the SOAP read happens here, the decisions use _profileConfigMap
     // and are made on _poller.
-    if (!onvif_ctr || !onvif_ctr->isConnected()) {
+    if (!device_ctr || !device_ctr->isConnected()) {
         WarnL << "Device controller is not ready when retrying set media profile";
         return;
     }
-    auto profiles = onvif_ctr->getMediaProfilesInfo();
+    auto profiles = device_ctr->getMediaProfilesInfo();
     std::weak_ptr<CameraController> weak_self = shared_from_this();
-    _poller->async([weak_self, onvif_ctr, profiles]() {
+    _poller->async([weak_self, device_ctr, profiles]() {
         if (auto self = weak_self.lock()) {
-            self->applyMediaProfileSync(onvif_ctr, profiles);
+            self->applyMediaProfileSync(device_ctr, profiles);
         }
     }, false);
 }
 
-void CameraController::applyMediaProfileSync(const OnvifControl::Ptr &onvif_ctr, const OnvifMediaProfileMap &profiles) {
+void CameraController::applyMediaProfileSync(const DeviceControl::Ptr &device_ctr, const OnvifMediaProfileMap &profiles) {
     // Retries setting media profiles in NEW/PROCESSING state; the retry logic is based on
     // retry_time, which is reset to 5 once the camera config matches.
     CHECK(_poller->isCurrentThread(), "applyMediaProfileSync must run on the owner poller");
@@ -1022,15 +1247,15 @@ void CameraController::applyMediaProfileSync(const OnvifControl::Ptr &onvif_ctr,
     // The set commands are blocking SOAP: send them on the device queue, store results on _poller.
     auto poller = _poller;
     std::weak_ptr<CameraController> weak_self = shared_from_this();
-    postDeviceTask([weak_self, onvif_ctr, poller, requests]() {
+    postDeviceTask([weak_self, device_ctr, poller, requests]() {
         for (const auto &request : requests) {
-            const bool ok = onvif_ctr->setVideoEncoderConfigByToken(request.token, request.on_success);
+            const bool ok = device_ctr->setVideoEncoderConfigByToken(request.token, request.on_success);
             std::string err_msg;
             if (ok) {
                 InfoL << "Retry set config to camera for profile token: " << request.token
                       << "; retries left: " << request.on_success.state.retry_time;
             } else {
-                err_msg = onvif_ctr->getSoapErrMsg();
+                err_msg = device_ctr->lastError();
                 WarnL << "Failed to set config to camera for profile token: " << request.token << ": " << err_msg;
             }
             poller->async([weak_self, request, ok, err_msg]() {
@@ -1173,17 +1398,17 @@ void CameraController::applyRuleVideoConfigAsync(const std::string &logId, const
     ctx.logIds.push_back(logId);
     _ruleReportMap[profileToken] = ctx;
 
-    if (!_onvif_ctr || !_onvif_ctr->isConnected()) {
+    if (!_device_ctr || !_device_ctr->isConnected()) {
         cb(controllerNotReady());
         return;
     }
 
-    auto onvif_ctr = _onvif_ctr;
+    auto device_ctr = _device_ctr;
     auto poller = _poller;
     std::weak_ptr<CameraController> weak_self = shared_from_this();
     // The set command is blocking SOAP: send it on the device queue, store the result on _poller.
-    postDeviceTask([weak_self, onvif_ctr, profileToken, rule_config, cb, poller]() {
-        onvifSetMediaProfile(onvif_ctr, profileToken, rule_config,
+    postDeviceTask([weak_self, device_ctr, profileToken, rule_config, cb, poller]() {
+        onvifSetMediaProfile(device_ctr, profileToken, rule_config,
             [weak_self, poller, cb, profileToken](const SockException &ex) mutable {
                 poller->async([weak_self, profileToken, ex, cb]() mutable {
                     if (auto self = weak_self.lock()) {
@@ -1206,17 +1431,17 @@ void CameraController::rollbackRuleVideoConfigAsync(const string &profileToken, 
     _ruleConfigMap.erase(profileToken);
     _ruleReportMap.erase(profileToken);
 
-    if (!_onvif_ctr || !_onvif_ctr->isConnected()) {
+    if (!_device_ctr || !_device_ctr->isConnected()) {
         markBaselineNeedResync(profileToken);
         cb(controllerNotReady());
         return;
     }
 
-    auto onvif_ctr = _onvif_ctr;
+    auto device_ctr = _device_ctr;
     auto poller = _poller;
     std::weak_ptr<CameraController> weak_self = shared_from_this();
-    postDeviceTask([weak_self, onvif_ctr, profileToken, baseline, cb, poller]() {
-        onvifSetMediaProfile(onvif_ctr, profileToken, baseline,
+    postDeviceTask([weak_self, device_ctr, profileToken, baseline, cb, poller]() {
+        onvifSetMediaProfile(device_ctr, profileToken, baseline,
             [weak_self, poller, cb, profileToken](const SockException &ex) mutable {
                 poller->async([weak_self, profileToken, ex, cb]() mutable {
                     if (ex) {

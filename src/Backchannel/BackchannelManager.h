@@ -2,6 +2,7 @@
 #define BACKCHANNEL_BACKCHANNEL_MANAGER_H
 
 #include "Backchannel/BackchannelPusher.h"
+#include "Backchannel/IsapiTwoWayAudioPusher.h"
 #include "Backchannel/BackchannelWsSession.h"
 #include "Backchannel/LiveAudioSource.h"
 #include "Backchannel/FileAudioSource.h"
@@ -48,7 +49,10 @@ public:
     static BackchannelManager& Instance();
     ~BackchannelManager() = default;
 
+    // RTSP (ONVIF) backchannel URI, credentials inside.
     void registerDevice(const std::string& deviceId, const std::string& url);
+    // Any transport; the pusher of the next session follows info.transport.
+    void registerDevice(const std::string& deviceId, const AudioBackchannelInfo& info);
 
     void unregisterDevice(const std::string& deviceId);
 
@@ -65,7 +69,7 @@ public:
 private:
     BackchannelManager();
 
-    BackchannelPusher::Ptr getOrCreatePusher(const std::string& deviceId);
+    IBackchannelPusher::Ptr getOrCreatePusher(const std::string& deviceId);
 
     template <typename SourceType, typename... CtorArgs>
     BackchannelOwnershipTicket::Ptr findOrCreateAndAcquire(const std::string &device_id, ProducerType type, CtorArgs &&...ctor_args) {
@@ -108,8 +112,8 @@ private:
 
 private:
     std::mutex _mutex;
-    std::unordered_map<std::string, std::string> _devices;
-    std::unordered_map<std::string, BackchannelPusher::Ptr> _activePushers;
+    std::unordered_map<std::string, AudioBackchannelInfo> _devices;
+    std::unordered_map<std::string, IBackchannelPusher::Ptr> _activePushers;
     std::unordered_map<std::string, BackchannelOwnershipTicket::Ptr> _ownershipTickets;
     std::string _errMsg;
 };

@@ -112,17 +112,26 @@ def watermark_template():
 
 
 def camera_entry(env, state):
+    # Thiết bị điều khiển (ONVIF/PSIA, mock hoặc camera thật). Không đặt thì camera là RTSP thuần như trước.
+    ctl = {
+        "ip": os.environ.get("E2E_CAMERA_IP", ""),
+        "port": int(os.environ.get("E2E_CAMERA_HTTP_PORT", "80")),
+        "user": os.environ.get("E2E_CAMERA_USER", ""),
+        "password": os.environ.get("E2E_CAMERA_PASS", ""),
+        "protocol": os.environ.get("E2E_CONTROL_PROTOCOL", "AUTO"),
+        "ptz": os.environ.get("E2E_CAMERA_PTZ", "0") == "1",
+    }
     entry = {
         "id": CAMERA_ID,
         "name": "E2E camera",
-        "ip": "127.0.0.1",
-        "httpPort": 80,
+        "ip": ctl["ip"] or "127.0.0.1",
+        "httpPort": ctl["port"],
         "manufacturer": "Generic",
         "model": "RTSP",
-        "username": "",
-        "password": "",
+        "username": ctl["user"],
+        "password": ctl["password"],
         "enabled": True,
-        "enablePtzControl": False,
+        "enablePtzControl": ctl["ptz"],
         "priMediaServerId": NODE_ID,
         "primaryStreamId": MAIN_ID,
         "primaryStreamUrl": env["main"],
@@ -148,8 +157,9 @@ def camera_entry(env, state):
             },
             "mediaStreaming": {"rtpTransport": state["rtp_transport"], "useDefaultMediaPort": True},
             "webPage": {"useDefaultWebPort": True},
-            "ptzSetting": {"enablePTZControl": False},
+            "ptzSetting": {"enablePTZControl": ctl["ptz"]},
             "onvif": {"mainStream": "AUTO", "subStream": "AUTO"},
+            "control": {"protocol": ctl["protocol"]},
         },
         "motionDetectConfig": {
             "clientEnabled": state["motion"],
@@ -175,6 +185,30 @@ def camera_entry(env, state):
     return entry
 
 
+SPEAKER_ID = "e2e-speaker"
+
+
+def speaker_entry():
+    # Loa IP điều khiển qua ONVIF/ISAPI/PSIA (mock hoặc thiết bị thật), chỉ khi đặt E2E_SPEAKER_IP.
+    # Đọc lại mỗi lần ghi cấu hình: đổi biến rồi chạy `camera` để nạp lại.
+    return {
+        "id": SPEAKER_ID,
+        "name": "E2E speaker",
+        "ip": os.environ["E2E_SPEAKER_IP"],
+        "httpPort": int(os.environ.get("E2E_SPEAKER_HTTP_PORT", "80")),
+        "manufacturer": os.environ.get("E2E_SPEAKER_MANUFACTURER", "Generic"),
+        "model": "IP speaker",
+        "username": os.environ.get("E2E_SPEAKER_USER", ""),
+        "password": os.environ.get("E2E_SPEAKER_PASS", ""),
+        "enabled": True,
+        "priMediaServerId": NODE_ID,
+        "speakerAdvanceConfig": {
+            "control": {"protocol": os.environ.get("E2E_SPEAKER_PROTOCOL", "AUTO")},
+            "onvif": {"enableTimeSync": os.environ.get("E2E_SPEAKER_TIME_SYNC", "1") == "1"},
+        },
+    }
+
+
 def api_config(work, env, state):
     p = json.load(open(os.path.join(work, "inventory.json")))["ports"]
     server = server_entry(NODE_ID, {"http": p["http"], "rtsp": p["rtsp"], "rtmp": p["rtmp"]})
@@ -187,6 +221,7 @@ def api_config(work, env, state):
         "list_media_server": [server],
         "watermark_configs": [watermark_template()],
         "devices": [camera_entry(env, state)] if state["present"] else [],
+        "speakers": [speaker_entry()] if os.environ.get("E2E_SPEAKER_IP") else [],
     }
 
 

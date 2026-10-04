@@ -5,6 +5,7 @@
 #include "WebApiErrCode.h"
 #include "Control/SubnetScan.h"
 #include "Speaker/SpeakerController.h"
+#include "Common/DeviceFailureCode.h"
 #include "Camera/VideoConfigJobManager.h"
 #include "Manager.h"
 #include "ApiWorkDispatcher.h"
@@ -652,8 +653,13 @@ void registerControlApis() {
                 if (auto strong_listener = weak_listener.lock()) {
                     auto impl = dynamic_pointer_cast<GenericIPSpeakerImp>(strong_listener);
                     if (impl) {
+                        // As for camera commands: a clock rejection says how far off the speaker is.
+                        auto clock_reader = impl->clockReader();
                         impl->setAudioVolume(volume, [=](const SockException &ex) mutable {
                             if (ex) {
+                                if (ex.getCustomCode() == ApiErrCode::CODE_DEVICE_CLOCK_SKEW && clock_reader) {
+                                    val["data"] = makeClockSkewJson(clock_reader());
+                                }
                                 RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                             } else {
                                 val["msg"] = ex.what();
@@ -667,6 +673,81 @@ void registerControlApis() {
                     RETURN_API_RESPONSE(ApiErrCode::CODE_DEVICE_OFFLINE, "Device is offline");
                 }
             });
+        };
+
+        CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);
+    });
+
+    // Runs the reconnect cycle of a camera or speaker now instead of at its next interval (60 s, or
+    // camera/speaker.control_auth_retry_sec while the device rejects the credentials) and answers with
+    // the outcome of that attempt. Meant for a client that just changed the password on the device
+    // itself; a password changed in the VMS reaches the controller through the config reload instead.
+    // An attempt (a full protocol probe at worst) that has not ended after kReconnectWaitSec is
+    // answered with finished=false and keeps running; its result shows up in the device status.
+    api_regist("/media/mserver/device/reconnect", [](API_ARGS_MAP_ASYNC) {
+        CHECK_AUTH_TOKEN();
+        CHECK_ARGS_("deviceId");
+
+        auto owner = apiRequestPoller(sender);
+        auto session = apiRequestSession(sender);
+        auto on_access = [allArgs, val, invoker, headerOut, owner, session]() mutable {
+            const string deviceId = allArgs["deviceId"];
+            runApiCallbackWork(owner, session, invoker, [headerOut, val, invoker, deviceId](const ApiReply &reply) mutable {
+                static const int kReconnectWaitSec = 30;
+                auto fail = [reply, headerOut, val, invoker](ApiErrCode code, const string &msg) mutable {
+                    reply([headerOut, val, invoker, code, msg]() mutable {
+                        RETURN_API_RESPONSE(code, msg);
+                    });
+                };
+                // Answers once: the attempt or the wait limit, whichever comes first (ApiReply keeps the first).
+                ReconnectCallback answer = [reply, headerOut, val, invoker](const ReconnectResult &result) mutable {
+                    reply([headerOut, val, invoker, result]() mutable {
+                        val["data"]["finished"] = result.finished;
+                        val["data"]["connected"] = result.connected;
+                        val["data"]["controlProtocol"] = result.protocol;
+                        val["data"]["error"] = result.error == ConnectError::NONE ? "" : connectErrorToString(result.error);
+                        // The API error code of the failure (905004…905008), 0 when there is none to report.
+                        val["data"]["code"] = static_cast<int>(deviceFailureCode(result.failure, ApiErrCode::CODE_SUCCESS));
+                        if (result.failure == DeviceFailure::ClockSkew) {
+                            val["data"]["clock"] = makeClockSkewJson(result.clock);
+                        }
+                        val["msg"] = result.msg;
+                        invoker(200, headerOut, val.toStyledString());
+                    });
+                };
+
+                // Without a schema findDeviceSource() only looks up cameras.
+                auto ret = findDeviceSource(deviceId);
+                if (!ret) {
+                    ret = findDeviceSource(deviceId, GENERIC_IP_SPEAKER_SCHEMA);
+                }
+                if (!ret) {
+                    fail(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device not found");
+                    return;
+                }
+                auto poller = ret->getOwnerPoller();
+                poller->doDelayTask(kReconnectWaitSec * 1000, [answer]() mutable {
+                    ReconnectResult result;
+                    result.msg = "Reconnect is still running";
+                    answer(result);
+                    return 0;
+                });
+                // The controllers run on the device's owner poller.
+                poller->async([ret, answer, fail]() mutable {
+                    auto strong_listener = ret->getListener().lock();
+                    if (!strong_listener) {
+                        fail(ApiErrCode::CODE_DEVICE_OFFLINE, "Device is offline");
+                        return;
+                    }
+                    if (auto camera = dynamic_pointer_cast<GenericRtspCameraImp>(strong_listener)) {
+                        camera->reconnectController(answer);
+                    } else if (auto speaker = dynamic_pointer_cast<GenericIPSpeakerImp>(strong_listener)) {
+                        speaker->reconnectController(answer);
+                    } else {
+                        fail(ApiErrCode::CODE_FEATURE_NOT_SUPPORTED, "Device has no controller to reconnect");
+                    }
+                });
+            }, apiWorkLimit("device.control"));
         };
 
         CHECK_USER_DEVICE_AUTHOR_ASYNC(allArgs["deviceId"], on_access);

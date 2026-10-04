@@ -5,12 +5,15 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <condition_variable>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "Camera/CameraController.h"
+#include "Speaker/SpeakerController.h"
+#include "ext-plugin/Bosch/BoschIpSpeaker.h"
 #include "Camera/VideoConfigRuleDecision.h"
 #include "Common/config.h"
 #include "Poller/EventPoller.h"
@@ -25,16 +28,26 @@ namespace managerkit {
 // Test-only access to the media profile sync (declared friend in CameraController.h).
 class CameraControllerTestPeer {
 public:
-    static void syncMediaProfile(CameraController &c, const OnvifControl::Ptr &ctr) { c.syncMediaProfile(ctr); }
+    static void syncMediaProfile(CameraController &c, const DeviceControl::Ptr &ctr) { c.syncMediaProfile(ctr); }
 
     static void onManager(CameraController &c) { c.onManager(); }
 
     static void setReady(CameraController &c, bool ready) { c._ready = ready; }
 
+    // Lifts the 60 s pacing of the maintenance cycle.
+    static void allowReconnect(CameraController &c) { c._pacer.skipWait(); }
+
+    // The last attempt was rejected for its credentials: the cycle waits camera.control_auth_retry_sec.
+    static bool authRejected(CameraController &c) { return c._pacer.authFailed(); }
+
+    static ControlProtocol deviceProtocol(CameraController &c) {
+        return c._device_ctr ? c._device_ctr->protocol() : ControlProtocol::NONE;
+    }
+
     // Lets the next onManager() run (it is throttled to once per 60 s); `clock_synced_now` makes the
     // regular clock interval not due yet.
     static void allowNextCycle(CameraController &c, bool clock_synced_now) {
-        c._last_reconnect_time = 0;
+        c._pacer.skipWait();
         if (clock_synced_now) {
             c._last_clock_sync = time(nullptr);
         }
@@ -172,7 +185,8 @@ public:
         : CameraController(tuple, poller), _fake(std::move(fake)) {}
 
 protected:
-    OnvifControl::Ptr createOnvifControl(const std::string &, const std::string &, const std::string &) override {
+    DeviceControl::Ptr createDeviceControl(ControlProtocol, const std::string &, const std::string &,
+                                                 const std::string &) override {
         return _fake;
     }
 
@@ -219,6 +233,7 @@ protected:
         option.ip = "127.0.0.1";
         option.port = 1;
         option.ptzMode = CameraOption::kPTZContinousMode;
+        option.controlProtocol = "ONVIF";
         auto controller = _controller;
         _poller->sync([controller, option]() { controller->setupController(option); });
     }
@@ -583,6 +598,21 @@ TEST(OnvifAuthFaultTest, KeepsTheOffsetOnFaultsThatSayNothingAboutTheClock) {
     EXPECT_FALSE(OnvifControl::isAuthOrTimestampFault("End of file or no input: Operation timed out"));
     EXPECT_FALSE(OnvifControl::isAuthOrTimestampFault("Connection refused"));
     EXPECT_FALSE(OnvifControl::isAuthOrTimestampFault("ter:InvalidArgVal ter:NoProfile"));
+}
+
+// AUTO tries PSIA only after NOT_THIS_PROTOCOL: a slow or locked-out ONVIF camera must never land there.
+TEST(OnvifConnectErrorTest, OnlyAClearNonOnvifAnswerIsNotThisProtocol) {
+    EXPECT_EQ(ConnectError::NOT_THIS_PROTOCOL, OnvifControl::classifyConnectError(404, ""));
+    EXPECT_EQ(ConnectError::NOT_THIS_PROTOCOL, OnvifControl::classifyConnectError(405, ""));
+    EXPECT_EQ(ConnectError::NOT_THIS_PROTOCOL, OnvifControl::classifyConnectError(SOAP_NO_TAG, ""));
+    EXPECT_EQ(ConnectError::NOT_THIS_PROTOCOL, OnvifControl::classifyConnectError(SOAP_TAG_MISMATCH, ""));
+
+    EXPECT_EQ(ConnectError::UNREACHABLE, OnvifControl::classifyConnectError(SOAP_EOF, "Operation timed out"));
+    EXPECT_EQ(ConnectError::UNREACHABLE, OnvifControl::classifyConnectError(SOAP_TCP_ERROR, "Connection refused"));
+    EXPECT_EQ(ConnectError::AUTH_FAILED, OnvifControl::classifyConnectError(401, ""));
+    EXPECT_EQ(ConnectError::AUTH_FAILED, OnvifControl::classifyConnectError(SOAP_FAULT, "ter:NotAuthorized"));
+    EXPECT_EQ(ConnectError::OTHER, OnvifControl::classifyConnectError(SOAP_FAULT, "ter:ActionNotSupported"));
+    EXPECT_EQ(ConnectError::OTHER, OnvifControl::classifyConnectError(500, ""));
 }
 
 // ── V4: the maintenance cycle of a camera that is already up ─────────────────────────────────────
@@ -1225,6 +1255,840 @@ TEST_F(CameraControllerDeferredSetTest, SeedDoesNotOverwriteAConcurrentUserSet) 
     EXPECT_TRUE(readBaseline() == userNew());
 }
 
+// ── Control protocol selection: one controller, one protocol per camera ─────────────────────────
+
+namespace {
+
+// What the fake devices of one test did, in order: "create X", "connect X", "destroy X", "ready 0 <status>".
+class ProtocolWorld {
+public:
+    void log(const std::string &event) {
+        std::lock_guard<std::mutex> lck(_mtx);
+        _events.push_back(event);
+    }
+    std::vector<std::string> events() {
+        std::lock_guard<std::mutex> lck(_mtx);
+        return _events;
+    }
+    void clear() {
+        std::lock_guard<std::mutex> lck(_mtx);
+        _events.clear();
+    }
+    int count(const std::string &event) {
+        auto all = events();
+        return static_cast<int>(std::count(all.begin(), all.end(), event));
+    }
+    void setResult(ControlProtocol protocol, ConnectError err) {
+        _results[static_cast<int>(protocol)] = static_cast<int>(err);
+    }
+    ConnectError result(ControlProtocol protocol) const {
+        return static_cast<ConnectError>(_results[static_cast<int>(protocol)].load());
+    }
+    // lastFailure() of every fake of `protocol` (DeviceFailure::None unless a test sets it).
+    void setFailure(ControlProtocol protocol, DeviceFailure failure) {
+        _failures[static_cast<int>(protocol)] = static_cast<int>(failure);
+    }
+    DeviceFailure failure(ControlProtocol protocol) const {
+        return static_cast<DeviceFailure>(_failures[static_cast<int>(protocol)].load());
+    }
+
+    std::atomic<int> live{0};
+    // takeClockSyncWanted() of the fakes: a command found the device clock off.
+    std::atomic<bool> sync_wanted{false};
+    // probeConnection() of a connected fake succeeds; off, every cycle runs a full connect().
+    std::atomic<bool> probe_ok{false};
+
+private:
+    std::mutex _mtx;
+    std::vector<std::string> _events;
+    // Indexed by ControlProtocol. Not a Hikvision camera unless a test says so: ISAPI is not spoken.
+    std::atomic<int> _results[4] = {{static_cast<int>(ConnectError::NONE)},
+                                    {static_cast<int>(ConnectError::NONE)},
+                                    {static_cast<int>(ConnectError::NONE)},
+                                    {static_cast<int>(ConnectError::NOT_THIS_PROTOCOL)}};
+    std::atomic<int> _failures[4] = {{0}, {0}, {0}, {0}};
+};
+
+class FakeProtocolControl : public DeviceControl {
+public:
+    FakeProtocolControl(ControlProtocol protocol, std::shared_ptr<ProtocolWorld> world)
+        : _protocol(protocol), _world(std::move(world)) {
+        ++_world->live;
+        _world->log(std::string("create ") + controlProtocolToString(_protocol));
+    }
+    ~FakeProtocolControl() override {
+        --_world->live;
+        _world->log(std::string("destroy ") + controlProtocolToString(_protocol));
+    }
+
+    bool connect() override {
+        _world->log(std::string("connect ") + controlProtocolToString(_protocol) + " live=" + std::to_string(_world->live.load()));
+        _err = static_cast<int>(_world->result(_protocol));
+        _connected = _err == static_cast<int>(ConnectError::NONE);
+        return _connected;
+    }
+    void disconnect() override {}
+    ControlProtocol protocol() const override { return _protocol; }
+    ConnectError lastConnectError() const override { return static_cast<ConnectError>(_err.load()); }
+    std::string lastError() override { return connectErrorToString(lastConnectError()); }
+    bool probeConnection() override {
+        _world->log(std::string("probe ") + controlProtocolToString(_protocol));
+        return _connected && _world->probe_ok;
+    }
+    bool isConnected() const override { return _connected; }
+    bool isControlled() const override { return false; }
+    DeviceFailure lastFailure() const override { return _world->failure(_protocol); }
+    bool takeClockSyncWanted() override { return _world->sync_wanted.exchange(false); }
+    void setCameraTimeManual() override { _world->log(std::string("settime ") + controlProtocolToString(_protocol)); }
+    OnvifDeviceInfo getDeviceInfo() override { return OnvifDeviceInfo(); }
+    OnvifMediaProfileMap getMediaProfilesInfo() override { return OnvifMediaProfileMap(); }
+    bool refreshMediaProfiles() override { return true; }
+    bool getVideoEncoderConfigByToken(const std::string &, VideoEncoderConfig &) override { return false; }
+    bool setVideoEncoderConfigByToken(const std::string &, const VideoEncoderConfig &) override { return false; }
+    OnvifPTZProfile getPTZProfile() override {
+        OnvifPTZProfile profile;
+        profile.isConsMoveEnable = true;
+        return profile;
+    }
+    bool enablePTZ() override { return true; }
+    bool PTZ_ContinuousMove(float, float, float, int) override {
+        _world->log(std::string("ptz ") + controlProtocolToString(_protocol));
+        return true;
+    }
+    bool PTZ_RelativeMove(float, float, float, float, float, float) override { return true; }
+    bool PTZ_AbsoluteMove(float, float, float) override { return true; }
+    bool PTZ_AbsoluteMove(float, float, float, float, float, float) override { return true; }
+    bool PTZ_Stop(bool, bool) override { return true; }
+    bool PTZ_GotoPreset(const std::string &, float, float, float) override { return true; }
+    bool PTZ_GotoHomePosition(float, float, float) override { return true; }
+    bool PTZ_AuxiliaryCommand(const std::string &) override { return true; }
+    PtzMoveStatus PTZ_GetStatus(float &, float &, float &) override { return PtzMoveStatus::IDLE; }
+    OnvifImageProfile getImageProfile() const override { return OnvifImageProfile(); }
+    bool enableFocus() override { return false; }
+    bool enableIris() override { return false; }
+    bool Imaging_FocusMove(float) override { return false; }
+    bool Imaging_FocusStop() override { return false; }
+    std::vector<OnvifRelayOutputProfile> getRelayOutputProfiles() const override { return {}; }
+    bool enableRelayOutput() override { return false; }
+    bool Relay_SetOutputState(const std::string &, bool) override { return false; }
+
+private:
+    ControlProtocol _protocol;
+    std::shared_ptr<ProtocolWorld> _world;
+    std::atomic<int> _err{static_cast<int>(ConnectError::NONE)};
+    std::atomic<bool> _connected{false};
+};
+
+class ProtocolTestController : public CameraController {
+public:
+    ProtocolTestController(const DeviceTuple &tuple, const EventPoller::Ptr &poller, std::shared_ptr<ProtocolWorld> world)
+        : CameraController(tuple, poller), _world(std::move(world)) {}
+
+protected:
+    DeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &, const std::string &,
+                                                 const std::string &) override {
+        return std::make_shared<FakeProtocolControl>(protocol, _world);
+    }
+
+private:
+    std::shared_ptr<ProtocolWorld> _world;
+};
+
+class ReadyRecorder : public DeviceSourceEvent {
+public:
+    ReadyRecorder(std::shared_ptr<ProtocolWorld> world, EventPoller::Ptr poller)
+        : _world(std::move(world)), _poller(std::move(poller)) {}
+    void onControllerReady(DeviceSource &, bool connect, const std::string &status, const Any &) override {
+        _world->log(std::string("ready ") + (connect ? "1 " : "0 ") + status);
+    }
+    EventPoller::Ptr getOwnerPoller(DeviceSource &) override { return _poller; }
+
+private:
+    std::shared_ptr<ProtocolWorld> _world;
+    EventPoller::Ptr _poller;
+};
+
+bool contains(const std::vector<std::string> &events, const std::string &prefix) {
+    for (const auto &e : events) {
+        if (e.compare(0, prefix.size(), prefix) == 0) return true;
+    }
+    return false;
+}
+
+// Index of the first event starting with `prefix`, -1 if none.
+int indexOf(const std::vector<std::string> &events, const std::string &prefix) {
+    for (size_t i = 0; i < events.size(); ++i) {
+        if (events[i].compare(0, prefix.size(), prefix) == 0) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+} // namespace
+
+class CameraProtocolTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        _poller = EventPollerPool::Instance().getPoller();
+        _world = std::make_shared<ProtocolWorld>();
+        DeviceTuple tuple;
+        tuple.vhost = DEFAULT_VHOST;
+        tuple.device_id = "cam-controller-test";
+        _controller = std::make_shared<ProtocolTestController>(tuple, _poller, _world);
+        _listener = std::make_shared<ReadyRecorder>(_world, _poller);
+        _controller->setListener(_listener);
+        _controller->createTimer();
+    }
+
+    void TearDown() override {
+        auto controller = _controller;
+        onPoller([controller]() { controller->stopController(); });
+    }
+
+    void onPoller(const std::function<void()> &task) { _poller->sync(task); }
+
+    void setup(const std::string &protocol, const std::string &last = "") {
+        CameraOption option;
+        option.manufacturer = "ONVIF";
+        option.ip = "127.0.0.1";
+        option.port = 1;
+        option.controlProtocol = protocol;
+        auto controller = _controller;
+        onPoller([controller, option, last]() {
+            if (!last.empty()) controller->setLastControlProtocol(last);
+            controller->setupController(option);
+        });
+    }
+
+    // One maintenance cycle, waited for until the fake devices stop reporting.
+    void cycle() {
+        auto controller = _controller;
+        onPoller([controller]() {
+            CameraControllerTestPeer::allowReconnect(*controller);
+            CameraControllerTestPeer::onManager(*controller);
+        });
+        settle();
+    }
+
+    void settle() {
+        size_t seen = _world->events().size();
+        for (int quiet = 0, i = 0; quiet < 4 && i < 100; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            onPoller([]() {});
+            size_t now = _world->events().size();
+            quiet = now == seen ? quiet + 1 : 0;
+            seen = now;
+        }
+    }
+
+    ControlProtocol current() {
+        ControlProtocol protocol = ControlProtocol::NONE;
+        auto controller = _controller;
+        onPoller([&]() { protocol = CameraControllerTestPeer::deviceProtocol(*controller); });
+        return protocol;
+    }
+
+    EventPoller::Ptr _poller;
+    std::shared_ptr<ProtocolWorld> _world;
+    std::shared_ptr<ProtocolTestController> _controller;
+    std::shared_ptr<ReadyRecorder> _listener;
+};
+
+TEST_F(CameraProtocolTest, FixedOnvifNeverTriesPsia) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NOT_THIS_PROTOCOL);
+    setup("ONVIF");
+    for (int i = 0; i < 7; ++i) cycle();
+    EXPECT_EQ(7, _world->count("connect ONVIF live=1"));
+    EXPECT_FALSE(contains(_world->events(), "create PSIA"));
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+}
+
+TEST_F(CameraProtocolTest, FixedPsiaNeverTriesOnvif) {
+    _world->setResult(ControlProtocol::PSIA, ConnectError::NOT_THIS_PROTOCOL);
+    setup("PSIA");
+    for (int i = 0; i < 7; ++i) cycle();
+    EXPECT_EQ(7, _world->count("connect PSIA live=1"));
+    EXPECT_FALSE(contains(_world->events(), "create ONVIF"));
+}
+
+TEST_F(CameraProtocolTest, AutoFallsBackToPsiaOnlyAfterOnvifSaysNotThisProtocol) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NOT_THIS_PROTOCOL);
+    setup("AUTO");
+    EXPECT_EQ(ControlProtocol::NONE, current()) << "no controller before the probe";
+    cycle();
+
+    auto events = _world->events();
+    // The ONVIF controller is gone before the PSIA one even exists.
+    EXPECT_LT(indexOf(events, "destroy ONVIF"), indexOf(events, "create PSIA"));
+    EXPECT_EQ(1, _world->count("connect PSIA live=1"));
+    EXPECT_TRUE(contains(events, "ready 1 connected"));
+    EXPECT_EQ(ControlProtocol::PSIA, current());
+    EXPECT_TRUE(_controller->isReady());
+
+    // Locked: later cycles reconnect PSIA only.
+    _world->clear();
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "create"));
+    EXPECT_EQ(1, _world->count("connect PSIA live=1"));
+}
+
+TEST_F(CameraProtocolTest, AutoDoesNotTryOtherProtocolsWhenOnvifIsUnreachable) {
+    const ConnectError errors[] = {ConnectError::UNREACHABLE, ConnectError::OTHER};
+    setup("AUTO");
+    for (auto err : errors) {
+        _world->setResult(ControlProtocol::ONVIF, err);
+        cycle();
+    }
+    auto events = _world->events();
+    EXPECT_EQ(2, _world->count("create ONVIF"));
+    EXPECT_FALSE(contains(events, "create ISAPI"));
+    EXPECT_FALSE(contains(events, "create PSIA"));
+    EXPECT_EQ(0, _world->live.load());
+    EXPECT_EQ(ControlProtocol::NONE, current());
+    EXPECT_FALSE(_controller->isReady());
+}
+
+// Hikvision with ONVIF disabled, or without an ONVIF user, answers 401 to ONVIF only.
+TEST_F(CameraProtocolTest, AutoTriesIsapiAfterOnvifRejectsThePassword) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::NONE);
+    setup("AUTO");
+    cycle();
+    auto events = _world->events();
+    EXPECT_LT(indexOf(events, "destroy ONVIF"), indexOf(events, "create ISAPI"));
+    EXPECT_EQ(1, _world->count("connect ISAPI live=1"));
+    EXPECT_FALSE(contains(events, "create PSIA"));
+    EXPECT_EQ(ControlProtocol::ISAPI, current());
+    EXPECT_TRUE(_controller->isReady());
+}
+
+TEST_F(CameraProtocolTest, AutoStopsWhenIsapiRejectsThePasswordAndReportsTheOnvifError) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::AUTH_FAILED);
+    setup("AUTO");
+    cycle();
+    auto events = _world->events();
+    EXPECT_EQ(1, _world->count("create ISAPI"));
+    EXPECT_FALSE(contains(events, "create PSIA")) << "a rejected password says nothing about the protocol";
+    EXPECT_TRUE(contains(events, "ready 0 ONVIF: AUTH_FAILED"));
+    EXPECT_EQ(ControlProtocol::NONE, current());
+}
+
+TEST_F(CameraProtocolTest, LockedOnvifStaysLockedWhenItRejectsThePassword) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::NONE);
+    setup("AUTO", "ONVIF");
+    for (int i = 0; i < 6; ++i) cycle();
+    EXPECT_FALSE(contains(_world->events(), "create ISAPI"));
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+}
+
+// Waits (on the test thread) for the answer of a reconnectNow() request.
+struct ReconnectWait {
+    std::mutex mtx;
+    std::condition_variable cv;
+    int answers = 0;
+    ReconnectResult result;
+
+    ReconnectCallback callback() {
+        return [this](const ReconnectResult &r) {
+            std::lock_guard<std::mutex> lck(mtx);
+            result = r;
+            ++answers;
+            cv.notify_all();
+        };
+    }
+    bool wait() {
+        std::unique_lock<std::mutex> lck(mtx);
+        return cv.wait_for(lck, std::chrono::seconds(5), [this]() { return answers > 0; });
+    }
+};
+
+TEST_F(CameraProtocolTest, RejectedPasswordSlowsDownTheCycleUntilItConnects) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    setup("ONVIF");
+    cycle();
+    auto controller = _controller;
+    bool rejected = false;
+    onPoller([&]() { rejected = CameraControllerTestPeer::authRejected(*controller); });
+    EXPECT_TRUE(rejected);
+
+    // The 10 s timer tick right after does not log in again (60 s or 300 s, see ReconnectPacerTest).
+    onPoller([controller]() { CameraControllerTestPeer::onManager(*controller); });
+    settle();
+    EXPECT_EQ(1, _world->count("connect ONVIF live=1"));
+
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NONE);
+    cycle();
+    onPoller([&]() { rejected = CameraControllerTestPeer::authRejected(*controller); });
+    EXPECT_FALSE(rejected);
+    EXPECT_TRUE(_controller->isReady());
+}
+
+TEST_F(CameraProtocolTest, ReconnectNowLogsInAtOnceAndReportsTheResult) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    setup("ONVIF");
+    cycle();
+    EXPECT_EQ(1, _world->count("connect ONVIF live=1"));
+
+    // Still the wrong password: the request answers with the rejection.
+    auto controller = _controller;
+    ReconnectWait first;
+    onPoller([&]() { controller->reconnectNow(first.callback()); });
+    ASSERT_TRUE(first.wait());
+    EXPECT_TRUE(first.result.finished);
+    EXPECT_FALSE(first.result.connected);
+    EXPECT_EQ(ConnectError::AUTH_FAILED, first.result.error);
+    EXPECT_EQ("ONVIF", first.result.protocol);
+    EXPECT_EQ(2, _world->count("connect ONVIF live=1")) << "no wait for the auth retry interval";
+
+    // The password was fixed on the camera: the next request connects without waiting.
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NONE);
+    ReconnectWait second;
+    onPoller([&]() { controller->reconnectNow(second.callback()); });
+    ASSERT_TRUE(second.wait());
+    EXPECT_TRUE(second.result.connected);
+    EXPECT_EQ(ConnectError::NONE, second.result.error);
+    settle();
+    EXPECT_TRUE(_controller->isReady());
+    bool rejected = true;
+    onPoller([&]() { rejected = CameraControllerTestPeer::authRejected(*controller); });
+    EXPECT_FALSE(rejected);
+
+    // Already connected: one probe request is enough.
+    _world->probe_ok = true;
+    _world->clear();
+    ReconnectWait third;
+    onPoller([&]() { controller->reconnectNow(third.callback()); });
+    ASSERT_TRUE(third.wait());
+    EXPECT_TRUE(third.result.connected);
+    EXPECT_EQ(1, _world->count("probe ONVIF"));
+    EXPECT_FALSE(contains(_world->events(), "connect"));
+}
+
+TEST_F(CameraProtocolTest, ReconnectNowProbesAnAutoCameraWithoutProtocol) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::AUTH_FAILED);
+    setup("AUTO");
+    cycle();
+    auto controller = _controller;
+    bool rejected = false;
+    onPoller([&]() { rejected = CameraControllerTestPeer::authRejected(*controller); });
+    EXPECT_TRUE(rejected) << "a probe that ends on a rejected password slows down too";
+
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::NONE);
+    ReconnectWait wait;
+    onPoller([&]() { controller->reconnectNow(wait.callback()); });
+    ASSERT_TRUE(wait.wait());
+    EXPECT_TRUE(wait.result.connected);
+    EXPECT_EQ("ISAPI", wait.result.protocol);
+    settle();
+    EXPECT_EQ(ControlProtocol::ISAPI, current());
+    onPoller([&]() { rejected = CameraControllerTestPeer::authRejected(*controller); });
+    EXPECT_FALSE(rejected);
+}
+
+TEST_F(CameraProtocolTest, ReconnectNowWithoutControllerAnswersAtOnce) {
+    auto controller = _controller;
+    ReconnectWait wait;
+    onPoller([&]() { controller->reconnectNow(wait.callback()); });
+    ASSERT_TRUE(wait.wait());
+    EXPECT_TRUE(wait.result.finished);
+    EXPECT_FALSE(wait.result.connected);
+    EXPECT_FALSE(contains(_world->events(), "create"));
+}
+
+TEST_F(CameraProtocolTest, AutoKeepsTheSavedProtocolWithoutProbing) {
+    setup("AUTO", "PSIA");
+    EXPECT_EQ(ControlProtocol::PSIA, current());
+    cycle();
+    auto events = _world->events();
+    EXPECT_FALSE(contains(events, "create ONVIF"));
+    EXPECT_EQ(1, _world->count("connect PSIA live=1"));
+}
+
+TEST_F(CameraProtocolTest, LockedAutoProbesAgainAfterRepeatedNotThisProtocol) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NOT_THIS_PROTOCOL);
+    setup("AUTO", "ONVIF");
+    cycle();
+    cycle();
+    // Any other failure resets the count: an unreachable camera says nothing about the protocol.
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::UNREACHABLE);
+    cycle();
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NOT_THIS_PROTOCOL);
+    for (int i = 0; i < 4; ++i) cycle();
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+    EXPECT_FALSE(contains(_world->events(), "create PSIA"));
+
+    cycle(); // fifth in a row: unlock
+    EXPECT_EQ(ControlProtocol::NONE, current());
+    EXPECT_TRUE(contains(_world->events(), "ready 0 Control protocol changed"));
+    cycle(); // probe
+    EXPECT_EQ(ControlProtocol::PSIA, current());
+    EXPECT_EQ(1, _world->count("connect PSIA live=1"));
+}
+
+TEST_F(CameraProtocolTest, SwitchingProtocolUnpublishesTheOldControllerAndFailsPendingRules) {
+    RuleResultRecorder recorder;
+    setup("ONVIF");
+    cycle();
+    ASSERT_EQ(ControlProtocol::ONVIF, current());
+    ASSERT_TRUE(_controller->isReady());
+
+    CbProbe probe;
+    auto controller = _controller;
+    auto cb = probe.cb();
+    onPoller([&]() { controller->applyRuleVideoConfigAsync("log-switch", "onvif-token", ruleConfig(), cb); });
+    ASSERT_TRUE(waitFor([&]() { return !probe.get().empty(); }));
+    settle();
+
+    _world->clear();
+    setup("PSIA");
+    auto events = _world->events();
+    ASSERT_GE(indexOf(events, "ready 0 Control protocol changed"), 0);
+    EXPECT_LT(indexOf(events, "ready 0 Control protocol changed"), indexOf(events, "destroy ONVIF"));
+    EXPECT_LT(indexOf(events, "destroy ONVIF"), indexOf(events, "create PSIA"));
+    EXPECT_FALSE(_controller->isReady());
+
+    cycle();
+    EXPECT_EQ(1, _world->count("connect PSIA live=1"));
+    auto results = recorder.results();
+    ASSERT_EQ(1u, results.size());
+    EXPECT_EQ("log-switch", results[0].log_id);
+    EXPECT_FALSE(results[0].success);
+    EXPECT_EQ("DEVICE_PROTOCOL_CHANGED", results[0].err_code);
+}
+
+TEST_F(CameraProtocolTest, CommandsDuringTheProbeReportTheDeviceOffline) {
+    setup("AUTO");
+    CbProbe probe;
+    auto controller = _controller;
+    auto cb = probe.cb();
+    onPoller([&]() { controller->PTZMove("left", 50, cb); });
+    ASSERT_TRUE(waitFor([&]() { return !probe.get().empty(); }));
+    EXPECT_EQ(std::vector<int>{ApiErrCode::CODE_DEVICE_OFFLINE}, probe.get());
+    EXPECT_FALSE(contains(_world->events(), "ptz"));
+}
+
+TEST(ControlProtocolSettingTest, UnknownValuesMeanAuto) {
+    EXPECT_EQ("ONVIF", controlProtocolSetting("onvif"));
+    EXPECT_EQ("PSIA", controlProtocolSetting("PSIA"));
+    EXPECT_EQ("ISAPI", controlProtocolSetting("isapi"));
+    EXPECT_EQ("AUTO", controlProtocolSetting(""));
+    EXPECT_EQ("AUTO", controlProtocolSetting("HIKVISION"));
+    EXPECT_EQ("AUTO", controlProtocolSetting("AUTO"));
+}
+
+// ── ProtocolLock / parseProtocolOrder: the selection rules camera and speaker share ─────────────
+
+TEST(ProtocolLockTest, FixedSettingIsUsedAndNeverUnlocks) {
+    ProtocolLock lock;
+    lock.setSetting("isapi");
+    EXPECT_FALSE(lock.isAuto());
+    EXPECT_EQ(ControlProtocol::ISAPI, lock.fixedOrLocked());
+    for (int i = 0; i < 10; ++i) {
+        EXPECT_FALSE(lock.onConnectError(ConnectError::NOT_THIS_PROTOCOL, 5));
+    }
+    EXPECT_EQ(ControlProtocol::ISAPI, lock.fixedOrLocked());
+}
+
+TEST(ProtocolLockTest, AutoProbesUntilConnectedThenStaysLocked) {
+    ProtocolLock lock;
+    lock.setSetting("AUTO");
+    EXPECT_TRUE(lock.isAuto());
+    EXPECT_EQ(ControlProtocol::NONE, lock.fixedOrLocked());
+    EXPECT_FALSE(lock.onConnected(ControlProtocol::PSIA)) << "first connect is not a change";
+    EXPECT_EQ(ControlProtocol::PSIA, lock.fixedOrLocked());
+    EXPECT_FALSE(lock.onConnected(ControlProtocol::PSIA));
+    EXPECT_TRUE(lock.onConnected(ControlProtocol::ISAPI));
+    EXPECT_EQ(ControlProtocol::ISAPI, lock.last());
+}
+
+TEST(ProtocolLockTest, RestoredProtocolLocksAutoAtOnce) {
+    ProtocolLock lock;
+    lock.restore(ControlProtocol::ONVIF);
+    lock.setSetting("");
+    EXPECT_EQ(ControlProtocol::ONVIF, lock.fixedOrLocked());
+    lock.restore(ControlProtocol::NONE);
+    EXPECT_EQ(ControlProtocol::NONE, lock.fixedOrLocked());
+}
+
+TEST(ProtocolLockTest, OnlyConsecutiveNotThisProtocolUnlocks) {
+    ProtocolLock lock;
+    lock.restore(ControlProtocol::ONVIF);
+    EXPECT_FALSE(lock.onConnectError(ConnectError::NOT_THIS_PROTOCOL, 3));
+    EXPECT_FALSE(lock.onConnectError(ConnectError::NOT_THIS_PROTOCOL, 3));
+    EXPECT_FALSE(lock.onConnectError(ConnectError::UNREACHABLE, 3)) << "resets the count";
+    EXPECT_FALSE(lock.onConnectError(ConnectError::AUTH_FAILED, 3));
+    EXPECT_FALSE(lock.onConnectError(ConnectError::NOT_THIS_PROTOCOL, 3));
+    EXPECT_FALSE(lock.onConnectError(ConnectError::NOT_THIS_PROTOCOL, 3));
+    EXPECT_TRUE(lock.onConnectError(ConnectError::NOT_THIS_PROTOCOL, 3));
+    lock.unlock();
+    EXPECT_EQ(ControlProtocol::NONE, lock.fixedOrLocked());
+    EXPECT_EQ(ControlProtocol::ONVIF, lock.last()) << "kept to detect the change on the next connect";
+    // A successful connect resets the count too; 0 or less means "at the first one".
+    lock.onConnected(ControlProtocol::ONVIF);
+    EXPECT_TRUE(lock.onConnectError(ConnectError::NOT_THIS_PROTOCOL, 0));
+}
+
+TEST(ReconnectPacerTest, RejectedCredentialsWaitTheLongerInterval) {
+    ReconnectPacer pacer;
+    EXPECT_TRUE(pacer.due(1000, 60, 300)) << "first cycle runs at once";
+    pacer.onAttempt(1000);
+    EXPECT_FALSE(pacer.due(1059, 60, 300));
+    EXPECT_TRUE(pacer.due(1060, 60, 300));
+
+    pacer.onAttempt(1060);
+    pacer.onResult(ConnectError::AUTH_FAILED);
+    EXPECT_TRUE(pacer.authFailed());
+    EXPECT_FALSE(pacer.due(1120, 60, 300));
+    EXPECT_FALSE(pacer.due(1359, 60, 300));
+    EXPECT_TRUE(pacer.due(1360, 60, 300));
+    // An auth retry shorter than the normal interval (or 0) does not speed the cycle up.
+    EXPECT_FALSE(pacer.due(1100, 60, 0));
+    EXPECT_TRUE(pacer.due(1120, 60, 0));
+
+    // Other failures and successes go back to the normal interval.
+    pacer.onResult(ConnectError::UNREACHABLE);
+    EXPECT_TRUE(pacer.due(1120, 60, 300));
+    pacer.onResult(ConnectError::AUTH_FAILED);
+
+    // skipWait keeps the verdict, reset drops it; both make the next cycle due at once.
+    pacer.skipWait();
+    EXPECT_TRUE(pacer.due(1061, 60, 300));
+    EXPECT_TRUE(pacer.authFailed());
+    pacer.onAttempt(1061);
+    pacer.reset();
+    EXPECT_TRUE(pacer.due(1062, 60, 300));
+    EXPECT_FALSE(pacer.authFailed());
+    // A clock that went backwards does not stall the cycle.
+    pacer.onAttempt(5000);
+    EXPECT_TRUE(pacer.due(4000, 60, 300));
+}
+
+TEST(ProtocolOrderTest, UnknownAndRepeatedNamesAreSkipped) {
+    typedef std::vector<ControlProtocol> Order;
+    EXPECT_EQ((Order{ControlProtocol::ISAPI, ControlProtocol::ONVIF}), parseProtocolOrder(" isapi , foo,ONVIF,isapi"));
+    const Order fallback{ControlProtocol::ONVIF, ControlProtocol::ISAPI, ControlProtocol::PSIA};
+    EXPECT_EQ(fallback, parseProtocolOrder(""));
+    EXPECT_EQ(fallback, parseProtocolOrder("auto,none"));
+}
+
+// ── SpeakerController: same protocol selection as the camera ────────────────────────────────────
+
+namespace managerkit {
+class SpeakerControllerTestPeer {
+public:
+    static void cycle(SpeakerController &c) {
+        c._pacer.skipWait();
+        c.onManager();
+    }
+    static ControlProtocol deviceProtocol(SpeakerController &c) {
+        return c._device_ctr ? c._device_ctr->protocol() : ControlProtocol::NONE;
+    }
+    static bool authRejected(SpeakerController &c) { return c._pacer.authFailed(); }
+    static int notReadyCode(SpeakerController &c) { return c.notReadyError().getCustomCode(); }
+};
+} // namespace managerkit
+
+namespace {
+class ProtocolTestSpeaker : public SpeakerController {
+public:
+    ProtocolTestSpeaker(const DeviceTuple &tuple, const EventPoller::Ptr &poller, std::shared_ptr<ProtocolWorld> world)
+        : SpeakerController(tuple, poller), _world(std::move(world)) {}
+
+protected:
+    DeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &, const std::string &,
+                                                 const std::string &) override {
+        return std::make_shared<FakeProtocolControl>(protocol, _world);
+    }
+
+private:
+    std::shared_ptr<ProtocolWorld> _world;
+};
+} // namespace
+
+class SpeakerProtocolTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        _poller = EventPollerPool::Instance().getPoller();
+        _world = std::make_shared<ProtocolWorld>();
+        DeviceTuple tuple;
+        tuple.vhost = DEFAULT_VHOST;
+        tuple.device_id = "speaker-controller-test";
+        _speaker = std::make_shared<ProtocolTestSpeaker>(tuple, _poller, _world);
+        _listener = std::make_shared<ReadyRecorder>(_world, _poller);
+        _speaker->setListener(_listener);
+    }
+
+    void TearDown() override {
+        auto speaker = _speaker;
+        _poller->sync([speaker]() { speaker->stopController(); });
+    }
+
+    void setup(const std::string &protocol, const std::string &last = "", const std::string &manufacturer = "ONVIF",
+               bool time_sync = true) {
+        SpeakerOption option;
+        option.manufacturer = manufacturer;
+        option.enableTimeSync = time_sync;
+        option.ip = "127.0.0.1";
+        option.port = 1;
+        option.controlProtocol = protocol;
+        auto speaker = _speaker;
+        _poller->sync([speaker, option, last]() {
+            if (!last.empty()) speaker->setLastControlProtocol(last);
+            speaker->setupController(option);
+        });
+    }
+
+    void cycle() {
+        auto speaker = _speaker;
+        _poller->sync([speaker]() { SpeakerControllerTestPeer::cycle(*speaker); });
+        size_t seen = _world->events().size();
+        for (int quiet = 0, i = 0; quiet < 4 && i < 100; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            _poller->sync([]() {});
+            size_t now = _world->events().size();
+            quiet = now == seen ? quiet + 1 : 0;
+            seen = now;
+        }
+    }
+
+    ControlProtocol current() {
+        ControlProtocol protocol = ControlProtocol::NONE;
+        auto speaker = _speaker;
+        _poller->sync([&]() { protocol = SpeakerControllerTestPeer::deviceProtocol(*speaker); });
+        return protocol;
+    }
+
+    EventPoller::Ptr _poller;
+    std::shared_ptr<ProtocolWorld> _world;
+    std::shared_ptr<ProtocolTestSpeaker> _speaker;
+    std::shared_ptr<ReadyRecorder> _listener;
+};
+
+TEST_F(SpeakerProtocolTest, AutoTriesOnvifFirstAndLocksTheFirstThatAnswers) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NOT_THIS_PROTOCOL);
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::NONE);
+    setup("");
+    EXPECT_EQ(ControlProtocol::NONE, current()) << "no controller before the probe";
+    cycle();
+    auto events = _world->events();
+    EXPECT_LT(indexOf(events, "create ONVIF"), indexOf(events, "create ISAPI"));
+    EXPECT_LT(indexOf(events, "destroy ONVIF"), indexOf(events, "create ISAPI"));
+    EXPECT_TRUE(contains(events, "ready 1 connected"));
+    EXPECT_EQ(ControlProtocol::ISAPI, current());
+    EXPECT_TRUE(_speaker->isReady());
+
+    _world->clear();
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "create"));
+    EXPECT_EQ(1, _world->count("connect ISAPI live=1"));
+}
+
+TEST_F(SpeakerProtocolTest, OnvifSpeakerStillConnectsOverOnvif) {
+    setup("AUTO");
+    cycle();
+    EXPECT_EQ(1, _world->count("connect ONVIF live=1"));
+    EXPECT_FALSE(contains(_world->events(), "create ISAPI"));
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+}
+
+TEST_F(SpeakerProtocolTest, ReadySpeakerIsProbedInsteadOfReconnected) {
+    _world->probe_ok = true;
+    setup("ONVIF");
+    for (int i = 0; i < 3; ++i) cycle();
+    EXPECT_EQ(1, _world->count("connect ONVIF live=1"));
+    EXPECT_EQ(2, _world->count("probe ONVIF"));
+
+    _world->probe_ok = false; // answers no more: full connect again
+    cycle();
+    EXPECT_EQ(2, _world->count("connect ONVIF live=1"));
+}
+
+TEST_F(SpeakerProtocolTest, FixedProtocolAndSavedLockSkipTheProbe) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NOT_THIS_PROTOCOL);
+    _world->setResult(ControlProtocol::PSIA, ConnectError::NOT_THIS_PROTOCOL);
+    setup("PSIA");
+    EXPECT_EQ(ControlProtocol::PSIA, current());
+    for (int i = 0; i < 6; ++i) cycle();
+    EXPECT_FALSE(contains(_world->events(), "create ONVIF"));
+
+    _world->clear();
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::NONE);
+    setup("AUTO", "ISAPI");
+    EXPECT_EQ(ControlProtocol::NONE, current()) << "a reconfigured speaker probes again";
+}
+
+TEST_F(SpeakerProtocolTest, SavedProtocolLocksAutoAtStartup) {
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::NONE);
+    setup("AUTO", "ISAPI");
+    EXPECT_EQ(ControlProtocol::ISAPI, current());
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "create ONVIF"));
+    EXPECT_EQ(1, _world->count("connect ISAPI live=1"));
+}
+
+// The Bosch plugin provisions an ONVIF account and needs ONVIF for its backchannel.
+TEST_F(SpeakerProtocolTest, RejectedPasswordSlowsDownAndReconnectNowLogsInAtOnce) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    setup("ONVIF");
+    cycle();
+    auto speaker = _speaker;
+    bool rejected = false;
+    _poller->sync([&]() { rejected = SpeakerControllerTestPeer::authRejected(*speaker); });
+    EXPECT_TRUE(rejected);
+
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NONE);
+    ReconnectWait wait;
+    _poller->sync([&]() { speaker->reconnectNow(wait.callback()); });
+    ASSERT_TRUE(wait.wait());
+    EXPECT_TRUE(wait.result.finished);
+    EXPECT_TRUE(wait.result.connected);
+    EXPECT_EQ("ONVIF", wait.result.protocol);
+    EXPECT_EQ(2, _world->count("connect ONVIF live=1"));
+    _poller->sync([&]() { rejected = SpeakerControllerTestPeer::authRejected(*speaker); });
+    EXPECT_FALSE(rejected);
+}
+
+TEST_F(SpeakerProtocolTest, BoschSpeakerIsAlwaysOnvif) {
+    setup("ISAPI", "", "Bosch");
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "create ISAPI"));
+    EXPECT_EQ(1, _world->count("connect ONVIF live=1"));
+}
+
+// A command sent while the speaker is not ready says why the last attempt failed.
+TEST_F(SpeakerProtocolTest, NotReadyErrorSaysWhyTheProbeFailed) {
+    auto speaker = _speaker;
+    int code = 0;
+    setup("");
+    _poller->sync([&]() { code = SpeakerControllerTestPeer::notReadyCode(*speaker); });
+    EXPECT_EQ(ApiErrCode::CODE_DEVICE_OFFLINE, code) << "nothing tried yet";
+
+    // ONVIF rejects the account, ISAPI and PSIA are not spoken: the ONVIF verdict is reported.
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    _world->setFailure(ControlProtocol::ONVIF, DeviceFailure::Unauthorized);
+    _world->setResult(ControlProtocol::PSIA, ConnectError::NOT_THIS_PROTOCOL);
+    cycle();
+    EXPECT_FALSE(_speaker->isReady());
+    EXPECT_EQ(ControlProtocol::NONE, current());
+    _poller->sync([&]() { code = SpeakerControllerTestPeer::notReadyCode(*speaker); });
+    EXPECT_EQ(ApiErrCode::CODE_DEVICE_UNAUTHORIZED, code);
+}
+
+TEST_F(SpeakerProtocolTest, NotReadyErrorSaysWhyTheLockedProtocolFailed) {
+    auto speaker = _speaker;
+    int code = 0;
+    setup("ONVIF");
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::UNREACHABLE);
+    _world->setFailure(ControlProtocol::ONVIF, DeviceFailure::Unreachable);
+    cycle();
+    EXPECT_FALSE(_speaker->isReady());
+    _poller->sync([&]() { code = SpeakerControllerTestPeer::notReadyCode(*speaker); });
+    EXPECT_EQ(ApiErrCode::CODE_DEVICE_UNREACHABLE, code);
+}
+
 // ── Camera clock: only ever set by the maintenance cycle ──────────────────────
 
 namespace {
@@ -1323,4 +2187,117 @@ TEST_F(CameraControllerTest, ServerConfigTurnsClockSyncOffForEveryCamera) {
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     EXPECT_EQ(0, countCalls(fake, "SetCameraTime"));
     setClockSyncEnable(true);
+}
+
+// ── Speaker clock: set by the maintenance cycle like a camera's ──────────────
+
+TEST_F(SpeakerProtocolTest, ClockIsSetOnConnectThenOnlyWhenDue) {
+    setup("ONVIF");
+    _world->probe_ok = true;
+    cycle();
+    EXPECT_TRUE(_speaker->isReady());
+    EXPECT_EQ(1, _world->count("settime ONVIF"));
+    // Still connected, interval not due: the cycle only probes.
+    cycle();
+    EXPECT_EQ(1, _world->count("probe ONVIF"));
+    EXPECT_EQ(1, _world->count("settime ONVIF"));
+}
+
+TEST_F(SpeakerProtocolTest, ClockOffFoundByACommandIsSetByTheNextCycle) {
+    setup("ONVIF");
+    _world->probe_ok = true;
+    cycle();
+    _world->sync_wanted = true;
+    cycle();
+    EXPECT_EQ(2, _world->count("settime ONVIF"));
+    cycle();
+    EXPECT_EQ(2, _world->count("settime ONVIF")) << "flag consumed";
+}
+
+TEST_F(SpeakerProtocolTest, ConnectRejectedForTheClockSetsIt) {
+    setup("ONVIF");
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::OTHER);
+    _world->setFailure(ControlProtocol::ONVIF, DeviceFailure::ClockSkew);
+    cycle();
+    EXPECT_FALSE(_speaker->isReady());
+    EXPECT_EQ(1, _world->count("settime ONVIF"));
+
+    _world->clear();
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    _world->setFailure(ControlProtocol::ONVIF, DeviceFailure::Unauthorized);
+    cycle();
+    EXPECT_EQ(0, _world->count("settime ONVIF")) << "a wrong password leaves the clock alone";
+}
+
+TEST_F(SpeakerProtocolTest, AutoProbeRejectedForTheClockSetsItAndStaysOnOnvif) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::OTHER);
+    _world->setFailure(ControlProtocol::ONVIF, DeviceFailure::ClockSkew);
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::NONE);
+    setup("");
+    cycle();
+    auto events = _world->events();
+    EXPECT_TRUE(contains(events, "settime ONVIF"));
+    EXPECT_FALSE(contains(events, "create ISAPI"));
+    EXPECT_EQ(ControlProtocol::NONE, current());
+}
+
+TEST_F(SpeakerProtocolTest, SpeakerOptionTurnsClockSyncOff) {
+    setup("ONVIF", "", "ONVIF", false);
+    cycle();
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::OTHER);
+    _world->setFailure(ControlProtocol::ONVIF, DeviceFailure::ClockSkew);
+    cycle();
+    EXPECT_EQ(0, _world->count("settime ONVIF"));
+}
+
+TEST_F(SpeakerProtocolTest, ServerConfigTurnsClockSyncOffForSpeakers) {
+    setClockSyncEnable(false);
+    setup("ONVIF");
+    cycle();
+    EXPECT_TRUE(_speaker->isReady());
+    EXPECT_EQ(0, _world->count("settime ONVIF"));
+    setClockSyncEnable(true);
+}
+
+// ── /device/reconnect reports the cause of a failed attempt (data.code) ──────
+
+TEST_F(SpeakerProtocolTest, ReconnectReportsWhyTheLockedProtocolFailed) {
+    setup("ONVIF");
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::UNREACHABLE);
+    _world->setFailure(ControlProtocol::ONVIF, DeviceFailure::Unreachable);
+    auto speaker = _speaker;
+    ReconnectWait wait;
+    _poller->sync([&]() { speaker->reconnectNow(wait.callback()); });
+    ASSERT_TRUE(wait.wait());
+    EXPECT_TRUE(wait.result.finished);
+    EXPECT_FALSE(wait.result.connected);
+    EXPECT_EQ(DeviceFailure::Unreachable, wait.result.failure);
+}
+
+TEST_F(SpeakerProtocolTest, ReconnectReportsWhyTheProbeFailed) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    _world->setFailure(ControlProtocol::ONVIF, DeviceFailure::Unauthorized);
+    _world->setResult(ControlProtocol::PSIA, ConnectError::NOT_THIS_PROTOCOL);
+    setup("");
+    auto speaker = _speaker;
+    ReconnectWait wait;
+    _poller->sync([&]() { speaker->reconnectNow(wait.callback()); });
+    ASSERT_TRUE(wait.wait());
+    EXPECT_FALSE(wait.result.connected);
+    EXPECT_EQ(ConnectError::AUTH_FAILED, wait.result.error);
+    EXPECT_EQ(DeviceFailure::Unauthorized, wait.result.failure) << "the ONVIF verdict, not PSIA's";
+}
+
+// ── Bosch vendor API: the cause of a failed request ──────────────────────────
+
+TEST(BoschFailureTest, RequestFailureForTheApi) {
+    EXPECT_EQ(DeviceFailure::Unauthorized, BoschIpSpeaker::classifyFailure(Err_success, 401));
+    EXPECT_EQ(DeviceFailure::Unauthorized, BoschIpSpeaker::classifyFailure(Err_success, 403));
+    EXPECT_EQ(DeviceFailure::None, BoschIpSpeaker::classifyFailure(Err_success, 204));
+    EXPECT_EQ(DeviceFailure::Other, BoschIpSpeaker::classifyFailure(Err_success, 500));
+    EXPECT_EQ(DeviceFailure::None, BoschIpSpeaker::classifyFailure(Err_other, 200)) << "answer came, body failed";
+    EXPECT_EQ(DeviceFailure::Unreachable, BoschIpSpeaker::classifyFailure(Err_refused, 0));
+    EXPECT_EQ(DeviceFailure::Unreachable, BoschIpSpeaker::classifyFailure(Err_dns, 0));
+    EXPECT_EQ(DeviceFailure::Timeout, BoschIpSpeaker::classifyFailure(Err_timeout, 0));
+    EXPECT_EQ(DeviceFailure::Timeout, BoschIpSpeaker::classifyFailure(Err_eof, 0));
 }

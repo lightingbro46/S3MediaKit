@@ -20,6 +20,8 @@ static Json::Value makeDeviceStatisticJson(const bool &connect, const string &st
     Json::Value ret = Json::objectValue;
     ret["connect"] = connect;
     ret["status"] = status;
+    ret["capabilities"]["isOnvifDevice"] = caps.isOnvifDevice;
+    ret["capabilities"]["controlProtocol"] = caps.controlProtocol;
     // deviceInfo
     Json::Value deviceInfo = Json::objectValue;
     deviceInfo["manufacturer"]      = caps.onvifProfile.deviceInfo.manufacturer;
@@ -67,6 +69,8 @@ static Json::Value makeDeviceStatisticJson(const bool &connect, const string &st
 static DeviceCapabilities getDeviceCapabilities(const Json::Value &data) {
     DeviceCapabilities stats;
     stats.isOnvifDevice = !data["isOnvifDevice"].empty() ? data["isOnvifDevice"].asBool() : false;
+    stats.controlProtocol = data["controlProtocol"].isString() ? data["controlProtocol"].asString()
+                          : (stats.isOnvifDevice ? "ONVIF" : "");
     // deviceInfo
     OnvifProfile profile;
     profile.deviceInfo.manufacturer     = data["onvifProfile"]["deviceInfo"]["manufacturer"].asString();
@@ -145,6 +149,8 @@ bool SpeakerStatisticHelper::getParams(const string &json_str, SpeakerStatistic 
     option.mediaPort = ret["mediaPort"].asInt();
     option.autoMediaPort = ret["autoMediaPort"].asBool();
     option.audioPlaybackMode = ret["audioPlaybackMode"].asInt();
+    option.controlProtocol = controlProtocolSetting(ret["controlProtocol"].asString());
+    option.enableTimeSync = ret.isMember("enableTimeSync") ? ret["enableTimeSync"].asBool() : true;
     stats.option = option;
 
     stats.connect = ret["connect"].asBool();
@@ -208,6 +214,8 @@ string SpeakerStatisticHelper::getParamsString(const SpeakerStatistic &stats) {
     root["mediaPort"] = stats.option.mediaPort;
     root["autoMediaPort"] = stats.option.autoMediaPort;
     root["audioPlaybackMode"] = stats.option.audioPlaybackMode;
+    root["controlProtocol"] = stats.option.controlProtocol;
+    root["enableTimeSync"] = stats.option.enableTimeSync;
 
     // add params
     Json::Value params = Json::arrayValue;
@@ -269,6 +277,9 @@ void SpeakerStatisticImp::load() {
         fileUploaded = saved_stats.fileUploaded;
         // The volume the user configured is only known here: the device reports its own level.
         device_caps.audioVolumeInfo.configuredAudioVolume = saved_stats.device_caps.audioVolumeInfo.configuredAudioVolume;
+        // The protocol AUTO locked to, restored into the controller by GenericIPSpeakerImp.
+        device_caps.controlProtocol = saved_stats.device_caps.controlProtocol;
+        device_caps.isOnvifDevice = saved_stats.device_caps.isOnvifDevice;
     }
 }
 
@@ -305,7 +316,7 @@ void SpeakerStatisticImp::addDeviceCapabilities(bool input_connect, string input
     }
     saveOnvifCredentials();
     DebugL << "Device " << tuple.shortUrl() << " capabilities: Connected=" << connect << ", Status=" << status
-           << ", isOnvifDevice=" << device_caps.isOnvifDevice;
+           << ", isOnvifDevice=" << device_caps.isOnvifDevice << ", controlProtocol=" << device_caps.controlProtocol;
     save();
 }
 
@@ -369,7 +380,7 @@ void SpeakerStatisticImp::remove() {
 }
 
 void SpeakerStatisticImp::saveOnvifCredentials() {
-    if (connect) {
+    if (connect && device_caps.isOnvifDevice) {
         // Same account SpeakerController::setupDeviceController() logs in with.
         bool vendor_account = requiresSeparateDeviceCredential(getDeviceBrand(option.manufacturer));
         GET_CONFIG(std::string, onvif_username, mediakit::Speaker::kOnvifUsername);

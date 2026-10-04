@@ -10,14 +10,22 @@ INSTANCE_IMP(BackchannelManager)
 BackchannelManager::BackchannelManager() {}
 
 void BackchannelManager::registerDevice(const std::string& deviceId, const std::string& url) {
+    AudioBackchannelInfo info;
+    info.transport = AudioBackchannelInfo::RTSP_ONVIF;
+    info.url = url;
+    registerDevice(deviceId, info);
+}
+
+void BackchannelManager::registerDevice(const std::string& deviceId, const AudioBackchannelInfo& info) {
     std::lock_guard<std::mutex> lock(_mutex);
     auto it = _devices.find(deviceId);
     if (it == _devices.end()) {
-        _devices.emplace(deviceId, url);
-        InfoL << "Registered device for backchannel: " << deviceId;
+        _devices.emplace(deviceId, info);
+        InfoL << "Registered device for backchannel: " << deviceId
+              << (info.transport == AudioBackchannelInfo::HTTP_ISAPI ? " (ISAPI two-way audio)" : " (RTSP)");
     } else {
-        // Update URL if device already exists
-        it->second = url;
+        // Update the target if the device already exists
+        it->second = info;
     }
 }
 
@@ -39,7 +47,7 @@ void BackchannelManager::unregisterDevice(const std::string& deviceId) {
     InfoL << "Unregistered device from backchannel: " << deviceId;
 }
 
-BackchannelPusher::Ptr BackchannelManager::getOrCreatePusher(const std::string& deviceId) {
+IBackchannelPusher::Ptr BackchannelManager::getOrCreatePusher(const std::string& deviceId) {
 
     auto it = _activePushers.find(deviceId);
     if (it != _activePushers.end()) {
@@ -53,10 +61,19 @@ BackchannelPusher::Ptr BackchannelManager::getOrCreatePusher(const std::string& 
         return nullptr;
     }
 
-    auto pusher = std::make_shared<BackchannelPusher>(cfgIt->second);
+    IBackchannelPusher::Ptr pusher;
+    if (cfgIt->second.transport == AudioBackchannelInfo::HTTP_ISAPI) {
+        pusher = std::make_shared<IsapiTwoWayAudioPusher>(cfgIt->second);
+    } else {
+        pusher = std::make_shared<BackchannelPusher>(cfgIt->second.url);
+    }
     const std::string dID = deviceId;
     pusher->onFailed = [dID](const toolkit::SockException& ex) {
-        WarnL << "Backchannel to " << dID << " failed: " << ex.what();
+        if (ex.getCustomCode() == IsapiTwoWayAudioPusher::kDeviceBusyCode) {
+            WarnL << "Backchannel to " << dID << " failed: device busy (another two-way audio session): " << ex.what();
+        } else {
+            WarnL << "Backchannel to " << dID << " failed: " << ex.what();
+        }
         BackchannelManager::Instance().stopSession(dID);
     };
 
@@ -67,7 +84,7 @@ BackchannelPusher::Ptr BackchannelManager::getOrCreatePusher(const std::string& 
 
 bool BackchannelManager::playFile(const std::string &deviceId, const std::string &filePath) {
     BackchannelOwnershipTicket::Ptr ticket;
-    BackchannelPusher::Ptr pusher;
+    IBackchannelPusher::Ptr pusher;
     FileAudioSource::Ptr fileSource;
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -114,7 +131,7 @@ bool BackchannelManager::playFile(const std::string &deviceId, const std::string
 
 StartResult BackchannelManager::startLiveSession(const std::string& deviceId, const uint32_t& sampleRate, const uint8_t& channels) {
     BackchannelOwnershipTicket::Ptr ticket;
-    BackchannelPusher::Ptr pusher;
+    IBackchannelPusher::Ptr pusher;
     LiveAudioSource::Ptr liveSource;
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -170,7 +187,7 @@ bool BackchannelManager::pushAudioFrame(const std::string& deviceId, const int16
 }
 
 void BackchannelManager::stopSession(const std::string& deviceId) {
-    BackchannelPusher::Ptr pusher;
+    IBackchannelPusher::Ptr pusher;
     BackchannelMediaSource::Ptr mediaSource;
     {
         std::lock_guard<std::mutex> lock(_mutex);

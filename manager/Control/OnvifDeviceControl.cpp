@@ -377,44 +377,6 @@ static std::string ResRangeToString(const std::vector<std::pair<int, int>>& v)
     return oss.str();
 }
 
-static std::string bitrateRangeToString(int minBitrate, int maxBitrate) {
-    if (minBitrate <= 0 || maxBitrate < minBitrate)
-        return "";
-
-    int steps = (maxBitrate >= 8000) ? 8 : (maxBitrate / 1000);
-    steps = std::max(steps, 2);
-
-    double step = static_cast<double>(maxBitrate - minBitrate) / (steps - 1);
-
-    std::string result;
-
-    for (int i = 0; i < steps; ++i) {
-        int value;
-
-        if (i == 0) {
-            value = minBitrate;
-        } else if (i == steps - 1) {
-            value = maxBitrate;
-        } else {
-            int raw = static_cast<int>(minBitrate + i * step);
-            int rounded = (raw + 128) / 256 * 256;
-
-            value = std::max(minBitrate, std::min(maxBitrate, rounded));
-        }
-
-        if (!result.empty()) {
-            size_t pos = result.find_last_of(' ');
-            int last = (pos == std::string::npos) ? std::stoi(result) : std::stoi(result.substr(pos + 1));
-            if (last == value) continue;
-
-            result += " ";
-        }
-
-        result += std::to_string(value);
-    }
-    return result;
-}
-
 static int parse_timezone_offset_seconds(const std::string& tz) {
     if (tz.empty()) return 0;
 
@@ -568,7 +530,14 @@ bool OnvifControl::connect() {
         _proxyDevice = new DeviceBindingProxy(_m_soap);
     }
 
+    _lastConnectError = ConnectError::OTHER;
     if (!getDeviceInformation()) {
+        _lastConnectError = classifyConnectError(_m_soap->error, _soapErrMsg);
+        if (lastFailure() == DeviceFailure::ClockSkew) {
+            // Rejected only because the camera clock is far off, which the caller fixes: not a
+            // verdict on the credentials, so no longer retry pause and no other protocol tried.
+            _lastConnectError = ConnectError::OTHER;
+        }
         disconnect();
         return false;
     }
@@ -593,7 +562,32 @@ bool OnvifControl::connect() {
 
     getStorageConfiguration();
 
+    _lastConnectError = ConnectError::NONE;
     return true;
+}
+
+ConnectError OnvifControl::classifyConnectError(int soap_error, const std::string &fault) {
+    switch (soap_error) {
+        case SOAP_OK:
+            return ConnectError::NONE;
+        case SOAP_EOF:
+        case SOAP_TCP_ERROR:
+        case SOAP_SSL_ERROR:
+            return ConnectError::UNREACHABLE;
+        case 401:
+        case 403:
+            return ConnectError::AUTH_FAILED;
+        case 404:
+        case 405:
+        case SOAP_NO_TAG:
+        case SOAP_TAG_MISMATCH:
+        case SOAP_SYNTAX_ERROR:
+            return ConnectError::NOT_THIS_PROTOCOL;
+        default:
+            break;
+    }
+    // A SOAP fault means the device does speak ONVIF.
+    return isAuthOrTimestampFault(fault) ? ConnectError::AUTH_FAILED : ConnectError::OTHER;
 }
 
 bool OnvifControl::probeConnection() {
@@ -1876,7 +1870,15 @@ bool OnvifControl::PTZ_AbsoluteMove(float pan, float tilt, float zoom, float pan
     return true;
 }
 
-tt__MoveStatus OnvifControl::PTZ_GetStatus(float &pan, float &tilt, float &zoom) {
+PtzMoveStatus OnvifControl::PTZ_GetStatus(float &pan, float &tilt, float &zoom) {
+    switch (PTZ_GetMoveStatus(pan, tilt, zoom)) {
+        case tt__MoveStatus__IDLE: return PtzMoveStatus::IDLE;
+        case tt__MoveStatus__MOVING: return PtzMoveStatus::MOVING;
+        default: return PtzMoveStatus::UNKNOWN;
+    }
+}
+
+tt__MoveStatus OnvifControl::PTZ_GetMoveStatus(float &pan, float &tilt, float &zoom) {
     std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_proxyPTZ == nullptr) {
         WarnL << "Unknown proxyPTZ";
@@ -2140,7 +2142,7 @@ bool OnvifControl::PTZ_SetPreset(const string &presetName, const string &presetT
     onceToken token([&]() { _isControlled++; }, [&]() { _isControlled--; });
 
     pan = 0.0f, tilt = 0.0f, zoom = 0.0f;
-    tt__MoveStatus moveStatus = PTZ_GetStatus(pan, tilt, zoom);
+    tt__MoveStatus moveStatus = PTZ_GetMoveStatus(pan, tilt, zoom);
     if (moveStatus == tt__MoveStatus__MOVING) {
         WarnL << "PTZ is moving, can not set preset";
         return false;
@@ -3023,6 +3025,17 @@ void OnvifControl::getStorageConfiguration() {
             _sdCardInfo.type = StorageConfig->Data->type;
         }
     }
+}
+
+bool OnvifControl::setupAudioBackchannel(AudioBackchannelInfo &out, bool sharedDspPipeline) {
+    std::string uri;
+    if (!setupAudioBackchannel(uri, sharedDspPipeline) || uri.empty()) {
+        return false;
+    }
+    out = AudioBackchannelInfo();
+    out.transport = AudioBackchannelInfo::RTSP_ONVIF;
+    out.url = uri;
+    return true;
 }
 
 bool OnvifControl::setupAudioBackchannel(std::string &backchannelUri, const bool &sharedDspPipeline) {

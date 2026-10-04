@@ -82,6 +82,8 @@ void GenericRtspCameraImp::setupController() {
             // add user presets after controller constructor
             auto strong_statistic = _statistic.lock();
             auto params = strong_statistic->getParams();
+            // An AUTO camera keeps the protocol it was controlled with instead of probing again.
+            _controller->setLastControlProtocol(params.device_stats.device_caps.controlProtocol);
             if (!params.device_stats.user_presets.empty()) {
                 for (auto &it : params.device_stats.user_presets) {
                     auto p = it.second;
@@ -175,6 +177,18 @@ void GenericRtspCameraImp::PTZMove(const std::string &strDirect, int speed, cons
         return;
     }
     _controller->PTZMove(strDirect, speed, cb);
+}
+
+void GenericRtspCameraImp::reconnectController(const ReconnectCallback &cb) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call reconnectController in it's owner poller");
+    if (!_controller) {
+        ReconnectResult result;
+        result.finished = true;
+        result.msg = "Device controller is not ready";
+        cb(result);
+        return;
+    }
+    _controller->reconnectNow(cb);
 }
 
 std::function<DeviceClockReading()> GenericRtspCameraImp::clockReader() {

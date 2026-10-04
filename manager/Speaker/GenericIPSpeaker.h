@@ -45,6 +45,10 @@ public:
     };
     int audioPlaybackMode = kAudioPlaybackModeAuto;
 
+    // Whether the server may set this speaker's clock (also needs onvif.clockSyncEnable);
+    // speakerAdvanceConfig.onvif.enableTimeSync.
+    bool enableTimeSync = true;
+
     bool operator==(const SpeakerOption& other) const{
         return name == other.name &&
                manufacturer == other.manufacturer &&
@@ -59,7 +63,9 @@ public:
                enableActive == other.enableActive &&
                mediaPort == other.mediaPort &&
                autoMediaPort == other.autoMediaPort &&
-               audioPlaybackMode == other.audioPlaybackMode;
+               audioPlaybackMode == other.audioPlaybackMode &&
+               controlProtocol == other.controlProtocol &&
+               enableTimeSync == other.enableTimeSync;
     }
 
     bool operator!=(const SpeakerOption& other) const {

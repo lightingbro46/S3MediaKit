@@ -1,5 +1,5 @@
-#ifndef COMMON_DEVICECONTROL_H
-#define COMMON_DEVICECONTROL_H
+#ifndef COMMON_DEVICECONTROLTYPES_H
+#define COMMON_DEVICECONTROLTYPES_H
 
 #include <ctime>
 #include <memory>
@@ -53,17 +53,6 @@ struct DeviceClockReading {
     bool valid() const { return server_time != 0; }
 };
 
-class DeviceControl {
-public:
-    using Ptr = std::shared_ptr<DeviceControl>;
-
-    virtual ~DeviceControl() = default;
-
-    virtual bool connect() = 0;
-
-    virtual void disconnect() = 0;
-};
-
 } // namespace managerkit
 
-#endif // COMMON_DEVICECONTROL_H
+#endif // COMMON_DEVICECONTROLTYPES_H

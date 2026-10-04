@@ -48,6 +48,7 @@ Toàn bộ tải đến từ ba tiến trình Python, không cần camera thật
 |---|---|
 | `rtsp_source.py` | Máy chủ RTSP phát lại vòng H.264 đã đóng gói RTP sẵn; luồng có path `-sub` phát file riêng khi có `--sub-media`. Mọi phiên dùng chung bộ đếm frame nên mỗi frame chỉ đóng gói một lần rồi ghi cho mọi phiên. Chỉ RTP/AVP/TCP. `--procs N` chạy N tiến trình cùng cổng (`SO_REUSEPORT`). Đã đo 2026-09-29: **600 phiên bitrate thật = 1,29 Gbps, 4 tiến trình, mỗi tiến trình ~4% một lõi, lệch nhịp p99 < 2 ms**. |
 | `onvif_mock.py` | Thiết bị ONVIF giả cho N camera trên **một** cổng; danh tính thiết bị lấy từ địa chỉ loopback đích (127.1.x.y). Phủ đủ chuỗi `OnvifControl::connect()` và nhánh PTZ. Operation ngoài danh sách trả `ActionNotSupported` — giống camera đời thấp. |
+| `rtsp_backchannel_mock.py` | Thiết bị nhận RTSP backchannel kiểu ONVIF (DESCRIBE `Require: www.onvif.org/ver20/backchannel` → SETUP `/audioback` interleaved → PLAY → RTP/TCP → TEARDOWN, Digest). `--state` ghi số gói/byte RTP, payload type, seq hở, số TEARDOWN; `--audio-out` ghi payload G.711. Dùng cho `RtspBackchannelMockTest` trong `unit_psia_control`. |
 | `mock_api.py` | Service API giả, trả 200 cho mọi hook, đếm hook theo path. Hook lấy cấu hình (`configuration-2nd-gen`) trả `<work>/<node>/api-config.json` — nhờ đó chạy được bản **Release** (bản Release không đọc `api-config.json`). |
 
 Điều kiện lỗi được điều khiển qua hai file JSON, cả hai tiến trình đọc lại mỗi giây

@@ -34,6 +34,9 @@ public:
 
     void PTZMove(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
 
+    // Owner poller: CameraController::reconnectNow().
+    void reconnectController(const ReconnectCallback &cb);
+
     // See CameraController::clockReader(). Owner poller only; null without a controller.
     std::function<DeviceClockReading()> clockReader();
 

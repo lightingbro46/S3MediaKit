@@ -236,6 +236,7 @@ public:
                port == other.port &&
                username == other.username &&
                password == other.password &&
+               controlProtocol == other.controlProtocol &&
                disablePrimaryStream == other.disablePrimaryStream &&
                disableSecondaryStream == other.disableSecondaryStream &&
                doNotRecordPrimaryStream == other.doNotRecordPrimaryStream &&

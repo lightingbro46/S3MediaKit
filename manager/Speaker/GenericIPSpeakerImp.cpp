@@ -1,5 +1,6 @@
 #include "GenericIPSpeakerImp.h"
 #include "server/WebApiErrCode.h"
+#include "Common/DeviceFailureCode.h"
 #include "Common/config.h"
 #include "Thread/WorkThreadPool.h"
 
@@ -66,6 +67,10 @@ void GenericIPSpeakerImp::setupController() {
     if (!_controller) {
         _controller = std::make_shared<SpeakerController>(_src->getDeviceTuple(), _poller);
         _controller->createTimer();
+        // An AUTO speaker keeps the protocol it was controlled with instead of probing again.
+        if (auto strong_statistic = _statistic.lock()) {
+            _controller->setLastControlProtocol(strong_statistic->getParams().device_caps.controlProtocol);
+        }
     }
     _controller->setupController(_option);
 }
@@ -92,6 +97,10 @@ void GenericIPSpeakerImp::playAudioFile(const std::string& speakerId, const std:
         cb(SockException(Err_other, "Speaker controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
         return;
     }
+    if (!_controller->isReady()) {
+        cb(_controller->notReadyError());
+        return;
+    }
 
     auto strong_statistic = _statistic.lock();
     if (!strong_statistic) {
@@ -115,15 +124,21 @@ void GenericIPSpeakerImp::playAudioFile(const std::string& speakerId, const std:
         controller->playAudioFileByBackchannel(fileId, resultCb);
     };
 
-    auto playByVendorApi = [controller, strong_statistic, fileId, resultCb]() {
+    auto playByVendorApi = [controller, strong_statistic, fileId, speakerId, cb, resultCb]() {
         std::string fileRemoteId = strong_statistic->getAudioRemoteId(fileId);
         controller->playAudioFileByVendorApi(fileId, fileRemoteId,
-            [strong_statistic, fileId, fileRemoteId, resultCb](bool ok, const std::string& data) {
+            [controller, strong_statistic, fileId, fileRemoteId, speakerId, cb, resultCb](bool ok, const std::string& data) {
                 if (ok && fileRemoteId.empty()) {
                     // File does not exist on the speaker -> save remoteId to file
                     strong_statistic->setAudioRemoteId(fileId, data);
                 }
-                resultCb(ok, data);
+                if (ok) {
+                    resultCb(ok, data);
+                    return;
+                }
+                // The vendor API rejecting the account or unreachable reports that.
+                cb(SockException(Err_other, "Trigger play [" + speakerId + "]: FAIL (error: " + data + ")",
+                                 deviceFailureCode(controller->lastVendorFailure(), ApiErrCode::CODE_PLAY_AUDIO_FAILED)));
             });
     };
 
@@ -154,11 +169,32 @@ void GenericIPSpeakerImp::playAudioFile(const std::string& speakerId, const std:
     it->second();
 }
 
+void GenericIPSpeakerImp::reconnectController(const ReconnectCallback &cb) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call reconnectController in it's owner poller");
+    if (!_controller) {
+        ReconnectResult result;
+        result.finished = true;
+        result.msg = "Speaker controller is not ready";
+        cb(result);
+        return;
+    }
+    _controller->reconnectNow(cb);
+}
+
+std::function<DeviceClockReading()> GenericIPSpeakerImp::clockReader() {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call clockReader in it's owner poller");
+    return _controller ? _controller->clockReader() : nullptr;
+}
+
 void GenericIPSpeakerImp::setAudioVolume(int volume, const std::function<void(const toolkit::SockException &ex)> &cb) {
     CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call setAudioVolume in it's owner poller");
     if (!_controller) {
         WarnL << "Speaker " << _src->getUrl() << " controller is not ready. Ignoring set audio volume request";
         cb(SockException(Err_other, "Speaker controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+        return;
+    }
+    if (!_controller->isReady()) {
+        cb(_controller->notReadyError());
         return;
     }
 
@@ -188,7 +224,8 @@ void GenericIPSpeakerImp::setAudioVolume(int volume, const std::function<void(co
             strong_statistic->setAudioVolume(volume, cVolume);
             cb(SockException(Err_success, "Set audio volume OK", ApiErrCode::CODE_SUCCESS));
         } else {
-            cb(SockException(Err_other, "Set audio volume FAIL (error: " + data + ")", ApiErrCode::CODE_SET_AUDIO_VOLUME_FAILED));
+            cb(SockException(Err_other, "Set audio volume FAIL (error: " + data + ")",
+                             deviceFailureCode(controller->lastVendorFailure(), ApiErrCode::CODE_SET_AUDIO_VOLUME_FAILED)));
         }
     });
 }

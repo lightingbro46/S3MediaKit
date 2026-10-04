@@ -15,7 +15,7 @@
 #include "soapSearchBindingProxy.h"
 #include "soapReplayBindingProxy.h"
 #include "soapRecordingBindingProxy.h"
-#include "Common/DeviceControl.h"
+#include "Control/DeviceControl.h"
 
 namespace OnvifCtrl {
 // TTL (seconds) of the cached camera-clock offset used to sign ONVIF requests.
@@ -39,346 +39,8 @@ namespace managerkit {
 
 struct OnvifHttpAuth;
 
-struct OnvifDeviceInfo {
-    std::string manufacturer;
-    std::string model;
-    std::string firmwareVersion;
-    std::string serialNumber;
-    std::string hardwareId;
-    std::string macAddress;
-
-    bool operator==(const OnvifDeviceInfo &o) const {
-        return manufacturer == o.manufacturer && model == o.model
-            && firmwareVersion == o.firmwareVersion && serialNumber == o.serialNumber
-            && hardwareId == o.hardwareId && macAddress == o.macAddress;
-    }
-    bool operator!=(const OnvifDeviceInfo &o) const { return !(*this == o); }
-};
-
-struct OnvifPTZProfile {
-    std::string strMediaProfileToken;
-    bool isAbsMoveEnable = false;
-    float absMinPan = -1;
-    float absMaxPan = 1;
-    float absMinTilt = -1;
-    float absMaxTilt = 1;
-    float absMinZoom = 0;
-    float absMaxZoom = 1;
-
-    bool isConsMoveEnable = false;
-    float consMinPan = -1;
-    float consMaxPan = 1;
-    float consMinTilt = -1;
-    float consMaxTilt = 1;
-    float consMinZoom = -1;
-    float consMaxZoom = 1;
-
-    bool isRelMoveEnable = false;
-    float relMinPan = -1;
-    float relMaxPan = 1;
-    float relMinTilt = -1;
-    float relMaxTilt = 1;
-    float relMinZoom = -1;
-    float relMaxZoom = 1;
-
-    bool isPresetEnable = false;
-    struct PTZPreset {
-        std::string Token;
-        std::string Name;
-        float absPan = -1;
-        float absTilt = -1;
-        float absZoom = -1;
-
-        bool operator==(const PTZPreset &o) const {
-            return Token == o.Token && Name == o.Name
-                && absPan == o.absPan && absTilt == o.absTilt && absZoom == o.absZoom;
-        }
-    };
-    using PTZPresetMap = std::unordered_map<std::string /*Token*/, PTZPreset>;
-    PTZPresetMap presetMap; // pair of preset token and preset name
-    bool isHomePresetEnable = false;
-    std::string homePresetToken;
-
-    bool operator==(const OnvifPTZProfile &o) const {
-        return strMediaProfileToken == o.strMediaProfileToken
-            && isAbsMoveEnable == o.isAbsMoveEnable
-            && absMinPan == o.absMinPan && absMaxPan == o.absMaxPan
-            && absMinTilt == o.absMinTilt && absMaxTilt == o.absMaxTilt
-            && absMinZoom == o.absMinZoom && absMaxZoom == o.absMaxZoom
-            && isConsMoveEnable == o.isConsMoveEnable
-            && consMinPan == o.consMinPan && consMaxPan == o.consMaxPan
-            && consMinTilt == o.consMinTilt && consMaxTilt == o.consMaxTilt
-            && consMinZoom == o.consMinZoom && consMaxZoom == o.consMaxZoom
-            && isRelMoveEnable == o.isRelMoveEnable
-            && relMinPan == o.relMinPan && relMaxPan == o.relMaxPan
-            && relMinTilt == o.relMinTilt && relMaxTilt == o.relMaxTilt
-            && relMinZoom == o.relMinZoom && relMaxZoom == o.relMaxZoom
-            && isPresetEnable == o.isPresetEnable
-            && presetMap == o.presetMap
-            && isHomePresetEnable == o.isHomePresetEnable
-            && homePresetToken == o.homePresetToken;
-    }
-    bool operator!=(const OnvifPTZProfile &o) const { return !(*this == o); }
-};
-
-enum class VideoConfigSetState {NEW, PROCESSING, SUCCESS, FAILED, EXTERNAL};
-static std::unordered_map<VideoConfigSetState, std::string> configStateToString = {
-    {VideoConfigSetState::NEW, "NEW"},
-    {VideoConfigSetState::PROCESSING, "PROCESSING"},
-    {VideoConfigSetState::SUCCESS, "SUCCESS"},
-    {VideoConfigSetState::FAILED, "FAILED"},
-    {VideoConfigSetState::EXTERNAL, "EXTERNAL"}
-};
-
-struct VideoEncoderConfig {
-    std::string vcodec;
-    int width;
-    int height;
-    int bitrate;
-    float fps;
-    float quality;
-
-    struct ConfigState {
-        int retry_time = 5;
-        std::string status = configStateToString[VideoConfigSetState::EXTERNAL];
-    };
-    ConfigState state;
-    
-    bool operator==(const VideoEncoderConfig& other) const {
-        return vcodec   == other.vcodec &&
-               width    == other.width &&
-               height   == other.height &&
-               bitrate  == other.bitrate &&
-               isEqual(fps, other.fps);
-    }
-    
-    bool operator!=(const VideoEncoderConfig& other) const {
-        return !(*this == other);
-    }
-
-    using VideoEncoderConfigMap = std::unordered_map<std::string /*profile token*/, VideoEncoderConfig>;
-private:
-    static bool isEqual(float a, float b, float eps = 1e-6f) {
-        return std::fabs(a - b) < eps;
-    }
-};
-
-struct VideoEncoderConfigOption {
-    std::vector<std::pair<int,int> > ResolutionsAvailable;
-    std::string BitRateRange;
-    std::pair<float,float> QualityRange;
-    std::string FrameRatesSupported;
-    bool FPSEditable = false;
-    bool bitrateEditable = false;
-    bool resolutionEditable = false;
-};
-
-struct OnvifMediaProfile {
-    std::string token;
-    std::string url;
-    bool hasVideo = false;
-    std::string vcodec;
-    int width = 0;
-    int height = 0;
-    int bitrate = 0;
-    float fps = 0.0f;
-    float quality;
-    bool videoEncEditable = false;
-    bool videoConfigEditable = false;
-    bool hasAudio = false;
-    std::string acodec;
-    int channelNo;
-    std::string sampleRate;
-    std::string sampleBit;
-
-    std::unordered_map<std::string, VideoEncoderConfigOption> vEncoderOptionMap;
-
-    bool operator==(const OnvifMediaProfile &o) const {
-        return token == o.token && url == o.url && 
-            hasVideo == o.hasVideo && 
-            vcodec == o.vcodec && 
-            width == o.width && 
-            height == o.height && 
-            bitrate == o.bitrate && 
-            fps == o.fps && 
-            quality == o.quality && 
-            videoEncEditable == o.videoEncEditable && 
-            videoConfigEditable == o.videoConfigEditable && 
-            hasAudio == o.hasAudio && 
-            acodec == o.acodec && 
-            channelNo == o.channelNo && 
-            sampleRate == o.sampleRate && 
-            sampleBit == o.sampleBit;
-    }
-    bool operator!=(const OnvifMediaProfile &o) const { return !(*this == o); }
-
-    bool isVideoConfigEqual(const VideoEncoderConfig &o) const {
-        return vcodec == o.vcodec && 
-            width == o.width && 
-            height == o.height && 
-            bitrate == o.bitrate && 
-            fps == o.fps;
-    }
-};
-
-struct OnvifAudioOutputProfile {
-    bool enable = false;
-    std::string token;
-    std::string name;
-    std::string outputToken;
-    std::string profileToken;
-    int outputLevel = 0;
-    std::string sendPrimacy;
-    std::string decoderToken;
-    std::vector<std::string> supportedDecodingEncodings;
-
-    void clear() {
-        enable = false;
-        token.clear();
-        name.clear();
-        outputToken.clear();
-        profileToken.clear();
-        sendPrimacy.clear();
-        decoderToken.clear();
-        supportedDecodingEncodings.clear();
-        outputLevel = 0;
-    }
-
-    bool operator==(const OnvifAudioOutputProfile &o) const {
-        return  enable == o.enable &&
-                token == o.token &&
-                name == o.name && 
-                outputToken == o.outputToken && 
-                profileToken == o.profileToken && 
-                outputLevel == o.outputLevel &&
-                sendPrimacy == o.sendPrimacy &&
-                decoderToken == o.decoderToken &&
-                supportedDecodingEncodings == o.supportedDecodingEncodings;
-    }
-    bool operator!=(const OnvifAudioOutputProfile &o) const { return !(*this == o); }
-};
-
-struct OnvifAudioInputProfile {
-    bool enable = false;
-    std::string token;
-    std::string name;
-    std::string sourceToken;
-    std::string encoderToken;
-    std::string acodec;
-    int channelNo = 0; 
-    std::string sampleRate;
-    std::string sampleBit;
-
-    void clear() {
-        enable = false;
-        token.clear();
-        name.clear();
-        sourceToken.clear();
-        encoderToken.clear();
-        acodec.clear();
-        channelNo = 0;
-        sampleRate.clear();
-        sampleBit.clear();
-    }
-
-    bool operator==(const OnvifAudioInputProfile &o) const {
-        return  enable == o.enable &&
-                token == o.token &&
-                name == o.name &&
-                sourceToken == o.sourceToken &&
-                encoderToken == o.encoderToken &&
-                acodec == o.acodec &&
-                channelNo == o.channelNo &&
-                sampleRate == o.sampleRate &&
-                sampleBit == o.sampleBit;
-    }
-    bool operator!=(const OnvifAudioInputProfile &o) const { return !(*this == o); }
-};
-
-struct OnvifImageProfile {
-    // First video source token (from media profiles) used by the Imaging API
-    std::string videoSourceToken;
-
-    // Focus move capabilities (via ONVIF Imaging service, if supported by binding)
-    bool isFocusAbsEnable = false;
-    bool isFocusConsEnable = false;
-    bool isFocusRelEnable = false;
-    bool isFocusAutoSupported = false;
-    bool isFocusEnable = false;
-
-    // Iris continuous move capability (via ONVIF Imaging service, if supported by binding)
-    bool isIrisAutoSupported = false;
-    bool isIrisEnable = false;
-    float irisMin = 0.0f;
-    float irisMax = 1.0f;
-
-    bool operator==(const OnvifImageProfile &o) const {
-        return videoSourceToken == o.videoSourceToken &&
-            isFocusAbsEnable == o.isFocusAbsEnable &&
-            isFocusConsEnable == o.isFocusConsEnable &&
-            isFocusRelEnable == o.isFocusRelEnable &&
-            isFocusEnable == o.isFocusEnable &&
-            isFocusAutoSupported == o.isFocusAutoSupported &&
-            isIrisEnable == o.isIrisEnable &&
-            isIrisAutoSupported == o.isIrisAutoSupported;
-    }
-
-    bool operator!=(const OnvifImageProfile &o) const { return !(*this == o); }
-};
-
-struct OnvifRelayOutputProfile {
-    std::string token;
-    std::string name;
-    bool isActive = false;
-
-    bool operator==(const OnvifRelayOutputProfile &o) const {
-        return token == o.token && name == o.name && isActive == o.isActive;
-    }
-
-    bool operator!=(const OnvifRelayOutputProfile &o) const { return !(*this == o); }
-};
-
-struct RecordingInformation {
-    int streamType = -1;
-    std::string uri;
-    std::string recordingToken;
-    std::string trackToken;
-    time_t earliestRecording = 0;
-    time_t latestRecording = 0;
-    VideoEncoderConfig vEncoder;
-    bool hasRecord = false;
-};
-
-struct TrackStateEvent {
-    std::string recordingToken;
-    std::string trackToken;
-    time_t time = 0;
-    bool isDataPresent = false;
-    bool isStartState = false;
-};
-
-struct VideoSegment {
-    std::string recordingToken;
-    std::string trackToken;
-    time_t start_time = 0;
-    time_t end_time = 0;
-};
-
-struct SDCardInformation {
-    std::string type;
-    uint64_t DataFrom = 0;
-    uint64_t DataUntil = 0;
-    int NumberRecordings = 0;
-
-    bool isSDSupport() const {
-        return DataFrom != 0 && DataUntil != 0 && NumberRecordings != 0;
-    }
-};
-
-using OnvifMediaProfileMap = std::vector<OnvifMediaProfile>;
-
 // The operations CameraController uses are virtual so unit tests can substitute a fake device
-// (see CameraController::createOnvifControl).
+// (see CameraController::createDeviceControl).
 class OnvifControl : public DeviceControl {
 public:
     using Ptr = std::shared_ptr<OnvifControl>;
@@ -390,13 +52,27 @@ public:
 
     void disconnect() override;
 
+    ControlProtocol protocol() const override { return ControlProtocol::ONVIF; }
+
+    ConnectError lastConnectError() const override { return _lastConnectError.load(); }
+
+    std::string lastError() override { return getSoapErrMsg(); }
+
+    /**
+     * Classify a failed GetDeviceInformation: `soap_error` is soap->error, `fault` the text of
+     * soap_stream_fault. Only an answer that is clearly not ONVIF (HTTP 404/405, a body that is
+     * not SOAP) is NOT_THIS_PROTOCOL; a timeout is always UNREACHABLE.
+     * Static and public so it can be unit tested without a camera.
+     */
+    static ConnectError classifyConnectError(int soap_error, const std::string &fault);
+
     /**
      * Cheap health check for a controller that is already connected: one
      * authenticated GetDeviceInformation. False when the camera does not answer,
      * rejects the credentials, or reports a different device than the one
      * connect() read the capabilities from — all cases that need a full connect().
      */
-    virtual bool probeConnection();
+    bool probeConnection() override;
 
     /**
      * Re-read the media profiles of a connected camera (GetProfiles plus one encoder
@@ -404,17 +80,17 @@ public:
      * changed on the camera's own web page, and drive the config retry engine,
      * without redoing the whole connect() handshake.
      */
-    virtual bool refreshMediaProfiles();
+    bool refreshMediaProfiles() override;
 
     /**
      * Get onvif device info
      */
-    OnvifDeviceInfo getDeviceInfo() { return _deviceInfo; }
+    OnvifDeviceInfo getDeviceInfo() override { return _deviceInfo; }
 
     /**
      * Get onvif media profiles
      */
-    virtual OnvifMediaProfileMap getMediaProfilesInfo() { return _mediaProfile; }
+    OnvifMediaProfileMap getMediaProfilesInfo() override { return _mediaProfile; }
 
     /**
      * Select primary/secondary stream in media profile
@@ -424,7 +100,7 @@ public:
     /**
      * If device has PTZ capability
      */
-    virtual bool enablePTZ() { return _ptzProfile.isAbsMoveEnable || _ptzProfile.isConsMoveEnable || _ptzProfile.isRelMoveEnable; }
+    bool enablePTZ() override { return _ptzProfile.isAbsMoveEnable || _ptzProfile.isConsMoveEnable || _ptzProfile.isRelMoveEnable; }
 
     /**
      * If device has Audio Output capability
@@ -439,77 +115,82 @@ public:
     /**
      * If device has Focus capability
      */
-    bool enableFocus() { return _imageProfile.isFocusEnable; }
+    bool enableFocus() override { return _imageProfile.isFocusEnable; }
 
     /**
      * If device has Iris control capability
      */
-    bool enableIris() { return _imageProfile.isIrisEnable; }
+    bool enableIris() override { return _imageProfile.isIrisEnable; }
 
     /**
      * If device has Relay Output capability
      */
-    bool enableRelayOutput() { return !_relayOutputProfiles.empty(); }
+    bool enableRelayOutput() override { return !_relayOutputProfiles.empty(); }
 
     /**
      * Get onvif ptz profile
      */
-    virtual OnvifPTZProfile getPTZProfile() { return _ptzProfile; }
+    OnvifPTZProfile getPTZProfile() override { return _ptzProfile; }
 
     /**
      * Check whether the SOAP session is still active (not disconnected)
      */
-    virtual bool isConnected() const { return _m_soap != nullptr; }
+    bool isConnected() const override { return _m_soap != nullptr; }
 
     /**
      * Check whether a PTZ or relay control operation is in progress
      */
-    bool isControlled() const { return _isControlled.load() > 0; }
+    bool isControlled() const override { return _isControlled.load() > 0; }
 
     /**
      * Get imaging (focus/iris) profile — capabilities discovered after connect()
      */
-    OnvifImageProfile getImageProfile() const { return _imageProfile; }
+    OnvifImageProfile getImageProfile() const override { return _imageProfile; }
 
     /**
      * Get relay output profiles — populated after connect()
      */
-    std::vector<OnvifRelayOutputProfile> getRelayOutputProfiles() const { return _relayOutputProfiles; }
+    std::vector<OnvifRelayOutputProfile> getRelayOutputProfiles() const override { return _relayOutputProfiles; }
 
     /**
      * Get audio output profile — populated after connect()
      */
-    OnvifAudioOutputProfile getAudioOutputProfile() const { return _audioOutputProfile; }
+    OnvifAudioOutputProfile getAudioOutputProfile() const override { return _audioOutputProfile; }
 
     /**
      * Get audio input profile — populated after connect()
      */
-    OnvifAudioInputProfile getAudioInputProfile() const { return _audioInputProfile; }
+    OnvifAudioInputProfile getAudioInputProfile() const override { return _audioInputProfile; }
 
     /**
      * Execute PTZ Absolute Move 
      */
-    virtual bool PTZ_AbsoluteMove(float pan, float tilt, float zoom);
+    bool PTZ_AbsoluteMove(float pan, float tilt, float zoom) override;
 
     /**
      * Execute PTZ Absolute Move with speed
      */
-    virtual bool PTZ_AbsoluteMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed);
+    bool PTZ_AbsoluteMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed) override;
 
     /**
      * Get current cordinates of len
      */
-    virtual tt__MoveStatus PTZ_GetStatus(float &pan, float &tilt, float &zoom);
+    PtzMoveStatus PTZ_GetStatus(float &pan, float &tilt, float &zoom) override;
+
+    /**
+     * Same, with the ONVIF move status
+     */
+    tt__MoveStatus PTZ_GetMoveStatus(float &pan, float &tilt, float &zoom);
 
     /**
      * Execute PTZ Continuous Move, timeout in second
      */
-    virtual bool PTZ_ContinuousMove(float pan, float tilt, float zoom, int timeout = 0);
+    bool PTZ_ContinuousMove(float pan, float tilt, float zoom, int timeout = 0) override;
 
     /**
      * Execute Stop PTZ Continuous Move
      */
-    virtual bool PTZ_Stop(bool panTilt, bool zoom);
+    bool PTZ_Stop(bool panTilt, bool zoom) override;
 
     /**
      * Execute PTZ Relative Move 
@@ -519,12 +200,12 @@ public:
     /**
      * Execute PTZ Relative Move with speed
      */
-    virtual bool PTZ_RelativeMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed);
+    bool PTZ_RelativeMove(float pan, float tilt, float zoom, float panSpeed, float tiltSpeed, float zoomSpeed) override;
 
     /**
      * Execute PTZ Goto Home Position
      */
-    virtual bool PTZ_GotoHomePosition(float panSpeed, float tiltSpeed, float zoomSpeed);
+    bool PTZ_GotoHomePosition(float panSpeed, float tiltSpeed, float zoomSpeed) override;
 
     /**
      * Get last soap error message
@@ -535,19 +216,19 @@ public:
      * Why the last failed request failed (network, credentials, clock, other). Kept after
      * disconnect(), so a camera that cannot connect still says why. Readable from any thread.
      */
-    virtual DeviceFailure lastFailure() const { return static_cast<DeviceFailure>(_last_failure.load()); }
+    DeviceFailure lastFailure() const override { return static_cast<DeviceFailure>(_last_failure.load()); }
 
     /**
      * The camera clock as last measured after a rejected request (GetSystemDateAndTime, or the HTTP
      * Date header when the camera refuses that). Readable from any thread.
      */
-    DeviceClockReading clockReading() const;
+    DeviceClockReading clockReading() const override;
 
     /**
      * Whether a command found the camera clock 10 s or more off since the last call; clears the
      * flag. Commands only read the camera clock: setting it is left to the maintenance cycle.
      */
-    virtual bool takeClockSyncWanted() { return _clock_sync_wanted.exchange(false); }
+    bool takeClockSyncWanted() override { return _clock_sync_wanted.exchange(false); }
 
     struct FailureContext {
         int soap_error = 0;
@@ -569,7 +250,7 @@ public:
     /**
      * Execute PTZ Goto Preset
      */
-    virtual bool PTZ_GotoPreset(const std::string &presetToken, float panSpeed, float tiltSpeed, float zoomSpeed);
+    bool PTZ_GotoPreset(const std::string &presetToken, float panSpeed, float tiltSpeed, float zoomSpeed) override;
 
     /**
      * Execute PTZ Set Preset
@@ -583,7 +264,7 @@ public:
     * @param vConfigNew New video encoder configuration.
     * @return true if the request is sent successfully; otherwise, false.
     */
-    virtual bool setVideoEncoderConfigByToken(const std::string& token, const VideoEncoderConfig& vConfigNew);
+    bool setVideoEncoderConfigByToken(const std::string& token, const VideoEncoderConfig& vConfigNew) override;
 
     /**
     * @brief Get the video encoder configuration by profile token.
@@ -592,24 +273,24 @@ public:
     * @param vConfig Output video encoder configuration.
     * @return true if the configuration is retrieved successfully; otherwise, false.
     */
-    bool getVideoEncoderConfigByToken(const std::string& token, VideoEncoderConfig& vConfig);
+    bool getVideoEncoderConfigByToken(const std::string& token, VideoEncoderConfig& vConfig) override;
 
     /**
     * Set the camera time to match the current system time. Virtual so the maintenance cycle can be
     * driven by a fake device in unit tests.
     */
-    virtual void setCameraTimeManual();
+    void setCameraTimeManual() override;
 
     /**
      * Move focus continuously. speed > 0 = focus in (near), speed < 0 = focus out (far).
      * Range [-1.0, 1.0]. Requires enableImaging() && _imageProfile.isFocusEnable.
      */
-    bool Imaging_FocusMove(float speed);
+    bool Imaging_FocusMove(float speed) override;
 
     /**
      * Stop ongoing continuous focus move.
      */
-    bool Imaging_FocusStop();
+    bool Imaging_FocusStop() override;
 
     /**
      * Move iris continuously. speed > 0 = iris open, speed < 0 = iris close.
@@ -626,13 +307,13 @@ public:
      * Send an ONVIF PTZ Auxiliary command (e.g. "tt:Iris|open", "tt:Iris|close").
      * The profileToken of the first profile in the PTZ profile is used.
      */
-    bool PTZ_AuxiliaryCommand(const std::string &auxiliaryData);
+    bool PTZ_AuxiliaryCommand(const std::string &auxiliaryData) override;
 
     /**
      * Set the state of a relay output (on/off).
      * The relayToken must match one of the tokens returned by getRelayOutputTokens().
      */
-    bool Relay_SetOutputState(const std::string &relayToken, bool active);
+    bool Relay_SetOutputState(const std::string &relayToken, bool active) override;
 
     /**
      * Find recorded video segments within the specified time range.
@@ -649,7 +330,7 @@ public:
     /**
      * Get the SD card information retrieved from the camera.
     */
-    SDCardInformation getSDCardInfo()  { return _sdCardInfo; }
+    SDCardInformation getSDCardInfo() override { return _sdCardInfo; }
 
     /**
      * Pick the media profile carrying the PTZ configuration, or null when the device reported
@@ -692,6 +373,10 @@ public:
      * Configures the audio backchannel and retrieves its RTSP URI
      */
     bool setupAudioBackchannel(std::string &backchannelUri, const bool &sharedDspPipeline = false);
+
+    bool supportsAudioBackchannel() override { return supportAudioBackchannel(); }
+    // setupAudioBackchannel(std::string &, ...) as RTSP_ONVIF.
+    bool setupAudioBackchannel(AudioBackchannelInfo &out, bool sharedDspPipeline) override;
 
 private:
     void reportError();
@@ -922,6 +607,7 @@ private:
     // (connect→disconnect, PTZ_SetPreset→PTZ_GetStatus, etc.).
     mutable std::recursive_mutex _soap_mtx;
     std::atomic<int> _isControlled {0}; // true if a PTZ or relay control operation is in progress
+    std::atomic<ConnectError> _lastConnectError {ConnectError::NONE};
 };
 
 } // namespace managerkit

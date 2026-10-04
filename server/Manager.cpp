@@ -701,6 +701,10 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
             GET_OPTION_PROPERTY(option, keepConfigProfileAndStream, ss, keepConfigProfileAndStream)
         }
 
+        if (adv.isMember("control") && !adv["control"].isNull() && adv["control"]["protocol"].isString()) {
+            option.controlProtocol = controlProtocolSetting(adv["control"]["protocol"].asString());
+        }
+
         if (adv.isMember("onvif") && !adv["onvif"].isNull()) {
             const Json::Value &onvif = adv["onvif"];
             auto parseOnvifProfile = [](const Json::Value &v) {
@@ -886,6 +890,15 @@ static void fromJson(SpeakerOption &option, const Json::Value &data) {
                 return SpeakerOption::kAudioPlaybackModeAuto;
             };
             option.audioPlaybackMode = parsePlaybackMode(adv["audioPlaybackMode"]);
+        }
+
+        if (adv.isMember("control") && !adv["control"].isNull() && adv["control"]["protocol"].isString()) {
+            option.controlProtocol = controlProtocolSetting(adv["control"]["protocol"].asString());
+        }
+
+        if (adv.isMember("onvif") && !adv["onvif"].isNull()) {
+            const Json::Value &onvif = adv["onvif"];
+            GET_OPTION_PROPERTY(option, enableTimeSync, onvif, enableTimeSync)
         }
 
         if (adv.isMember("mediaPort") && !adv["mediaPort"].isNull()) {
@@ -1500,8 +1513,12 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
                 auto params = stats_imp->getParams();
                 auto option = params.option;
                 data["deviceId"] = device->getDeviceTuple().device_id;
-                if (caps->isOnvifDevice) {
-                    data["onvifDevice"] = true;
+                // Protocol the camera is controlled with now ("" until a controller connected), and the setting.
+                data["controlProtocol"] = caps->controlProtocol;
+                data["controlProtocolSetting"] = controlProtocolSetting(option.controlProtocol);
+                // A PSIA camera reports its device info and profiles in the same (ONVIF-named) fields.
+                if (!caps->controlProtocol.empty()) {
+                    data["onvifDevice"] = caps->isOnvifDevice;
                     auto deviceInfo = caps->onvifProfile.deviceInfo;
                     data["manufacturer"] = deviceInfo.manufacturer;
                     data["model"] = deviceInfo.model;
@@ -1519,6 +1536,8 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
                     auto mediaProfiles = caps->onvifProfile.mediaProfiles;
                     onvifProfileJson["profiles"] = getOnvifProfileJsonArray(mediaProfiles);
                     data["onvifProfiles"] = onvifProfileJson;
+                    // The main/sub profile selection works for any controller that reported profiles.
+                    data["enableOnvifProfileSelect"] = !mediaProfiles.empty();
                 } else {
                     // note: keep manufacturer and model field if camera is added by user with ip
                     data["manufacturer"] = option.manufacturer.empty() && option.ip.empty() ? GENERIC_RTSP_CAMERA : option.manufacturer;
@@ -1535,6 +1554,7 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
                     onvifProfileJson["ptzControlMode"] = Json::arrayValue;
                     onvifProfileJson["profiles"] = Json::arrayValue;
                     data["onvifProfiles"] = onvifProfileJson;
+                    data["enableOnvifProfileSelect"] = false;
                 }
 #ifdef ENABLE_MOTION
                 GET_CONFIG(bool, enableMotion, Motion::kEnableMotion);
@@ -1545,7 +1565,7 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
                 GET_CONFIG(bool, enableAutoProfile, General::kEnableAutoProfile);
                 data["enableAutoProfile"] = enableAutoProfile ? true : false;
                 // todo: get this value from camera capability instead of global config, because it's possible that some onvif camera doesn't support onvif profile configuration
-                data["enableOnvifProfileConfig"] = caps->isOnvifDevice ? true : false;
+                data["enableOnvifProfileConfig"] = !caps->controlProtocol.empty();
                 data["supportsSdCardPlayback"] = caps->isOnvifDevice ? caps->supportsSdCardPlayback : false;
                 data["supportsAudioBackchannel"] = false;
                 data["supportsAudioVolumeControl"] = caps->supportsAudioVolumeControl;
@@ -1571,6 +1591,8 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
             auto option = speakerImp->getSpeakerOption();
             data["deviceId"] = device->getDeviceTuple().device_id;
             data["onvifDevice"] = caps->isOnvifDevice;
+            data["controlProtocol"] = caps->controlProtocol;
+            data["controlProtocolSetting"] = controlProtocolSetting(option.controlProtocol);
             auto deviceInfo = caps->onvifProfile.deviceInfo;
             data["manufacturer"] = deviceInfo.manufacturer;
             data["model"] = deviceInfo.model;
@@ -1794,6 +1816,7 @@ Json::Value makeCameraOptionJson(const CameraOption &option) {
     val["port"]         = option.port;
     val["username"]     = option.username;
     val["password"]     = option.password;
+    val["controlProtocol"] = option.controlProtocol;
 
     // Stream control
     val["disablePrimaryStream"]      = option.disablePrimaryStream;
@@ -1870,6 +1893,8 @@ Json::Value makeSpeakerOptionJson(const SpeakerOption &option) {
     val["mediaPort"]               = option.mediaPort;
     val["autoMediaPort"]           = option.autoMediaPort;
     val["audioPlaybackMode"]       = option.audioPlaybackMode;
+    val["controlProtocol"]         = option.controlProtocol;
+    val["enableTimeSync"]          = option.enableTimeSync;
 
     // Web access
     val["webPort"]                 = option.webPort;
@@ -2066,7 +2091,7 @@ Json::Value makePrimaryMediaProfileJson(const managerkit::DeviceSource::Ptr &dev
                 if (option.enableFailover && !impl->isEnabled()) {
                     return item;
                 }
-                if (!params.device_stats.device_caps.isOnvifDevice) {
+                if (params.device_stats.device_caps.controlProtocol.empty()) {
                     return item;
                 }
 
