@@ -66,6 +66,10 @@ void GenericIPSpeakerImp::setupController() {
     if (!_controller) {
         _controller = std::make_shared<SpeakerController>(_src->getDeviceTuple(), _poller);
         _controller->createTimer();
+        // An AUTO speaker keeps the protocol it was controlled with instead of probing again.
+        if (auto strong_statistic = _statistic.lock()) {
+            _controller->setLastControlProtocol(strong_statistic->getParams().device_caps.controlProtocol);
+        }
     }
     _controller->setupController(_option);
 }

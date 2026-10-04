@@ -59,7 +59,8 @@ public:
                enableActive == other.enableActive &&
                mediaPort == other.mediaPort &&
                autoMediaPort == other.autoMediaPort &&
-               audioPlaybackMode == other.audioPlaybackMode;
+               audioPlaybackMode == other.audioPlaybackMode &&
+               controlProtocol == other.controlProtocol;
     }
 
     bool operator!=(const SpeakerOption& other) const {

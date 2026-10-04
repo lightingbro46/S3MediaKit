@@ -1021,6 +1021,11 @@ extern const std::string kAudioFilesDir;
 extern const std::string kMaxAudioFileSizeBytes;
 // ONVIF account created on speakers whose vendor API needs its own credentials (Bosch)
 extern const std::string kOnvifUsername;
+// Protocols a speaker with controlProtocol AUTO tries, in order, until one answers: "onvif,isapi,psia"
+extern const std::string kControlAutoOrder;
+// Connect failures of the "device does not speak this protocol" kind, in a row, after which a
+// speaker locked by AUTO probes the protocols again
+extern const std::string kControlReprobeFailures;
 } // namespace Speaker
 
 ////////////Camera control configuration///////////

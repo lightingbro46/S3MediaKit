@@ -91,16 +91,32 @@ bool SpeakerController::isReady() const {
     return _ready.load(); 
 }
 
+CameraDeviceControl::Ptr SpeakerController::createDeviceControl(ControlProtocol protocol, const std::string &address,
+                                                                const std::string &username, const std::string &password) {
+    return makeDeviceControl(protocol, address, username, password);
+}
+
 void SpeakerController::setupController(const SpeakerOption &option) {
     CHECK(_poller->isCurrentThread(), "setupController must be called on the owner poller");
 
-    if (_onvif_ctr) {
-        _onvif_ctr.reset();
+    if (_configured) {
         _ready = false;
+        if (controlProtocolSetting(option.controlProtocol) != controlProtocolSetting(_ctrl_option.controlProtocol)) {
+            // Nothing may keep using the old protocol's controller once the switch is published.
+            onControllerReady(false, "Control protocol changed", nullptr);
+            BackchannelManager::Instance().unregisterDevice(_tuple.device_id);
+        }
+        // A changed address or credentials may mean another protocol now: AUTO probes again.
+        _lock.unlock();
     }
+    _device_ctr.reset();
+    _configured = false;
+    _probing = false;
+    _last_reconnect_time = 0;
+    ++_ctrl_generation;
 
-    if (_device_ctr) {
-        _device_ctr.reset();
+    if (_vendor_ctr) {
+        _vendor_ctr.reset();
         _audio_playback_ctr = nullptr;
     }
 
@@ -119,8 +135,26 @@ void SpeakerController::setupController(const SpeakerOption &option) {
     _address         = address;
     _device_name     = option.name;
     _ctrl_option     = ControllerOption::from(option);
+    _lock.setSetting(option.controlProtocol);
 
-    setupDeviceController();
+    if (!setupDeviceController()) {
+        return;
+    }
+    _configured = true;
+    ControlProtocol protocol = _lock.fixedOrLocked();
+    if (protocol != ControlProtocol::NONE) {
+        _device_ctr = createDeviceControl(protocol, address, _ctrl_username, option.password);
+    }
+    DebugL << "Controller of speaker: " << _tuple.shortUrl() << " (" << address << ")"
+        << ", protocol setting: " << controlProtocolSetting(option.controlProtocol)
+        << ", using: " << (protocol == ControlProtocol::NONE ? "probe" : controlProtocolToString(protocol))
+        << ", username: " << (_ctrl_username.empty() ? "empty" : "******")
+        << ", password: " << (option.password.empty() ? "empty" : "******");
+}
+
+void SpeakerController::setLastControlProtocol(const std::string &protocol) {
+    CHECK(_poller->isCurrentThread(), "setLastControlProtocol must be called on the owner poller");
+    _lock.restore(controlProtocolFromString(protocol));
 }
 
 void SpeakerController::stopController() {
@@ -129,65 +163,183 @@ void SpeakerController::stopController() {
     onControllerReady(false, "Stop", nullptr);
 
     _timer_ctr.reset();
-    _onvif_ctr.reset();
     _device_ctr.reset();
+    _vendor_ctr.reset();
     _audio_playback_ctr = nullptr;
+    _configured = false;
+    _probing = false;
+    ++_ctrl_generation;
     _ready = false;
     BackchannelManager::Instance().unregisterDevice(_tuple.device_id);
     DebugL << "Closed speaker controller for device: " << _tuple.shortUrl() << " (" << _address << ")";
 }
 
+SpeakerController::ConnectContext SpeakerController::connectContext() const {
+    ConnectContext ctx;
+    ctx.vendor = _vendor_ctr;
+    ctx.username = _ctrl_username;
+    ctx.password = _ctrl_option.password;
+    ctx.sharedDsp = getDeviceBrand(_ctrl_option.manufacturer) == DeviceBrand::BOSCH;
+    ctx.generation = _ctrl_generation.load();
+    return ctx;
+}
+
 void SpeakerController::onManager() {
     // Always called from the Timer which runs on _poller - no dispatch needed.
-    if (!_onvif_ctr) {
+    if (!_configured || (!_device_ctr && !_lock.isAuto())) {
         onControllerReady(false, "Not supported", std::make_shared<DeviceCapabilities>());
         return;
     }
 
-    if (time(nullptr) - _last_reconnect_time < 60) {
+    if (_probing || time(nullptr) - _last_reconnect_time < 60) {
         // avoid reconnecting too frequently
         return;
     }
     _last_reconnect_time = time(nullptr);
-    auto onvif_ctr = _onvif_ctr;
-    // Everything the device queue needs is copied here, on the owner poller.
+    if (!_device_ctr) {
+        startProtocolProbe();
+        return;
+    }
     auto device_ctr = _device_ctr;
-    auto onvif_username = _onvif_username;
-    auto onvif_password = _ctrl_option.password;
-    bool shared_dsp = getDeviceBrand(_ctrl_option.manufacturer) == DeviceBrand::BOSCH;
+    // Everything the device queue needs is copied here, on the owner poller.
+    auto ctx = connectContext();
+    // A speaker that is up only needs one request to confirm it, not the whole connect() handshake.
+    const bool was_ready = _ready.load() && device_ctr->isConnected();
     std::weak_ptr<SpeakerController> weak_self = shared_from_this();
 
-    // ONVIF connect() is a blocking SOAP/HTTP call: run it on the speaker's serial device queue.
-    _device_queue->post([weak_self, onvif_ctr, device_ctr, onvif_username, onvif_password, shared_dsp]() {
+    // connect() is a blocking SOAP/HTTP call: run it on the speaker's serial device queue.
+    _device_queue->post([weak_self, device_ctr, ctx, was_ready]() {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
+            return;
+        }
+        if (was_ready && device_ctr->probeConnection()) {
             return;
         }
         auto tuple = strong_self->_tuple;
         auto address = strong_self->_address;
         // reconnect to device
-        if (onvif_ctr->connect()) {
-            InfoL << "Onvif controller of device " << tuple.shortUrl() << " (" << address << ") connected";
-            auto caps = std::make_shared<DeviceCapabilities>();
-            caps->isOnvifDevice = true;
-            caps->onvifProfile.deviceInfo                       = onvif_ctr->getDeviceInfo();
-            caps->onvifProfile.audioOutputProfile               = onvif_ctr->getAudioOutputProfile();
-            caps->onvifProfile.audioInputProfile                = onvif_ctr->getAudioInputProfile();
-            auto audio_playback = dynamic_cast<IAudioPlayback*>(device_ctr.get());
-            if (audio_playback) caps->audioVolumeInfo = audio_playback->getAudioSettings();
-            caps->supportsAudioVolumeControl                    = caps->audioVolumeInfo.supportsControl();
-            caps->supportsAudioBackchannel                      = onvif_ctr->supportAudioBackchannel();
-            if (caps->supportsAudioBackchannel) {
-                // Still on the device queue, which is where this blocking SOAP setup belongs.
-                strong_self->registerAudioBackchannel(onvif_ctr, onvif_username, onvif_password, shared_dsp);
-            }
-            strong_self->onControllerReady(true, "connected", std::move(caps));
+        if (device_ctr->connect()) {
+            strong_self->publishConnected(device_ctr, ctx);
         } else {
-            auto err_msg = onvif_ctr->getSoapErrMsg();
-            WarnL << "Onvif controller of device " << tuple.shortUrl() << " (" << address << ") connect failed: " << err_msg;
+            auto err_msg = device_ctr->lastError();
+            auto err = device_ctr->lastConnectError();
+            WarnL << controlProtocolToString(device_ctr->protocol()) << " controller of speaker " << tuple.shortUrl()
+                  << " (" << address << ") connect failed (" << connectErrorToString(err) << "): " << err_msg;
+            std::weak_ptr<SpeakerController> weak = strong_self;
+            strong_self->_poller->async([weak, device_ctr, err]() {
+                if (auto self = weak.lock()) {
+                    self->onConnectResult(device_ctr, err);
+                }
+            }, false);
             strong_self->onControllerReady(false, err_msg, nullptr);
         }
     });
+}
+
+void SpeakerController::publishConnected(const CameraDeviceControl::Ptr &device_ctr, const ConnectContext &ctx) {
+    InfoL << controlProtocolToString(device_ctr->protocol()) << " controller of speaker " << _tuple.shortUrl()
+          << " (" << _address << ") connected";
+    std::weak_ptr<SpeakerController> weak_self = shared_from_this();
+    _poller->async([weak_self, device_ctr]() {
+        if (auto self = weak_self.lock()) {
+            self->onConnectResult(device_ctr, ConnectError::NONE);
+        }
+    }, false);
+
+    auto caps = std::make_shared<DeviceCapabilities>();
+    caps->isOnvifDevice = device_ctr->protocol() == ControlProtocol::ONVIF;
+    caps->controlProtocol = controlProtocolToString(device_ctr->protocol());
+    caps->onvifProfile.deviceInfo           = device_ctr->getDeviceInfo();
+    caps->onvifProfile.audioOutputProfile   = device_ctr->getAudioOutputProfile();
+    caps->onvifProfile.audioInputProfile    = device_ctr->getAudioInputProfile();
+    auto audio_playback = dynamic_cast<IAudioPlayback*>(ctx.vendor.get());
+    if (audio_playback) caps->audioVolumeInfo = audio_playback->getAudioSettings();
+    caps->supportsAudioVolumeControl        = caps->audioVolumeInfo.supportsControl();
+    // Only the ONVIF RTSP backchannel exists so far.
+    auto onvif_ctr = std::dynamic_pointer_cast<OnvifControl>(device_ctr);
+    caps->supportsAudioBackchannel          = onvif_ctr && onvif_ctr->supportAudioBackchannel();
+    if (caps->supportsAudioBackchannel) {
+        // Still on the device queue, which is where this blocking SOAP setup belongs.
+        registerAudioBackchannel(onvif_ctr, ctx);
+    }
+    onControllerReady(true, "connected", std::move(caps));
+}
+
+void SpeakerController::startProtocolProbe() {
+    _probing = true;
+    GET_CONFIG(string, order_str, mediakit::Speaker::kControlAutoOrder);
+    const auto order = parseProtocolOrder(order_str);
+    const string address = _address;
+    auto ctx = connectContext();
+    std::weak_ptr<SpeakerController> weak_self = shared_from_this();
+    _device_queue->post([weak_self, order, address, ctx]() {
+        auto self = weak_self.lock();
+        if (!self) {
+            return;
+        }
+        auto result = probeControlProtocols(order, [&](ControlProtocol protocol) {
+            return self->createDeviceControl(protocol, address, ctx.username, ctx.password);
+        }, self->_tuple.shortUrl() + " (" + address + ")");
+        CameraDeviceControl::Ptr winner = result.winner;
+        const std::string err_msg = result.err_msg;
+        if (winner && self->_ctrl_generation.load() != ctx.generation) {
+            winner.reset(); // the option changed meanwhile
+        }
+        const uint64_t generation = ctx.generation;
+        std::weak_ptr<SpeakerController> weak = self;
+        self->_poller->async([weak, winner, generation, err_msg]() {
+            if (auto strong = weak.lock()) {
+                strong->onProbeDone(winner, generation, err_msg);
+            }
+        }, false);
+        if (winner) {
+            self->publishConnected(winner, ctx);
+        } else {
+            self->onControllerReady(false, err_msg, nullptr);
+        }
+    });
+}
+
+void SpeakerController::onProbeDone(const CameraDeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg) {
+    if (generation != _ctrl_generation.load()) {
+        return;
+    }
+    _probing = false;
+    if (!device_ctr) {
+        WarnL << "No control protocol for speaker " << _tuple.shortUrl() << " (" << _address << "): " << err_msg;
+        return;
+    }
+    _device_ctr = device_ctr;
+}
+
+void SpeakerController::onConnectResult(const CameraDeviceControl::Ptr &device_ctr, ConnectError err) {
+    if (!device_ctr || device_ctr != _device_ctr) {
+        return;
+    }
+    if (err == ConnectError::NONE) {
+        const ControlProtocol previous = _lock.last();
+        if (_lock.onConnected(device_ctr->protocol())) {
+            WarnL << "Speaker " << _tuple.shortUrl() << " (" << _address << "): control protocol changed from "
+                  << controlProtocolToString(previous) << " to " << controlProtocolToString(device_ctr->protocol());
+        }
+        return;
+    }
+    GET_CONFIG(int, reprobe_failures, mediakit::Speaker::kControlReprobeFailures);
+    if (_lock.onConnectError(err, reprobe_failures)) {
+        unlockProtocol(string("Speaker no longer answers ") + controlProtocolToString(device_ctr->protocol()));
+    }
+}
+
+void SpeakerController::unlockProtocol(const std::string &reason) {
+    WarnL << "Speaker " << _tuple.shortUrl() << " (" << _address << "): " << reason << ", probing the control protocols again";
+    _ready = false;
+    onControllerReady(false, "Control protocol changed", nullptr);
+    BackchannelManager::Instance().unregisterDevice(_tuple.device_id);
+    _device_ctr.reset();
+    _lock.unlock();
+    _last_reconnect_time = 0;
+    ++_ctrl_generation;
 }
 
 void SpeakerController::onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps) {
@@ -205,22 +357,25 @@ void SpeakerController::onControllerReady(bool connect, const std::string &statu
     DeviceSourceEventInterceptor::onControllerReady(DeviceSource::NullDeviceSource(), connect, status, data);
 }
 
-void SpeakerController::setupDeviceController() {
-    auto address  = _address;
+bool SpeakerController::setupDeviceController() {
     auto password = _ctrl_option.password;
     auto shortUrl = _tuple.shortUrl();
 
     auto brand = getDeviceBrand(_ctrl_option.manufacturer);
     auto requiresSeparateCredentail = requiresSeparateDeviceCredential(brand);
     if (!requiresSeparateCredentail) {
-        _onvif_username = _ctrl_option.username;
-        _onvif_ctr = std::make_shared<OnvifControl>(address, _onvif_username, password);
-        DebugL << "Device does not require separate credentials. Creating Onvif controller for device: "
-            << shortUrl << " (" << address << ")"
-            << ", username: " << (_onvif_username.empty() ? "empty" : "******")
-            << ", password: " << (password.empty() ? "empty" : "******");
-        return;
+        _ctrl_username = _ctrl_option.username;
+        return true;
     }
+
+    // The vendor plugin provisions an ONVIF account and its backchannel needs ONVIF: such a speaker is
+    // always controlled with ONVIF, whatever the option says.
+    if (controlProtocolFromString(_ctrl_option.controlProtocol) != ControlProtocol::ONVIF &&
+        controlProtocolFromString(_ctrl_option.controlProtocol) != ControlProtocol::NONE) {
+        WarnL << "Speaker " << shortUrl << " needs ONVIF for its vendor plugin, ignoring control protocol "
+              << _ctrl_option.controlProtocol;
+    }
+    _lock.setSetting("ONVIF");
 
     SpeakerConfig cfg;
     cfg.id       = _tuple.device_id;
@@ -233,32 +388,30 @@ void SpeakerController::setupDeviceController() {
     cfg.password = password;
 
     try {
-        _device_ctr = DeviceFactory::create(cfg);
-        _audio_playback_ctr = dynamic_cast<IAudioPlayback*>(_device_ctr.get());
+        _vendor_ctr = DeviceFactory::create(cfg);
+        _audio_playback_ctr = dynamic_cast<IAudioPlayback*>(_vendor_ctr.get());
         if (!_audio_playback_ctr) {
-            _device_ctr.reset();
+            _vendor_ctr.reset();
             WarnL << "Device does not support IAudioPlayback";
-            return;
+            return false;
         }
     } catch (const std::exception& e) {
         WarnL << "Create API speaker controller " << _tuple.shortUrl() << " failed: " << e.what();
-        return;
+        return false;
     }
 
     // ONVIF goes through the speaker.onvifUsername account provisioned below. The controller is
-    // created now, on the owner poller: if the account does not exist yet, the periodic reconnect
-    // in onManager() picks it up once provisioning has finished.
+    // created by setupController() right after this, on the owner poller: if the account does not
+    // exist yet, the periodic reconnect in onManager() picks it up once provisioning has finished.
     GET_CONFIG(std::string, onvif_username, mediakit::Speaker::kOnvifUsername);
-    _onvif_username = onvif_username;
-    _onvif_ctr = std::make_shared<OnvifControl>(address, _onvif_username, password);
-    DebugL << "Created Onvif controller: " << shortUrl << " (" << address << ")";
+    _ctrl_username = onvif_username;
 
     // Provision the ONVIF account with the vendor API. The callbacks only use the device, never the
     // controller's members, which belong to _poller and may be replaced meanwhile. The device is
-    // held weakly (its pending requests hold these callbacks); _device_ctr keeps it alive.
-    std::weak_ptr<IDevice> weak_device = _device_ctr;
-    auto username = _onvif_username;
-    _device_ctr->connect([weak_device, username, password, shortUrl](bool ok, const std::string& data) {
+    // held weakly (its pending requests hold these callbacks); _vendor_ctr keeps it alive.
+    std::weak_ptr<IDevice> weak_device = _vendor_ctr;
+    auto username = _ctrl_username;
+    _vendor_ctr->connect([weak_device, username, password, shortUrl](bool ok, const std::string& data) {
         auto device = weak_device.lock();
         if (!device) {
             return;
@@ -282,162 +435,98 @@ void SpeakerController::setupDeviceController() {
             });
         });
     });
+    return true;
 }
 
 // ================== Vendor-specific operations ==================
 // Every operation captures the device on the owner poller and its callbacks use only that
-// capture: _device_ctr may be replaced or released by setupController()/stopController() while a
+// capture: _vendor_ctr may be replaced or released by setupController()/stopController() while a
 // request is in flight, and the callbacks run on the device's HTTP poller.
 
 IDevice::Ptr SpeakerController::vendorDevice(const OnDeviceResult &cb) {
     CHECK(_poller->isCurrentThread(), "Speaker vendor operations must be called on the owner poller");
-    if (!_device_ctr || !_audio_playback_ctr || !_ready.load()) {
+    if (!_vendor_ctr || !_audio_playback_ctr || !_ready.load()) {
         cb(false, "API controller is not ready");
         return nullptr;
     }
-    return _device_ctr;
+    return _vendor_ctr;
 }
 
-void SpeakerController::playAudioFileByVendorApi(const std::string& fileId, const std::string& fileRemoteId, OnDeviceResult cb, bool autoDisconnect) {
+void SpeakerController::runVendorOp(const VendorOp &op, const OnDeviceResult &cb, bool autoDisconnect) {
     auto device = vendorDevice(cb);
     if (!device) {
         return;
     }
 
-    device->connect([device, fileId, fileRemoteId, cb, autoDisconnect](bool ok, const std::string& data) {
+    device->connect([device, op, cb, autoDisconnect](bool ok, const std::string& data) {
         if (!ok) {
-            std::string err = "Connection failed: " + data;
-            cb(false, err);
+            cb(false, "Connection failed: " + data);
             return;
         }
+        OnDeviceResult done = cb;
+        if (autoDisconnect) {
+            done = [device, cb](bool ok, const std::string& data) { doDisconnect(device, ok, data, cb); };
+        }
+        op(device, dynamic_cast<IAudioPlayback*>(device.get()), done);
+    });
+}
 
-        auto playCb = autoDisconnect
-            ? [device, cb](bool ok, const std::string& data) { doDisconnect(device, ok, data, cb); }
-            : cb;
-
+void SpeakerController::playAudioFileByVendorApi(const std::string& fileId, const std::string& fileRemoteId, OnDeviceResult cb, bool autoDisconnect) {
+    runVendorOp([fileId, fileRemoteId](const IDevice::Ptr &device, IAudioPlayback *playback, const OnDeviceResult &done) {
         if (!fileRemoteId.empty()) {
             InfoL << "Known remoteId=" << fileRemoteId << ", playing immediately";
-            dynamic_cast<IAudioPlayback*>(device.get())->playAudio(fileRemoteId, playCb);
+            playback->playAudio(fileRemoteId, done);
             return;
         }
 
         auto file = AudioFileManager::Instance().getAudioFile(fileId);
         if (file.id.empty() || !file.downloaded) {
-            cb(false, "Audio file is not ready for playback or does not exist: " + fileId);
+            done(false, "Audio file is not ready for playback or does not exist: " + fileId);
             return;
         }
         TraceL << "Speaker " << device->getConfig().id << " does not contain file " << file.name << " - uploading before play";
-        doUploadAudio(device, file,
-            [device, cb, playCb](bool ok, const std::string& remoteId) {
-                if (!ok) {
-                    cb(false, "Upload failed: " + remoteId);
-                    return;
-                }
-                dynamic_cast<IAudioPlayback*>(device.get())->playAudio(remoteId, playCb);
+        doUploadAudio(device, file, [device, done](bool ok, const std::string& remoteId) {
+            if (!ok) {
+                done(false, "Upload failed: " + remoteId);
+                return;
             }
-        );
-    });
+            dynamic_cast<IAudioPlayback*>(device.get())->playAudio(remoteId, done);
+        });
+    }, cb, autoDisconnect);
 }
 
 void SpeakerController::uploadAudio(const AudioFile& file, OnDeviceResult cb, bool autoDisconnect) {
-    auto device = vendorDevice(cb);
-    if (!device) {
-        return;
-    }
-
     if (file.id.empty()) {
         cb(false, "File id cannot be empty");
         return;
     }
-
-    device->connect([device, file, cb, autoDisconnect](bool ok, const std::string& data) {
-        if (!ok) {
-            cb(false, "Connection failed: " + data);
-            return;
-        }
-
-        auto uploadCb = autoDisconnect
-            ? [device, cb](bool ok, const std::string& data) { doDisconnect(device, ok, data, cb); }
-            : cb;
-
-        doUploadAudio(device, file, uploadCb);
-    });
+    runVendorOp([file](const IDevice::Ptr &device, IAudioPlayback *, const OnDeviceResult &done) {
+        doUploadAudio(device, file, done);
+    }, cb, autoDisconnect);
 }
 
 void SpeakerController::stopAudio(const std::string& remoteId, OnDeviceResult cb, bool autoDisconnect) {
-    auto device = vendorDevice(cb);
-    if (!device) {
-        return;
-    }
-
-    device->connect([device, remoteId, cb, autoDisconnect](bool ok, const std::string& data) {
-        if (!ok) {
-            cb(false, "Connection failed: " + data);
-            return;
-        }
-        auto stopCb = autoDisconnect
-            ? [device, cb](bool ok, const std::string& data) { doDisconnect(device, ok, data, cb); }
-            : cb;
-
-        dynamic_cast<IAudioPlayback*>(device.get())->stopAudio(remoteId, stopCb);
-    });
+    runVendorOp([remoteId](const IDevice::Ptr &, IAudioPlayback *playback, const OnDeviceResult &done) {
+        playback->stopAudio(remoteId, done);
+    }, cb, autoDisconnect);
 }
 
 void SpeakerController::deleteAudio(const std::string& remoteId, OnDeviceResult cb, bool autoDisconnect) {
-    auto device = vendorDevice(cb);
-    if (!device) {
-        return;
-    }
-
-    device->connect([device, remoteId, cb, autoDisconnect](bool ok, const std::string& data) {
-        if (!ok) {
-            cb(false, "Connection failed: " + data);
-            return;
-        }
-        auto deleteCb = autoDisconnect
-            ? [device, cb](bool ok, const std::string& data) { doDisconnect(device, ok, data, cb); }
-            : cb;
-
-        dynamic_cast<IAudioPlayback*>(device.get())->deleteAudio(remoteId, deleteCb);
-    });
+    runVendorOp([remoteId](const IDevice::Ptr &, IAudioPlayback *playback, const OnDeviceResult &done) {
+        playback->deleteAudio(remoteId, done);
+    }, cb, autoDisconnect);
 }
 
 void SpeakerController::listAudio(OnDeviceResult cb, bool autoDisconnect) {
-    auto device = vendorDevice(cb);
-    if (!device) {
-        return;
-    }
-
-    device->connect([device, cb, autoDisconnect](bool ok, const std::string& data) {
-        if (!ok) {
-            cb(false, "Connection failed: " + data);
-            return;
-        }
-        auto listCb = autoDisconnect
-            ? [device, cb](bool ok, const std::string& data) { doDisconnect(device, ok, data, cb); }
-            : cb;
-
-        dynamic_cast<IAudioPlayback*>(device.get())->listAudio(listCb);
-    });
+    runVendorOp([](const IDevice::Ptr &, IAudioPlayback *playback, const OnDeviceResult &done) {
+        playback->listAudio(done);
+    }, cb, autoDisconnect);
 }
 
 void SpeakerController::setAudioVolume(int volume, OnDeviceResult cb, bool autoDisconnect) {
-    auto device = vendorDevice(cb);
-    if (!device) {
-        return;
-    }
-
-    device->connect([device, volume, cb, autoDisconnect](bool ok, const std::string& data) {
-        if (!ok) {
-            cb(false, "Connection failed: " + data);
-            return;
-        }
-        auto setVolCb = autoDisconnect
-            ? [device, cb](bool ok, const std::string& data) { doDisconnect(device, ok, data, cb); }
-            : cb;
-
-        dynamic_cast<IAudioPlayback*>(device.get())->setAudioVolume(volume, setVolCb);
-    });
+    runVendorOp([volume](const IDevice::Ptr &, IAudioPlayback *playback, const OnDeviceResult &done) {
+        playback->setAudioVolume(volume, done);
+    }, cb, autoDisconnect);
 }
 
 void SpeakerController::doUploadAudio(const IDevice::Ptr &device, const AudioFile& file, OnDeviceResult cb) {
@@ -491,20 +580,22 @@ void SpeakerController::playAudioFileByBackchannel(const std::string& fileId, On
     cb(ok, ok ? "" : backchannel.getErrorMsg());
 }
 
-void SpeakerController::registerAudioBackchannel(const OnvifControl::Ptr &onvif_ctr, const std::string &username,
-                                                 const std::string &password, bool sharedDspPipeline) {
+void SpeakerController::registerAudioBackchannel(const OnvifControl::Ptr &onvif_ctr, const ConnectContext &ctx) {
     if (!onvif_ctr) {
         return;
     }
 
     std::string backchannelUri;
-    if (!onvif_ctr->setupAudioBackchannel(backchannelUri, sharedDspPipeline) || backchannelUri.empty()) {
+    if (!onvif_ctr->setupAudioBackchannel(backchannelUri, ctx.sharedDsp) || backchannelUri.empty()) {
         WarnL << "Setup audio backchannel failed for device " << _tuple.shortUrl();
         return;
     }
 
-    if (backchannelUri.find("@") == string::npos && !password.empty()) {
-        backchannelUri = UriUtils::replaceCredentials(backchannelUri, username, password);
+    if (backchannelUri.find("@") == string::npos && !ctx.password.empty()) {
+        backchannelUri = UriUtils::replaceCredentials(backchannelUri, ctx.username, ctx.password);
+    }
+    if (_ctrl_generation.load() != ctx.generation) {
+        return; // the controller was replaced meanwhile: its backchannel is not this speaker's any more
     }
 
     BackchannelManager::Instance().registerDevice(_tuple.device_id, backchannelUri);

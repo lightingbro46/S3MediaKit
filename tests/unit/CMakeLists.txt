@@ -168,7 +168,8 @@ target_include_directories(unit_subnet_scan PRIVATE "${PROJECT_SOURCE_DIR}/serve
 add_test(NAME unit.subnet_scan_all COMMAND unit_subnet_scan)
 set_tests_properties(unit.subnet_scan_all PROPERTIES LABELS unit TIMEOUT 30)
 
-# CameraController with a fake OnvifControl (PTZ ordering/stop, media profile sync).
+# CameraController with a fake OnvifControl (PTZ ordering/stop, media profile sync), and the
+# protocol selection of CameraController/SpeakerController with fake controllers.
 add_s3_unit_test(unit_camera_controller
   manager/test_camera_controller.cpp
   "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
@@ -177,6 +178,7 @@ target_link_libraries(unit_camera_controller PRIVATE
   S3MediaKit::MediaKit
   S3MediaKit::ManagerKit
   S3MediaKit::ext-codec
+  S3MediaKit::ext-plugin
   -Wl,--end-group)
 target_include_directories(unit_camera_controller PRIVATE "${PROJECT_SOURCE_DIR}/server")
 add_test(NAME unit.camera_controller_all COMMAND unit_camera_controller)

@@ -2,6 +2,7 @@
 #define SPEAKER_SPEAKERCONTROLLER_H
 
 #include "ext-plugin/IDevice.h"
+#include "Control/CameraDeviceControl.h"
 #include "GenericIPSpeaker.h"
 #include "AudioFileManager.h"
 #include "Common/SerialTaskQueue.h"
@@ -17,7 +18,7 @@ public:
 
     SpeakerController(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller);
 
-    ~SpeakerController() = default;
+    virtual ~SpeakerController() = default;
 
     static void probe(const std::string& ip, int port,
                       const std::string& username, const std::string& password,
@@ -31,6 +32,10 @@ public:
     bool isReady() const;
 
     void setupController(const SpeakerOption &option);
+
+    // Protocol the speaker was controlled with before ("ONVIF", "PSIA", "ISAPI", "" = unknown), from the
+    // saved capabilities: an AUTO speaker starts locked to it instead of probing. Call before setupController().
+    void setLastControlProtocol(const std::string &protocol);
 
     void stopController();
 
@@ -50,16 +55,48 @@ public:
     // ================== Backchannel operations ==================
     void playAudioFileByBackchannel(const std::string& fileId, managerkit::OnDeviceResult cb);
 
+protected:
+    // Creates the device control of `protocol` (null when not supported); unit tests override it.
+    virtual CameraDeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &address,
+                                                         const std::string &username, const std::string &password);
+
 private:
+    friend class SpeakerControllerTestPeer;
+
     void onManager();
 
     void onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps);
 
-    void setupDeviceController();
+    // False when the speaker cannot be controlled (vendor plugin missing or broken).
+    bool setupDeviceController();
+
+    // What a device task needs from the owner poller, copied there.
+    struct ConnectContext {
+        IDevice::Ptr vendor;   // vendor plugin, may be null
+        std::string username;  // account the controller logs in with
+        std::string password;
+        bool sharedDsp = false;
+        uint64_t generation = 0;
+    };
+    ConnectContext connectContext() const;
+
+    // ── Control protocol selection (on _poller unless noted), as CameraController ──
+    void startProtocolProbe();
+    void onProbeDone(const CameraDeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg);
+    void onConnectResult(const CameraDeviceControl::Ptr &device_ctr, ConnectError err);
+    void unlockProtocol(const std::string &reason);
+    // Device queue: capabilities, backchannel and the connected event after a successful connect().
+    void publishConnected(const CameraDeviceControl::Ptr &device_ctr, const ConnectContext &ctx);
 
     // ================== Vendor-specific operations ==================
     // Owner poller: the device a vendor operation runs on, or nullptr after answering `cb`.
     IDevice::Ptr vendorDevice(const OnDeviceResult &cb);
+
+    // A vendor operation, run once the vendor session is up. It answers through `done`, which closes
+    // the session first when the caller asked for autoDisconnect.
+    typedef std::function<void(const IDevice::Ptr &device, IAudioPlayback *playback, const OnDeviceResult &done)> VendorOp;
+    // Owner poller: vendorDevice() → connect → `op`; a failed connect answers `cb` directly.
+    void runVendorOp(const VendorOp &op, const OnDeviceResult &cb, bool autoDisconnect);
 
     static void doUploadAudio(const IDevice::Ptr &device, const managerkit::AudioFile& file, managerkit::OnDeviceResult cb);
 
@@ -68,8 +105,7 @@ private:
     // ================== Backchannel operations ==================
     // Device queue: resolves the backchannel RTSP URI and registers it with BackchannelManager.
     // Takes the controller and credentials explicitly because it runs off the owner poller.
-    void registerAudioBackchannel(const OnvifControl::Ptr &onvif_ctr, const std::string &username,
-                                  const std::string &password, bool sharedDspPipeline);
+    void registerAudioBackchannel(const OnvifControl::Ptr &onvif_ctr, const ConnectContext &ctx);
 private:
     DeviceTuple _tuple;
     toolkit::EventPoller::Ptr _poller;
@@ -79,10 +115,19 @@ private:
     std::string _err_msg;
     uint64_t _last_reconnect_time = 0;
     toolkit::Timer::Ptr _timer_ctr;
-    OnvifControl::Ptr _onvif_ctr;
-    // ONVIF account _onvif_ctr logs in with (speaker.onvifUsername on vendors that need their own account).
-    std::string _onvif_username;
-    IDevice::Ptr _device_ctr;
+    // The one controller of this speaker, whatever its protocol; only set or reset on _poller.
+    CameraDeviceControl::Ptr _device_ctr;
+    // Account _device_ctr logs in with (speaker.onvifUsername on vendors that need their own account).
+    std::string _ctrl_username;
+    // setupController() accepted the speaker: there is a controller, or an AUTO probe to run.
+    bool _configured = false;
+    // Fixed protocol of the option (ONVIF for vendors whose plugin needs it), or the one AUTO locked to.
+    ProtocolLock _lock;
+    bool _probing = false;
+    // Bumped whenever the controller is replaced, so a probe or connect started for an older one is dropped.
+    std::atomic<uint64_t> _ctrl_generation { 0 };
+    // Vendor plugin (audio files, volume, ONVIF account), for brands that have one.
+    IDevice::Ptr _vendor_ctr;
     IAudioPlayback* _audio_playback_ctr = nullptr;
     std::string _address;
     ControllerOption _ctrl_option;

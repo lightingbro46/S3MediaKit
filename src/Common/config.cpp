@@ -764,6 +764,8 @@ const string kSpeakerDir = SPEAKER_FIELD "speakerDir";
 const string kAudioFilesDir = SPEAKER_FIELD "audioFileDir";
 const string kMaxAudioFileSizeBytes = SPEAKER_FIELD "maxAudioFileSizeBytes";
 const string kOnvifUsername = SPEAKER_FIELD "onvifUsername";
+const string kControlAutoOrder = SPEAKER_FIELD "control_auto_order";
+const string kControlReprobeFailures = SPEAKER_FIELD "control_reprobe_failures";
 
 static onceToken token([]() {
     mINI::Instance()[kSpeakerSavePath] = "./www";
@@ -771,6 +773,9 @@ static onceToken token([]() {
     mINI::Instance()[kAudioFilesDir] = "audioFile";
     mINI::Instance()[kMaxAudioFileSizeBytes] = 2 * 1024 * 1024;
     mINI::Instance()[kOnvifUsername] = "onvif_vms";
+    // Same rules as camera.control_auto_order / camera.control_reprobe_failures, tunable apart.
+    mINI::Instance()[kControlAutoOrder] = "onvif,isapi,psia";
+    mINI::Instance()[kControlReprobeFailures] = 5;
 });
 } // namespace Speaker
 

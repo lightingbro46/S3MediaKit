@@ -891,6 +891,10 @@ static void fromJson(SpeakerOption &option, const Json::Value &data) {
             option.audioPlaybackMode = parsePlaybackMode(adv["audioPlaybackMode"]);
         }
 
+        if (adv.isMember("control") && !adv["control"].isNull() && adv["control"]["protocol"].isString()) {
+            option.controlProtocol = controlProtocolSetting(adv["control"]["protocol"].asString());
+        }
+
         if (adv.isMember("mediaPort") && !adv["mediaPort"].isNull()) {
             const Json::Value &mp = adv["mediaPort"];
 
@@ -1581,6 +1585,8 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
             auto option = speakerImp->getSpeakerOption();
             data["deviceId"] = device->getDeviceTuple().device_id;
             data["onvifDevice"] = caps->isOnvifDevice;
+            data["controlProtocol"] = caps->controlProtocol;
+            data["controlProtocolSetting"] = controlProtocolSetting(option.controlProtocol);
             auto deviceInfo = caps->onvifProfile.deviceInfo;
             data["manufacturer"] = deviceInfo.manufacturer;
             data["model"] = deviceInfo.model;
@@ -1880,6 +1886,7 @@ Json::Value makeSpeakerOptionJson(const SpeakerOption &option) {
     val["mediaPort"]               = option.mediaPort;
     val["autoMediaPort"]           = option.autoMediaPort;
     val["audioPlaybackMode"]       = option.audioPlaybackMode;
+    val["controlProtocol"]         = option.controlProtocol;
 
     // Web access
     val["webPort"]                 = option.webPort;
