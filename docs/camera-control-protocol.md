@@ -180,7 +180,7 @@ Giới hạn hiện tại:
 ## Loa
 
 Loa IP chọn giao thức theo đúng luật của camera (cùng `ProtocolLock` và `probeControlProtocols` trong
-`manager/Control/CameraDeviceControl.cpp`):
+`manager/Control/DeviceControl.cpp`):
 
 ```json
 {

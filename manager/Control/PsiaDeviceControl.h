@@ -5,7 +5,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
-#include "Control/CameraDeviceControl.h"
+#include "Control/DeviceControl.h"
 
 namespace PsiaCtrl {
 // Timeout (milliseconds) of one PSIA HTTP request: connect, send and receive each.
@@ -132,7 +132,7 @@ struct HttpXmlDialect {
 // Camera control over PSIA (REST + XML under /PSIA, HTTP Digest with Basic fallback). Every call is
 // blocking and runs on the camera's device queue like OnvifControl. The cached capabilities are read
 // from _poller too, so they have their own short-held lock and never wait for a request.
-class PsiaControl : public CameraDeviceControl {
+class PsiaControl : public DeviceControl {
 public:
     using Ptr = std::shared_ptr<PsiaControl>;
 

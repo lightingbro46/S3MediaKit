@@ -1,6 +1,6 @@
 # Plan: điều khiển camera bằng ISAPI và cho SpeakerController dùng chung giao thức điều khiển
 
-Ngày lập: 2026-10-04. Nhánh đề xuất: tiếp trên `feature/psi-controller` (cần `CameraDeviceControl`, `PsiaControl` và
+Ngày lập: 2026-10-04. Nhánh đề xuất: tiếp trên `feature/psi-controller` (cần `DeviceControl`, `PsiaControl` và
 logic chọn/khoá giao thức của plan PSIA, chưa merge `develop`).
 Trạng thái (2026-10-04): I0–I3, S1–S5 xong theo đề xuất mặc định của mục 8 (Q1–Q4 không trả lời); S4 mới kiểm
 trên mock. Q6 user chốt làm luôn, kèm API kết nối lại: xong. Q5 mới tìm tài liệu. E (thiết bị thật) chưa làm. Kết
@@ -10,7 +10,7 @@ Hai phần:
 - **Phần I — ISAPI cho camera.** ISAPI là REST/XML của Hikvision (`/ISAPI/...`), phát triển từ PSIA. Thêm giao thức
   thứ ba vào cơ chế một camera một giao thức đã có.
 - **Phần S — SpeakerController.** Hiện cứng ONVIF (`OnvifControl::Ptr _onvif_ctr`) cộng plugin hãng (Bosch). Đổi sang
-  controller trung lập `CameraDeviceControl` để speaker chạy được ONVIF/PSIA/ISAPI. Dùng chung logic dò/khoá giao thức
+  controller trung lập `DeviceControl` để speaker chạy được ONVIF/PSIA/ISAPI. Dùng chung logic dò/khoá giao thức
   với camera thay vì chép lại.
 
 ## 1. Mục tiêu
@@ -36,7 +36,7 @@ Ngoài phạm vi:
 
 | Thành phần | Vị trí | Ghi chú |
 |---|---|---|
-| Interface | `manager/Control/CameraDeviceControl.h` | `ControlProtocol{NONE,ONVIF,PSIA}`, `ConnectError`, helper string |
+| Interface | `manager/Control/DeviceControl.h` | `ControlProtocol{NONE,ONVIF,PSIA}`, `ConnectError`, helper string |
 | PSIA | `manager/Control/PsiaDeviceControl.{h,cpp}` | gSOAP `soap_GET/soap_PUT` + `http_da`; parse trong `psia_detail`; **đường dẫn `/PSIA/...` viết thẳng trong từng hàm** (khoảng 15 chỗ) |
 | Tạo controller | `CameraController::createDeviceControl` (virtual, fake trong test) | switch ONVIF/PSIA |
 | Dò `AUTO` | `CameraController::startProtocolProbe` / `onProbeDone` / `onConnectResult` / `onProtocolConnected` / `unlockProtocol`; `autoProtocolOrder()` static trong `CameraController.cpp` | Logic khoá nằm lẫn trong state của `CameraController` |
@@ -55,7 +55,7 @@ Ngoài phạm vi:
 
 `SpeakerController` chỉ dùng của ONVIF: `connect`, `getSoapErrMsg`, `getDeviceInfo`, `getAudioOutputProfile`,
 `getAudioInputProfile`, `supportAudioBackchannel`, `setupAudioBackchannel`. Ba hàm đầu và hai getter audio đã có trong
-`CameraDeviceControl`. Còn thiếu đúng phần backchannel.
+`DeviceControl`. Còn thiếu đúng phần backchannel.
 
 ## 3. Phần I — ISAPI
 
@@ -118,19 +118,19 @@ Hai bước:
 
 ### 4.1 Dùng chung phần chọn giao thức (tách khỏi CameraController)
 
-Đưa vào `manager/Control/CameraDeviceControl.{h,cpp}`. Không thêm file, để khỏi phải reconfigure glob:
+Đưa vào `manager/Control/DeviceControl.{h,cpp}`. Không thêm file, để khỏi phải reconfigure glob:
 
 ```cpp
 // Factory: ONVIF → OnvifControl, PSIA → PsiaControl, ISAPI → IsapiControl, NONE → nullptr.
-CameraDeviceControl::Ptr makeDeviceControl(ControlProtocol protocol, const std::string &address,
+DeviceControl::Ptr makeDeviceControl(ControlProtocol protocol, const std::string &address,
                                            const std::string &username, const std::string &password);
 
 // camera.control_auto_order / speaker.control_auto_order → danh sách; rỗng hoặc toàn tên lạ → mặc định.
 std::vector<ControlProtocol> parseProtocolOrder(const std::string &order_str);
 
 // Blocking, chạy trên device queue. Thử lần lượt, huỷ controller thua trước khi tạo cái kế tiếp.
-struct ProtocolProbeResult { CameraDeviceControl::Ptr winner; std::string err_msg; };
-typedef std::function<CameraDeviceControl::Ptr(ControlProtocol)> DeviceControlFactory;
+struct ProtocolProbeResult { DeviceControl::Ptr winner; std::string err_msg; };
+typedef std::function<DeviceControl::Ptr(ControlProtocol)> DeviceControlFactory;
 ProtocolProbeResult probeControlProtocols(const std::vector<ControlProtocol> &order,
                                           const DeviceControlFactory &factory, const std::string &log_name);
 
@@ -155,7 +155,7 @@ public:
 
 ### 4.2 SpeakerController mới
 
-- `OnvifControl::Ptr _onvif_ctr` → `CameraDeviceControl::Ptr _device_ctr`. Đổi tên `IDevice::Ptr _device_ctr` hiện có
+- `OnvifControl::Ptr _onvif_ctr` → `DeviceControl::Ptr _device_ctr`. Đổi tên `IDevice::Ptr _device_ctr` hiện có
   thành `_vendor_ctr` cho khỏi trùng.
 - Thêm `ProtocolLock _lock`, `_probing`, `_ctrl_generation`, giống camera. Dò bằng `probeControlProtocols` trên
   `_device_queue`.
@@ -179,7 +179,7 @@ public:
 
 ### 4.3 Backchannel theo giao thức
 
-Thêm vào `CameraDeviceControl` (mặc định không hỗ trợ, nên camera không phải sửa):
+Thêm vào `DeviceControl` (mặc định không hỗ trợ, nên camera không phải sửa):
 
 ```cpp
 struct AudioBackchannelInfo {
@@ -234,12 +234,12 @@ Mỗi bước một commit tiếng Việt. Build `cmake --build build -j2`, test
 |---|---|---|---|
 | I0 | `psia_mock.py --dialect isapi`: phục vụ `/ISAPI/...`, namespace Hikvision, `adminAccesses`, `TwoWayAudio` (ghi byte nhận được ra file). Spike gọi vài đường trên camera Hikvision thật nếu có, ghi lại 401/404 của ONVIF khi tắt ONVIF (R1). | `tests/integration/stress_vms/psia_mock.py` | Ghi mục 9 |
 | I1 | Gom đường dẫn `PsiaControl` vào bảng `HttpXmlPaths`. **Không đổi hành vi.** | `PsiaDeviceControl.*` | `unit.psia_control_all` + mock PSIA xanh |
-| I2 | `ControlProtocol::ISAPI` + string/setting; `IsapiControl` (cổng RTSP, URL, codec); `createDeviceControl`/`makeDeviceControl` nhánh ISAPI; config `isapi.request_timeout_ms`, `control_auto_order` mới; luật `AUTH_FAILED` ONVIF lúc dò (theo Q2). | `CameraDeviceControl.*`, `PsiaDeviceControl.*`, `CameraController.cpp`, `src/Common/config.*` | Unit parse ISAPI (XML Hikvision mẫu), `CameraProtocolTest` thêm case ONVIF 401 → ISAPI |
+| I2 | `ControlProtocol::ISAPI` + string/setting; `IsapiControl` (cổng RTSP, URL, codec); `createDeviceControl`/`makeDeviceControl` nhánh ISAPI; config `isapi.request_timeout_ms`, `control_auto_order` mới; luật `AUTH_FAILED` ONVIF lúc dò (theo Q2). | `DeviceControl.*`, `PsiaDeviceControl.*`, `CameraController.cpp`, `src/Common/config.*` | Unit parse ISAPI (XML Hikvision mẫu), `CameraProtocolTest` thêm case ONVIF 401 → ISAPI |
 | I3 | Docs `camera-control-protocol.md`, `conf/config.ini`; chạy thật MediaServer + mock ISAPI: `AUTO` khoá ISAPI, PTZ/preset/focus/relay/encoder/rule, restart giữ khoá; hồi quy mock ONVIF và PSIA. | `docs/`, `conf/` | Ghi mục 9 |
-| S1 | Tách `makeDeviceControl`, `parseProtocolOrder`, `probeControlProtocols`, `ProtocolLock` ra `CameraDeviceControl.*`; `CameraController` dùng lại. **Không đổi hành vi.** | `CameraDeviceControl.*`, `CameraController.*` | `ProtocolLockTest` mới + `CameraProtocolTest` nguyên vẹn |
-| S2 | `SpeakerController` dùng `CameraDeviceControl` + `ProtocolLock`; Bosch ép ONVIF; `probeConnection` khi online; option/caps/kv/JSON `controlProtocol`; config `speaker.*`. Backchannel vẫn chỉ ONVIF qua `dynamic_pointer_cast`. | `manager/Speaker/*`, `DeviceOption.h`, `server/Manager.cpp`, `src/Common/config.*` | Unit test speaker mới (fake controller như camera): AUTO/khoá/Bosch ép ONVIF; E2E mock ONVIF speaker phát backchannel như cũ |
+| S1 | Tách `makeDeviceControl`, `parseProtocolOrder`, `probeControlProtocols`, `ProtocolLock` ra `DeviceControl.*`; `CameraController` dùng lại. **Không đổi hành vi.** | `DeviceControl.*`, `CameraController.*` | `ProtocolLockTest` mới + `CameraProtocolTest` nguyên vẹn |
+| S2 | `SpeakerController` dùng `DeviceControl` + `ProtocolLock`; Bosch ép ONVIF; `probeConnection` khi online; option/caps/kv/JSON `controlProtocol`; config `speaker.*`. Backchannel vẫn chỉ ONVIF qua `dynamic_pointer_cast`. | `manager/Speaker/*`, `DeviceOption.h`, `server/Manager.cpp`, `src/Common/config.*` | Unit test speaker mới (fake controller như camera): AUTO/khoá/Bosch ép ONVIF; E2E mock ONVIF speaker phát backchannel như cũ |
 | S3 | `runVendorOp` gom 6 thao tác hãng. | `SpeakerController.*` | Build + E2E plugin Bosch nếu có thiết bị, không thì review kỹ diff |
-| S4 | `AudioBackchannelInfo` trong interface; `OnvifControl`/`IsapiControl` cài đặt; `IsapiTwoWayAudioPusher`; `BackchannelManager` chọn pusher. | `CameraDeviceControl.h`, `OnvifDeviceControl.*`, `PsiaDeviceControl.*`, `src/Backchannel/*` | Mock ISAPI nhận đủ byte G.711 của file phát, busy → `DeviceBusy`; hồi quy RTSP backchannel ONVIF |
+| S4 | `AudioBackchannelInfo` trong interface; `OnvifControl`/`IsapiControl` cài đặt; `IsapiTwoWayAudioPusher`; `BackchannelManager` chọn pusher. | `DeviceControl.h`, `OnvifDeviceControl.*`, `PsiaDeviceControl.*`, `src/Backchannel/*` | Mock ISAPI nhận đủ byte G.711 của file phát, busy → `DeviceBusy`; hồi quy RTSP backchannel ONVIF |
 | S5 | Docs speaker (`docs/camera-control-protocol.md` thêm mục speaker hoặc file riêng), webhook. | `docs/` | |
 | E | Thiết bị thật: camera Hikvision tắt ONVIF ở `AUTO`; Hikvision chế độ `ISAPI`; camera ONVIF hồi quy; loa Bosch hồi quy; loa/camera Hikvision two-way audio. | | Ghi mục 9 |
 
@@ -260,7 +260,7 @@ Phần I và S1 độc lập nhau. S2 cần S1. S4 cần I2.
   `CameraProtocolTest`.
 - **R5: pusher ISAPI chiếm phiên two-way.** Mỗi thiết bị chỉ một phiên. Pusher phải `close` cả khi lỗi hoặc huỷ giữa
   chừng, nếu không camera bận tới khi hết timeout phía thiết bị.
-- **R6: thread.** Mọi lời gọi `CameraDeviceControl` của speaker phải qua `_device_queue`. Pusher ISAPI chạy trên
+- **R6: thread.** Mọi lời gọi `DeviceControl` của speaker phải qua `_device_queue`. Pusher ISAPI chạy trên
   poller, không gọi gSOAP. Không capture `this` raw.
 - **R7: loa Bosch.** Plugin cần ONVIF; ép ONVIF ở 4.2 tránh việc `AUTO` khoá loa Bosch sang giao thức khác.
 
@@ -304,7 +304,7 @@ thật (R1) — làm ở bước E.
   ISAPI 401 dừng và báo lỗi ONVIF, ONVIF đã khoá không đổi).
 
 **S1 — xong, không đổi hành vi.** `makeDeviceControl`, `parseProtocolOrder`, `probeControlProtocols`,
-`ProtocolLock` trong `CameraDeviceControl.{h,cpp}`. `ProtocolLock` có `setSetting`/`restore` riêng thay cho
+`ProtocolLock` trong `DeviceControl.{h,cpp}`. `ProtocolLock` có `setSetting`/`restore` riêng thay cho
 `configure(setting, last)`, vì camera đặt hai thứ ở hai thời điểm. `CameraProtocolTest` giữ nguyên và đạt,
 thêm `ProtocolLockTest`, `ProtocolOrderTest`.
 
@@ -339,7 +339,7 @@ thêm `ProtocolLockTest`, `ProtocolOrderTest`.
 `conf/config.ini` (`[camera]` order mới, `[speaker]`, `[isapi]`).
 
 **S4 — xong trên mock, chưa kiểm thiết bị Hikvision.** Khác plan / cần biết:
-- `AudioBackchannelInfo` nằm ở `src/Backchannel/IBackchannelPusher.h` (namespace `mediakit`, `CameraDeviceControl.h`
+- `AudioBackchannelInfo` nằm ở `src/Backchannel/IBackchannelPusher.h` (namespace `mediakit`, `DeviceControl.h`
   dùng lại bằng `using`) vì `BackchannelManager` ở tầng `mediakit` không được phụ thuộc `manager/`. Thêm field
   `username`/`password` cho ISAPI; RTSP vẫn nhúng credential vào URI như cũ.
 - `supportsAudioBackchannel()` không `const`: ISAPI phải `GET /ISAPI/System/TwoWayAudio/channels` (blocking, trên
@@ -375,7 +375,7 @@ thêm `ProtocolLockTest`, `ProtocolOrderTest`.
   trả `Connection: close`), có cần `?sessionId=` không, nhịp gửi 20 ms có đủ mượt.
 
 **Q6 — xong (user chốt 2026-10-04: làm luôn, thêm API kết nối lại).**
-- `ReconnectPacer` (thuần dữ liệu, `CameraDeviceControl.h`) thay `_last_reconnect_time` của camera và loa: sau một
+- `ReconnectPacer` (thuần dữ liệu, `DeviceControl.h`) thay `_last_reconnect_time` của camera và loa: sau một
   lần kết nối/lượt dò kết thúc bằng `AUTH_FAILED`, chu kỳ chờ `camera.control_auth_retry_sec` /
   `speaker.control_auth_retry_sec` (300) thay vì 60 s. Kết nối được, lỗi khác, đổi cấu hình hoặc mở khoá giao thức
   thì về 60 s. `probeControlProtocols` trả thêm `ConnectError` để lượt dò `AUTO` cũng được tính.

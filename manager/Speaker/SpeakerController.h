@@ -2,7 +2,7 @@
 #define SPEAKER_SPEAKERCONTROLLER_H
 
 #include "ext-plugin/IDevice.h"
-#include "Control/CameraDeviceControl.h"
+#include "Control/DeviceControl.h"
 #include "GenericIPSpeaker.h"
 #include "AudioFileManager.h"
 #include "Common/SerialTaskQueue.h"
@@ -61,7 +61,7 @@ public:
 
 protected:
     // Creates the device control of `protocol` (null when not supported); unit tests override it.
-    virtual CameraDeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &address,
+    virtual DeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &address,
                                                          const std::string &username, const std::string &password);
 
 private:
@@ -86,9 +86,9 @@ private:
 
     // ── Control protocol selection (on _poller unless noted), as CameraController ──
     void startProtocolProbe();
-    void onProbeDone(const CameraDeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
+    void onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
                      ConnectError err);
-    void onConnectResult(const CameraDeviceControl::Ptr &device_ctr, ConnectError err);
+    void onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err);
     void onAuthResult(ConnectError err);
     void unlockProtocol(const std::string &reason);
     // Answers the reconnectNow() requests waiting for the attempt that just ended (_poller).
@@ -96,7 +96,7 @@ private:
     // Device queue: hands `result` to finishReconnect() on _poller.
     void postReconnectResult(const ReconnectResult &result);
     // Device queue: capabilities, backchannel and the connected event after a successful connect().
-    void publishConnected(const CameraDeviceControl::Ptr &device_ctr, const ConnectContext &ctx);
+    void publishConnected(const DeviceControl::Ptr &device_ctr, const ConnectContext &ctx);
 
     // ================== Vendor-specific operations ==================
     // Owner poller: the device a vendor operation runs on, or nullptr after answering `cb`.
@@ -115,7 +115,7 @@ private:
     // ================== Backchannel operations ==================
     // Device queue: resolves the backchannel RTSP URI and registers it with BackchannelManager.
     // Takes the controller and credentials explicitly because it runs off the owner poller.
-    void registerAudioBackchannel(const CameraDeviceControl::Ptr &device_ctr, const ConnectContext &ctx);
+    void registerAudioBackchannel(const DeviceControl::Ptr &device_ctr, const ConnectContext &ctx);
 private:
     DeviceTuple _tuple;
     toolkit::EventPoller::Ptr _poller;
@@ -128,7 +128,7 @@ private:
     std::vector<ReconnectCallback> _reconnect_waiters;
     toolkit::Timer::Ptr _timer_ctr;
     // The one controller of this speaker, whatever its protocol; only set or reset on _poller.
-    CameraDeviceControl::Ptr _device_ctr;
+    DeviceControl::Ptr _device_ctr;
     // Account _device_ctr logs in with (speaker.onvifUsername on vendors that need their own account).
     std::string _ctrl_username;
     // setupController() accepted the speaker: there is a controller, or an AUTO probe to run.

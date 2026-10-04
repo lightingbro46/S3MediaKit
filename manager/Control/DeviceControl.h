@@ -1,5 +1,5 @@
-#ifndef CONTROL_CAMERADEVICECONTROL_H
-#define CONTROL_CAMERADEVICECONTROL_H
+#ifndef CONTROL_DEVICECONTROL_H
+#define CONTROL_DEVICECONTROL_H
 
 #include <cmath>
 #include <cstdint>
@@ -9,7 +9,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "Common/DeviceControl.h"
+#include "Common/DeviceControlTypes.h"
 #include "Backchannel/IBackchannelPusher.h"
 
 namespace managerkit {
@@ -383,11 +383,16 @@ std::string controlProtocolSetting(const std::string &value);
 // Range "min ... max" in a few steps, as the encoder options report bitrates to the client.
 std::string bitrateRangeToString(int minBitrate, int maxBitrate);
 
-// What CameraController needs from a camera, whatever protocol it speaks. Every call is blocking
-// and runs on the camera's device queue; the getters of cached state may be called from any thread.
-class CameraDeviceControl : public DeviceControl {
+// What CameraController and SpeakerController need from a device, whatever protocol it speaks. Every
+// call is blocking and runs on the device queue; the getters of cached state may be called from any thread.
+class DeviceControl {
 public:
-    using Ptr = std::shared_ptr<CameraDeviceControl>;
+    using Ptr = std::shared_ptr<DeviceControl>;
+
+    virtual ~DeviceControl() = default;
+
+    virtual bool connect() = 0;
+    virtual void disconnect() = 0;
 
     virtual ControlProtocol protocol() const = 0;
     // Classification of the last failed connect(); NONE after a successful one.
@@ -452,7 +457,7 @@ public:
 // ── Protocol selection shared by every controller (camera, speaker) ─────────────────────────────
 
 // ONVIF → OnvifControl, PSIA → PsiaControl, ISAPI → IsapiControl, NONE → nullptr.
-CameraDeviceControl::Ptr makeDeviceControl(ControlProtocol protocol, const std::string &address,
+DeviceControl::Ptr makeDeviceControl(ControlProtocol protocol, const std::string &address,
                                            const std::string &username, const std::string &password);
 
 // "onvif,isapi,psia" → protocols in that order. Unknown names and repeats are skipped; an empty
@@ -460,12 +465,12 @@ CameraDeviceControl::Ptr makeDeviceControl(ControlProtocol protocol, const std::
 std::vector<ControlProtocol> parseProtocolOrder(const std::string &order_str);
 
 struct ProtocolProbeResult {
-    CameraDeviceControl::Ptr winner; // connected controller, null when none answered
+    DeviceControl::Ptr winner; // connected controller, null when none answered
     std::string err_msg;             // why, when there is no winner
     ConnectError err = ConnectError::NONE; // classification of err_msg
     DeviceFailure failure = DeviceFailure::None; // lastFailure() of the controller err_msg comes from
 };
-typedef std::function<CameraDeviceControl::Ptr(ControlProtocol)> DeviceControlFactory;
+typedef std::function<DeviceControl::Ptr(ControlProtocol)> DeviceControlFactory;
 // Blocking, for the device queue: connects the protocols of `order` in turn and returns the first
 // that connects. At most one controller is alive at a time: a loser is destroyed before the next is
 // created. Moves on only when the device said "not this protocol", or when ONVIF rejected the
@@ -545,4 +550,4 @@ private:
 
 } // namespace managerkit
 
-#endif // CONTROL_CAMERADEVICECONTROL_H
+#endif // CONTROL_DEVICECONTROL_H

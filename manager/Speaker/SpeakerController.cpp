@@ -91,7 +91,7 @@ bool SpeakerController::isReady() const {
     return _ready.load(); 
 }
 
-CameraDeviceControl::Ptr SpeakerController::createDeviceControl(ControlProtocol protocol, const std::string &address,
+DeviceControl::Ptr SpeakerController::createDeviceControl(ControlProtocol protocol, const std::string &address,
                                                                 const std::string &username, const std::string &password) {
     return makeDeviceControl(protocol, address, username, password);
 }
@@ -287,7 +287,7 @@ void SpeakerController::postReconnectResult(const ReconnectResult &result) {
     }, false);
 }
 
-void SpeakerController::publishConnected(const CameraDeviceControl::Ptr &device_ctr, const ConnectContext &ctx) {
+void SpeakerController::publishConnected(const DeviceControl::Ptr &device_ctr, const ConnectContext &ctx) {
     InfoL << controlProtocolToString(device_ctr->protocol()) << " controller of speaker " << _tuple.shortUrl()
           << " (" << _address << ") connected";
     std::weak_ptr<SpeakerController> weak_self = shared_from_this();
@@ -330,7 +330,7 @@ void SpeakerController::startProtocolProbe() {
         auto result = probeControlProtocols(order, [&](ControlProtocol protocol) {
             return self->createDeviceControl(protocol, address, ctx.username, ctx.password);
         }, self->_tuple.shortUrl() + " (" + address + ")");
-        CameraDeviceControl::Ptr winner = result.winner;
+        DeviceControl::Ptr winner = result.winner;
         const std::string err_msg = result.err_msg;
         const ConnectError err = result.err;
         if (winner && self->_ctrl_generation.load() != ctx.generation) {
@@ -351,7 +351,7 @@ void SpeakerController::startProtocolProbe() {
     });
 }
 
-void SpeakerController::onProbeDone(const CameraDeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
+void SpeakerController::onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
                                     ConnectError err) {
     if (generation != _ctrl_generation.load()) {
         return;
@@ -375,7 +375,7 @@ void SpeakerController::onProbeDone(const CameraDeviceControl::Ptr &device_ctr, 
     finishReconnect(result);
 }
 
-void SpeakerController::onConnectResult(const CameraDeviceControl::Ptr &device_ctr, ConnectError err) {
+void SpeakerController::onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err) {
     if (!device_ctr || device_ctr != _device_ctr) {
         return;
     }
@@ -653,7 +653,7 @@ void SpeakerController::playAudioFileByBackchannel(const std::string& fileId, On
     cb(ok, ok ? "" : backchannel.getErrorMsg());
 }
 
-void SpeakerController::registerAudioBackchannel(const CameraDeviceControl::Ptr &device_ctr, const ConnectContext &ctx) {
+void SpeakerController::registerAudioBackchannel(const DeviceControl::Ptr &device_ctr, const ConnectContext &ctx) {
     AudioBackchannelInfo info;
     if (!device_ctr->setupAudioBackchannel(info, ctx.sharedDsp) || info.url.empty()) {
         WarnL << "Setup audio backchannel failed for device " << _tuple.shortUrl();

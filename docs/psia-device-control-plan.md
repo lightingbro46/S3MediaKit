@@ -62,9 +62,9 @@ Ngoài phạm vi đợt này (đã chốt Q4):
 
 ## 4. Thiết kế
 
-### 4.1 Interface `CameraDeviceControl`
+### 4.1 Interface `DeviceControl`
 
-File mới `manager/Control/CameraDeviceControl.h`, kế thừa `DeviceControl`:
+File mới `manager/Control/DeviceControl.h`, kế thừa `DeviceControl`:
 
 ```cpp
 enum class ControlProtocol { NONE, ONVIF, PSIA };
@@ -75,9 +75,9 @@ enum class ConnectError { NONE, NOT_THIS_PROTOCOL, AUTH_FAILED, UNREACHABLE, OTH
 const char *controlProtocolToString(ControlProtocol p);       // "", "ONVIF", "PSIA"
 ControlProtocol controlProtocolFromString(const std::string &s);
 
-class CameraDeviceControl : public DeviceControl {
+class DeviceControl : public DeviceControl {
 public:
-    using Ptr = std::shared_ptr<CameraDeviceControl>;
+    using Ptr = std::shared_ptr<DeviceControl>;
 
     virtual ControlProtocol protocol() const = 0;
     virtual ConnectError lastConnectError() const = 0;
@@ -121,7 +121,7 @@ Chữ ký từng hàm chép đúng từ `OnvifControl` hiện có. Bước P1 ch
 `CameraController` còn gọi; không thêm API mới.
 
 `OnvifControl`:
-- Đổi base `DeviceControl` → `CameraDeviceControl`, thêm `override`. Những hàm đang non-virtual mà interface cần
+- Đổi base `DeviceControl` → `DeviceControl`, thêm `override`. Những hàm đang non-virtual mà interface cần
   (`getDeviceInfo`, `isControlled`, `getImageProfile`, …) chuyển thành override, thân hàm giữ nguyên.
 - `lastError()` trả `getSoapErrMsg()`.
 - `PTZ_GetStatus(float&, float&, float&)` mới trả `PtzMoveStatus`. Bản trả `tt__MoveStatus` đổi tên thành
@@ -153,7 +153,7 @@ std::string controlProtocol = "AUTO";
 **State trong `CameraController`** (chỉ đọc/ghi trên `_poller`):
 
 ```cpp
-CameraDeviceControl::Ptr _device_ctr;              // thay _onvif_ctr; luôn tối đa một
+DeviceControl::Ptr _device_ctr;              // thay _onvif_ctr; luôn tối đa một
 ControlProtocol _locked_protocol = NONE;           // AUTO đã khoá vào đâu (đồng thời là giá trị đã lưu)
 int _not_this_protocol_count = 0;                  // số lần connect hỏng kiểu NOT_THIS_PROTOCOL liên tiếp
 ```
@@ -215,7 +215,7 @@ Mỗi lần connect thành công, `CameraController` điền cả hai field.
 
 ### 4.4 `PsiaControl`
 
-File mới `manager/Control/PsiaDeviceControl.{h,cpp}`, implement `CameraDeviceControl`. Blocking, chỉ chạy trên
+File mới `manager/Control/PsiaDeviceControl.{h,cpp}`, implement `DeviceControl`. Blocking, chỉ chạy trên
 `_device_queue` giống `OnvifControl`. Có `std::mutex` bảo vệ state đọc từ `_poller`, như `OnvifControl`.
 
 **HTTP (`PsiaHttp`, nội bộ trong .cpp).**
@@ -280,7 +280,7 @@ Mỗi bước một commit (tiếng Việt). Build `cmake --build build -j2`. Te
 | Bước | Nội dung | File chính | Kiểm tra |
 |---|---|---|---|
 | P0 | Spike: chương trình nhỏ trong scratchpad gọi `GET /PSIA/System/deviceInfo` bằng `soap_GET` + `httpda` vào `psia_mock.py` (Digest) và, nếu có, một camera thật. Xác nhận cách đọc body/status của gSOAP raw HTTP. | scratchpad | Ghi kết quả vào mục 9; vướng thì đổi sang client socket + Digest tự viết (MD5 của toolkit), sửa mục 4.4 |
-| P1 | `CameraDeviceControl.h`, enum + string helper. `OnvifControl` implement (gồm `lastConnectError`, `PTZ_GetStatus` mới). `CameraController`: `_onvif_ctr` → `_device_ctr`, `getSoapErrMsg` → `lastError`, `tt__MoveStatus` → `PtzMoveStatus`, `createOnvifControl` → `createDeviceControl(ControlProtocol, addr, user, pass)`, `MediaGapFillManager`/audio nhận qua `dynamic_pointer_cast`. Fake trong test đổi base. **Không đổi hành vi.** | `manager/Control/*`, `manager/Camera/CameraController.*`, `tests/unit/manager/test_camera_controller.cpp` | Build + toàn bộ `unit.` xanh |
+| P1 | `DeviceControl.h`, enum + string helper. `OnvifControl` implement (gồm `lastConnectError`, `PTZ_GetStatus` mới). `CameraController`: `_onvif_ctr` → `_device_ctr`, `getSoapErrMsg` → `lastError`, `tt__MoveStatus` → `PtzMoveStatus`, `createOnvifControl` → `createDeviceControl(ControlProtocol, addr, user, pass)`, `MediaGapFillManager`/audio nhận qua `dynamic_pointer_cast`. Fake trong test đổi base. **Không đổi hành vi.** | `manager/Control/*`, `manager/Camera/CameraController.*`, `tests/unit/manager/test_camera_controller.cpp` | Build + toàn bộ `unit.` xanh |
 | P2 | `controlProtocol` ở `DeviceOption`/`ControllerOption`/`CameraOption`, `fromJson`/`makeCameraOptionJson`, kv `ResourceAdapter`. `DeviceCapabilities::controlProtocol` + JSON. Config `camera.*`. Logic chọn/khoá/dò lại/chuyển giao thức (4.2), `setLastControlProtocol`, `CODE_DEVICE_PROTOCOL_CHANGED`. | `manager/Common/DeviceOption.h`, `GenericRtspCamera.h`, `GenericRtspCameraImp.cpp`, `CameraController.*`, `CameraStatistic.cpp`, `server/Manager.cpp`, `server/WebApiErrCode.h`, `src/Common/config.*` | Unit test ở mục 5.1 |
 | P3 | `PsiaControl`: HTTP + Digest, connect/probe, deviceInfo, channels, URL, capabilities encoder, get/set encoder, refresh, giờ, phân loại lỗi | `manager/Control/PsiaDeviceControl.*` | Unit test parse XML mẫu (mục 5.1). `psia_mock.py` + test tích hợp nhỏ |
 | P4 | `PsiaControl`: PTZ (cont/rel/abs/stop/status), preset, home, focus/iris, relay | như P3 | Unit test quy đổi biên + XML PTZ. Gọi API PTZ trên mock |
@@ -363,7 +363,7 @@ discovery rỗng).
 - HTTP 404 → `soap->error = 404`, không đọc được body lỗi. Port đóng hoặc IP không trả lời → `SOAP_TCP_ERROR` (28),
   `soap->status` không phải mã HTTP.
 
-**P1 (2026-10-03) — xong.** `manager/Control/CameraDeviceControl.{h,cpp}`: interface, enum `ControlProtocol`,
+**P1 (2026-10-03) — xong.** `manager/Control/DeviceControl.{h,cpp}`: interface, enum `ControlProtocol`,
 `PtzMoveStatus`, `ConnectError`; các struct `Onvif*`/`VideoEncoderConfig*`/`SDCardInformation` chuyển nguyên từ
 `OnvifDeviceControl.h` sang (không đổi tên) để `PsiaControl` không phải kéo header gSOAP ONVIF.
 - `OnvifControl` implement interface. `PTZ_GetStatus` trả `PtzMoveStatus`, bản cũ đổi tên `PTZ_GetMoveStatus`.
@@ -391,7 +391,7 @@ discovery rỗng).
   `reportRuleFailureIfPending` (cùng kiểu `SET_CONFIG_FAILED`, `CONFIG_NOT_APPLIED`), không thêm `ApiErrCode`
   vì không API nào trả mã đó. Phía lưu trữ, `CameraStatisticImp::addDeviceCapabilities` xoá `stream_settings` và
   preset người dùng khi giao thức trong capabilities đổi.
-- `bitrateRangeToString` chuyển từ `OnvifDeviceControl.cpp` sang `CameraDeviceControl.cpp` để PSIA dùng chung.
+- `bitrateRangeToString` chuyển từ `OnvifDeviceControl.cpp` sang `DeviceControl.cpp` để PSIA dùng chung.
 - Test `CameraProtocolTest` (8 case theo mục 5.1) + `ControlProtocolSettingTest`; `ctest -R unit.` 201/201.
 
 **P3–P4 (2026-10-04) — xong, gộp một commit vì cùng một file.** `manager/Control/PsiaDeviceControl.{h,cpp}`:

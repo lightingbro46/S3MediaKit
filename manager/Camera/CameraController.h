@@ -2,7 +2,7 @@
 #define CAMERA_CAMERACONTROLLER_H
 
 #include "GenericRtspCamera.h"
-#include "Control/CameraDeviceControl.h"
+#include "Control/DeviceControl.h"
 #include "Control/OnvifDeviceControl.h"
 #include "Common/SerialTaskQueue.h"
 
@@ -96,7 +96,7 @@ public:
 protected:
     // Creates the device control of `protocol` for `address` (null when the protocol is not
     // supported); unit tests override it to return a fake device.
-    virtual CameraDeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &address,
+    virtual DeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &address,
                                                          const std::string &username, const std::string &password);
 
 private:
@@ -110,11 +110,11 @@ private:
     // AUTO without a lock: tries the protocols of camera.control_auto_order in one device task, keeping
     // at most one controller alive, and hands the first that connects to onProbeDone.
     void startProtocolProbe();
-    void onProbeDone(const CameraDeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
+    void onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
                      ConnectError err, DeviceFailure failure);
     // Result of a connect() of the current controller: locks the protocol, or counts the failures that
     // say the camera no longer speaks it (AUTO only).
-    void onConnectResult(const CameraDeviceControl::Ptr &device_ctr, ConnectError err);
+    void onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err);
     // A controller connected with `protocol`: drops the profile/rule/preset state of the previous
     // protocol when it differs, then locks AUTO to it.
     void onProtocolConnected(ControlProtocol protocol);
@@ -128,7 +128,7 @@ private:
     void postReconnectResult(const ReconnectResult &result);
     // Device queue: the work after a successful connect() — clock, profile sync, capabilities, events.
     // `sync_clock`: set the camera clock first (onvif.clockSyncEnable and the camera's enableTimeSync).
-    void publishConnected(const CameraDeviceControl::Ptr &device_ctr, bool sync_clock);
+    void publishConnected(const DeviceControl::Ptr &device_ctr, bool sync_clock);
     // Error for a command that needs the controller while it is not connected: says why the
     // last connect failed (credentials, network) when known, else CODE_DEVICE_OFFLINE.
     toolkit::SockException controllerNotReady() const;
@@ -144,8 +144,8 @@ private:
         bool is_rule = false;          // decision came from _ruleConfigMap, not _profileConfigMap
     };
     // Device queue: reads the profiles and hands them to applyMediaProfileSync on _poller.
-    void syncMediaProfile(const CameraDeviceControl::Ptr &device_ctr);
-    void applyMediaProfileSync(const CameraDeviceControl::Ptr &device_ctr, const OnvifMediaProfileMap &profiles);
+    void syncMediaProfile(const DeviceControl::Ptr &device_ctr);
+    void applyMediaProfileSync(const DeviceControl::Ptr &device_ctr, const OnvifMediaProfileMap &profiles);
     // _poller: stores a set result unless the entry changed meanwhile (e.g. setMediaProfileAsync).
     // `err_msg` carries the SOAP error of a failed set, reported for rule requests.
     void storeProfileSetResult(const ProfileSetRequest &request, bool ok, const std::string &err_msg = "");
@@ -199,7 +199,7 @@ private:
     uint64_t _last_clock_sync = 0;
     toolkit::Timer::Ptr _timer_ctr;
     // The one controller of this camera, whatever its protocol; only set or reset on _poller.
-    CameraDeviceControl::Ptr _device_ctr;
+    DeviceControl::Ptr _device_ctr;
     // setupController() accepted an address: there is a controller, or an AUTO probe to run.
     bool _configured = false;
     // Fixed protocol of the option, or the one AUTO locked to (restored by setLastControlProtocol).

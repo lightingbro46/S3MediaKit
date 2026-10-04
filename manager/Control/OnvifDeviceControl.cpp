@@ -322,7 +322,7 @@ DeviceClockReading OnvifControl::clockReading() const {
 }
 
 OnvifControl::OnvifControl(std::string strDeviceIp, std::string strUsername, std::string strPassword)
-    : CameraDeviceControl(), _strDeviceIp(strDeviceIp), _strUsername(strUsername), _strPassword(strPassword) {}
+    : DeviceControl(), _strDeviceIp(strDeviceIp), _strUsername(strUsername), _strPassword(strPassword) {}
 
 OnvifControl::~OnvifControl() {
     disconnect();

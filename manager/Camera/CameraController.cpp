@@ -29,7 +29,7 @@ static ApiErrCode failureCode(DeviceFailure failure, ApiErrCode fallback) {
     }
 }
 
-static ApiErrCode failureCode(const CameraDeviceControl::Ptr &ptr, ApiErrCode fallback) {
+static ApiErrCode failureCode(const DeviceControl::Ptr &ptr, ApiErrCode fallback) {
     return failureCode(ptr->lastFailure(), fallback);
 }
 
@@ -64,13 +64,13 @@ CameraController::CameraController(const DeviceTuple &tuple, const toolkit::Even
     : _tuple(tuple), _poller(poller),
       _device_queue(std::make_shared<SerialTaskQueue>(BlockingExecutors::device(), "camera " + tuple.shortUrl())) {}
 
-CameraDeviceControl::Ptr CameraController::createDeviceControl(ControlProtocol protocol, const std::string &address,
+DeviceControl::Ptr CameraController::createDeviceControl(ControlProtocol protocol, const std::string &address,
                                                                const std::string &username, const std::string &password) {
     return makeDeviceControl(protocol, address, username, password);
 }
 
 // Only ONVIF provides the SD card replay that MediaGapFillManager drives.
-static OnvifControl::Ptr asOnvif(const CameraDeviceControl::Ptr &ctr) {
+static OnvifControl::Ptr asOnvif(const DeviceControl::Ptr &ctr) {
     return std::dynamic_pointer_cast<OnvifControl>(ctr);
 }
 
@@ -417,7 +417,7 @@ void CameraController::postReconnectResult(const ReconnectResult &result) {
     }, false);
 }
 
-void CameraController::publishConnected(const CameraDeviceControl::Ptr &device_ctr, bool sync_clock) {
+void CameraController::publishConnected(const DeviceControl::Ptr &device_ctr, bool sync_clock) {
     InfoL << controlProtocolToString(device_ctr->protocol()) << " controller of device " << _tuple.shortUrl()
           << " (" << _address << ") connected";
     // Queued ahead of the profile sync below: a protocol switch drops the old profile state first.
@@ -474,7 +474,7 @@ void CameraController::startProtocolProbe() {
         auto result = probeControlProtocols(order, [&](ControlProtocol protocol) {
             return self->createDeviceControl(protocol, address, username, password);
         }, self->_tuple.shortUrl() + " (" + address + ")", time_sync);
-        CameraDeviceControl::Ptr winner = result.winner;
+        DeviceControl::Ptr winner = result.winner;
         const std::string err_msg = result.err_msg;
         const ConnectError err = result.err;
         const DeviceFailure failure = result.failure;
@@ -495,7 +495,7 @@ void CameraController::startProtocolProbe() {
     });
 }
 
-void CameraController::onProbeDone(const CameraDeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
+void CameraController::onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
                                    ConnectError err, DeviceFailure failure) {
     if (generation != _ctrl_generation.load()) {
         return;
@@ -520,7 +520,7 @@ void CameraController::onProbeDone(const CameraDeviceControl::Ptr &device_ctr, u
     finishReconnect(result);
 }
 
-void CameraController::onConnectResult(const CameraDeviceControl::Ptr &device_ctr, ConnectError err) {
+void CameraController::onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err) {
     if (!device_ctr || device_ctr != _device_ctr) {
         return;
     }
@@ -582,7 +582,7 @@ void CameraController::onAuthResult(ConnectError err) {
 }
 
 // ── Imaging control (focus / iris) ───────────────────────────────────────────
-static void onvifImageControl(const CameraDeviceControl::Ptr &ptr, IMAGE_CONTROL_DIRECT direct, int speed,
+static void onvifImageControl(const DeviceControl::Ptr &ptr, IMAGE_CONTROL_DIRECT direct, int speed,
                               const function<void(const SockException &ex)> &cb, const DelayedDeviceTask &delayed) {
     switch (direct) {
         case IMAGE_CONTROL_DIRECT::FocusAuto:
@@ -629,7 +629,7 @@ static void onvifImageControl(const CameraDeviceControl::Ptr &ptr, IMAGE_CONTROL
 }
 
 // ── Relay output control ──────────────────────────────────────────────────────
-static void onvifRelayControl(const CameraDeviceControl::Ptr &ptr, RELAY_OUTPUT_CONTROL direct, const std::string &token,
+static void onvifRelayControl(const DeviceControl::Ptr &ptr, RELAY_OUTPUT_CONTROL direct, const std::string &token,
                               const function<void(const SockException &ex)> &cb) {
     if (!ptr->enableRelayOutput()) {
         return cb(SockException(Err_other, "Device does not support relay output", ApiErrCode::CODE_DEVICE_NO_SUPPORT_RELAY_OUTPUT));
@@ -653,7 +653,7 @@ static void onvifRelayControl(const CameraDeviceControl::Ptr &ptr, RELAY_OUTPUT_
 }
 
 // ── Standard PTZ (pan / tilt / zoom) ─────────────────────────────────────────
-static void onvifPTZMove(const CameraDeviceControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT direct, int speed,
+static void onvifPTZMove(const DeviceControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT direct, int speed,
                          const function<void(const SockException &ex)> &cb, const DelayedDeviceTask &delayed) {
     if (!ptr->enablePTZ()) {
         cb(SockException(Err_other, "Device does not support PTZ", ApiErrCode::CODE_DEVICE_NO_SUPPORT_PTZ));
@@ -1012,7 +1012,7 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
     }
 }
 
-static void onvifGetMediaProfile(const CameraDeviceControl::Ptr &ptr, const string &profileToken, const std::function<void(const toolkit::SockException &ex, VideoEncoderConfig &config)> &cb) {
+static void onvifGetMediaProfile(const DeviceControl::Ptr &ptr, const string &profileToken, const std::function<void(const toolkit::SockException &ex, VideoEncoderConfig &config)> &cb) {
     VideoEncoderConfig config;
     if (!ptr->getVideoEncoderConfigByToken(profileToken, config)) {
         cb(SockException(Err_other, "Device execute get media profile failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_ONVIF_GET_CONFIG_FAILED)), config);
@@ -1057,7 +1057,7 @@ void CameraController::getSDCardInfoAsync(const std::function<void(const toolkit
     return;
 }
 
-static void onvifSetMediaProfile(const CameraDeviceControl::Ptr &ptr, const string &profileToken, const VideoEncoderConfig &config, const function<void(const SockException &ex)> &cb, const function<void()> &on_success) { 
+static void onvifSetMediaProfile(const DeviceControl::Ptr &ptr, const string &profileToken, const VideoEncoderConfig &config, const function<void(const SockException &ex)> &cb, const function<void()> &on_success) { 
     if (!ptr->setVideoEncoderConfigByToken(profileToken, config)) {
         cb(SockException(Err_other, "Device execute set media profile failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_ONVIF_SET_CONFIG_FAILED)));
         return;
@@ -1145,7 +1145,7 @@ void CameraController::addProfileConfig(const std::string &profileToken, const V
     }
 }
 
-void CameraController::syncMediaProfile(const CameraDeviceControl::Ptr &device_ctr) {
+void CameraController::syncMediaProfile(const DeviceControl::Ptr &device_ctr) {
     // Runs on the device queue: only the SOAP read happens here, the decisions use _profileConfigMap
     // and are made on _poller.
     if (!device_ctr || !device_ctr->isConnected()) {
@@ -1161,7 +1161,7 @@ void CameraController::syncMediaProfile(const CameraDeviceControl::Ptr &device_c
     }, false);
 }
 
-void CameraController::applyMediaProfileSync(const CameraDeviceControl::Ptr &device_ctr, const OnvifMediaProfileMap &profiles) {
+void CameraController::applyMediaProfileSync(const DeviceControl::Ptr &device_ctr, const OnvifMediaProfileMap &profiles) {
     // Retries setting media profiles in NEW/PROCESSING state; the retry logic is based on
     // retry_time, which is reset to 5 once the camera config matches.
     CHECK(_poller->isCurrentThread(), "applyMediaProfileSync must run on the owner poller");

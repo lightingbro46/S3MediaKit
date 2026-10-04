@@ -27,7 +27,7 @@ namespace managerkit {
 // Test-only access to the media profile sync (declared friend in CameraController.h).
 class CameraControllerTestPeer {
 public:
-    static void syncMediaProfile(CameraController &c, const CameraDeviceControl::Ptr &ctr) { c.syncMediaProfile(ctr); }
+    static void syncMediaProfile(CameraController &c, const DeviceControl::Ptr &ctr) { c.syncMediaProfile(ctr); }
 
     static void onManager(CameraController &c) { c.onManager(); }
 
@@ -184,7 +184,7 @@ public:
         : CameraController(tuple, poller), _fake(std::move(fake)) {}
 
 protected:
-    CameraDeviceControl::Ptr createDeviceControl(ControlProtocol, const std::string &, const std::string &,
+    DeviceControl::Ptr createDeviceControl(ControlProtocol, const std::string &, const std::string &,
                                                  const std::string &) override {
         return _fake;
     }
@@ -1298,7 +1298,7 @@ private:
                                     {static_cast<int>(ConnectError::NOT_THIS_PROTOCOL)}};
 };
 
-class FakeProtocolControl : public CameraDeviceControl {
+class FakeProtocolControl : public DeviceControl {
 public:
     FakeProtocolControl(ControlProtocol protocol, std::shared_ptr<ProtocolWorld> world)
         : _protocol(protocol), _world(std::move(world)) {
@@ -1372,7 +1372,7 @@ public:
         : CameraController(tuple, poller), _world(std::move(world)) {}
 
 protected:
-    CameraDeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &, const std::string &,
+    DeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &, const std::string &,
                                                  const std::string &) override {
         return std::make_shared<FakeProtocolControl>(protocol, _world);
     }
@@ -1883,7 +1883,7 @@ public:
         : SpeakerController(tuple, poller), _world(std::move(world)) {}
 
 protected:
-    CameraDeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &, const std::string &,
+    DeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &, const std::string &,
                                                  const std::string &) override {
         return std::make_shared<FakeProtocolControl>(protocol, _world);
     }

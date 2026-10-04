@@ -1,4 +1,4 @@
-#include "CameraDeviceControl.h"
+#include "Control/DeviceControl.h"
 #include <algorithm>
 #include <strings.h>
 #include "Control/OnvifDeviceControl.h"
@@ -83,7 +83,7 @@ std::string bitrateRangeToString(int minBitrate, int maxBitrate) {
     return result;
 }
 
-CameraDeviceControl::Ptr makeDeviceControl(ControlProtocol protocol, const std::string &address,
+DeviceControl::Ptr makeDeviceControl(ControlProtocol protocol, const std::string &address,
                                            const std::string &username, const std::string &password) {
     switch (protocol) {
         case ControlProtocol::ONVIF: return std::make_shared<OnvifControl>(address, username, password);

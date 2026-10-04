@@ -15,7 +15,7 @@
 #include "soapSearchBindingProxy.h"
 #include "soapReplayBindingProxy.h"
 #include "soapRecordingBindingProxy.h"
-#include "Control/CameraDeviceControl.h"
+#include "Control/DeviceControl.h"
 
 namespace OnvifCtrl {
 // TTL (seconds) of the cached camera-clock offset used to sign ONVIF requests.
@@ -41,7 +41,7 @@ struct OnvifHttpAuth;
 
 // The operations CameraController uses are virtual so unit tests can substitute a fake device
 // (see CameraController::createDeviceControl).
-class OnvifControl : public CameraDeviceControl {
+class OnvifControl : public DeviceControl {
 public:
     using Ptr = std::shared_ptr<OnvifControl>;
 
