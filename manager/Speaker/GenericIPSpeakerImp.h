@@ -32,6 +32,9 @@ public:
     // Owner poller: SpeakerController::reconnectNow().
     void reconnectController(const ReconnectCallback &cb);
 
+    // See SpeakerController::clockReader(). Owner poller only; null without a controller.
+    std::function<DeviceClockReading()> clockReader();
+
 public:
     //////////////DeviceSourceEvent related interface implementation////////////////
     toolkit::EventPoller::Ptr getOwnerPoller(DeviceSource &sender) override { return _poller; }

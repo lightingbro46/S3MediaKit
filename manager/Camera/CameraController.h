@@ -111,7 +111,8 @@ private:
     // at most one controller alive, and hands the first that connects to onProbeDone.
     void startProtocolProbe();
     void onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
-                     ConnectError err, DeviceFailure failure);
+                     ConnectError err, DeviceFailure failure,
+                     const DeviceClockReading &clock);
     // Result of a connect() of the current controller: locks the protocol, or counts the failures that
     // say the camera no longer speaks it (AUTO only).
     void onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err);

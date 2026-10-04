@@ -469,6 +469,7 @@ struct ProtocolProbeResult {
     std::string err_msg;             // why, when there is no winner
     ConnectError err = ConnectError::NONE; // classification of err_msg
     DeviceFailure failure = DeviceFailure::None; // lastFailure() of the controller err_msg comes from
+    DeviceClockReading clock; // clockReading() of that controller (for ClockSkew)
 };
 typedef std::function<DeviceControl::Ptr(ControlProtocol)> DeviceControlFactory;
 // Blocking, for the device queue: connects the protocols of `order` in turn and returns the first
@@ -488,6 +489,8 @@ struct ReconnectResult {
     ConnectError error = ConnectError::NONE;
     std::string protocol;   // controlProtocolToString of the controller that connected or failed
     std::string msg;
+    DeviceFailure failure = DeviceFailure::None; // why it failed, as the API error codes report it
+    DeviceClockReading clock; // device clock measured by the failed attempt (for ClockSkew)
 };
 typedef std::function<void(const ReconnectResult &)> ReconnectCallback;
 

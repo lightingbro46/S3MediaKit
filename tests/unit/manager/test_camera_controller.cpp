@@ -2257,3 +2257,32 @@ TEST_F(SpeakerProtocolTest, ServerConfigTurnsClockSyncOffForSpeakers) {
     EXPECT_EQ(0, _world->count("settime ONVIF"));
     setClockSyncEnable(true);
 }
+
+// ── /device/reconnect reports the cause of a failed attempt (data.code) ──────
+
+TEST_F(SpeakerProtocolTest, ReconnectReportsWhyTheLockedProtocolFailed) {
+    setup("ONVIF");
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::UNREACHABLE);
+    _world->setFailure(ControlProtocol::ONVIF, DeviceFailure::Unreachable);
+    auto speaker = _speaker;
+    ReconnectWait wait;
+    _poller->sync([&]() { speaker->reconnectNow(wait.callback()); });
+    ASSERT_TRUE(wait.wait());
+    EXPECT_TRUE(wait.result.finished);
+    EXPECT_FALSE(wait.result.connected);
+    EXPECT_EQ(DeviceFailure::Unreachable, wait.result.failure);
+}
+
+TEST_F(SpeakerProtocolTest, ReconnectReportsWhyTheProbeFailed) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    _world->setFailure(ControlProtocol::ONVIF, DeviceFailure::Unauthorized);
+    _world->setResult(ControlProtocol::PSIA, ConnectError::NOT_THIS_PROTOCOL);
+    setup("");
+    auto speaker = _speaker;
+    ReconnectWait wait;
+    _poller->sync([&]() { speaker->reconnectNow(wait.callback()); });
+    ASSERT_TRUE(wait.wait());
+    EXPECT_FALSE(wait.result.connected);
+    EXPECT_EQ(ConnectError::AUTH_FAILED, wait.result.error);
+    EXPECT_EQ(DeviceFailure::Unauthorized, wait.result.failure) << "the ONVIF verdict, not PSIA's";
+}

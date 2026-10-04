@@ -343,6 +343,8 @@ void CameraController::onManager() {
             strong_self->onControllerReady(false, err_msg, nullptr);
             result.error = err;
             result.msg = err_msg;
+            result.failure = device_ctr->lastFailure();
+            result.clock = device_ctr->clockReading();
         }
         // Queued after onConnectResult: a waiter sees the pacer as this attempt left it.
         strong_self->postReconnectResult(result);
@@ -452,13 +454,14 @@ void CameraController::startProtocolProbe() {
         const std::string err_msg = result.err_msg;
         const ConnectError err = result.err;
         const DeviceFailure failure = result.failure;
+        const DeviceClockReading clock = result.clock;
         if (winner && self->_ctrl_generation.load() != generation) {
             winner.reset(); // the option changed meanwhile
         }
         std::weak_ptr<CameraController> weak = self;
-        self->_poller->async([weak, winner, generation, err_msg, err, failure]() {
+        self->_poller->async([weak, winner, generation, err_msg, err, failure, clock]() {
             if (auto strong = weak.lock()) {
-                strong->onProbeDone(winner, generation, err_msg, err, failure);
+                strong->onProbeDone(winner, generation, err_msg, err, failure, clock);
             }
         }, false);
         if (winner) {
@@ -470,7 +473,8 @@ void CameraController::startProtocolProbe() {
 }
 
 void CameraController::onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
-                                   ConnectError err, DeviceFailure failure) {
+                                   ConnectError err, DeviceFailure failure,
+                                   const DeviceClockReading &clock) {
     if (generation != _ctrl_generation.load()) {
         return;
     }
@@ -483,6 +487,8 @@ void CameraController::onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_
         onAuthResult(err);
         result.error = err;
         result.msg = err_msg;
+        result.failure = failure;
+        result.clock = clock;
         finishReconnect(result);
         return;
     }

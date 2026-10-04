@@ -174,6 +174,11 @@ void GenericIPSpeakerImp::reconnectController(const ReconnectCallback &cb) {
     _controller->reconnectNow(cb);
 }
 
+std::function<DeviceClockReading()> GenericIPSpeakerImp::clockReader() {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call clockReader in it's owner poller");
+    return _controller ? _controller->clockReader() : nullptr;
+}
+
 void GenericIPSpeakerImp::setAudioVolume(int volume, const std::function<void(const toolkit::SockException &ex)> &cb) {
     CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call setAudioVolume in it's owner poller");
     if (!_controller) {

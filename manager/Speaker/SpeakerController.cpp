@@ -186,6 +186,15 @@ void SpeakerController::stopController() {
     DebugL << "Closed speaker controller for device: " << _tuple.shortUrl() << " (" << _address << ")";
 }
 
+std::function<DeviceClockReading()> SpeakerController::clockReader() const {
+    auto device_ctr = _device_ctr;
+    if (!device_ctr) {
+        return nullptr;
+    }
+    // Only reads atomics, so the caller may run it on any thread.
+    return [device_ctr]() { return device_ctr->clockReading(); };
+}
+
 bool SpeakerController::timeSyncEnabled() const {
     // The clock is only ever set by the maintenance cycle, never by an API command, as for cameras.
     GET_CONFIG(bool, clock_sync_enable, OnvifCtrl::kClockSyncEnable);
@@ -281,6 +290,8 @@ void SpeakerController::onManager() {
             strong_self->onControllerReady(false, err_msg, nullptr);
             result.error = err;
             result.msg = err_msg;
+            result.failure = device_ctr->lastFailure();
+            result.clock = device_ctr->clockReading();
         }
         // Queued after onConnectResult: a waiter sees the pacer as this attempt left it.
         strong_self->postReconnectResult(result);
@@ -375,14 +386,15 @@ void SpeakerController::startProtocolProbe() {
         const std::string err_msg = result.err_msg;
         const ConnectError err = result.err;
         const DeviceFailure failure = result.failure;
+        const DeviceClockReading clock = result.clock;
         if (winner && self->_ctrl_generation.load() != ctx.generation) {
             winner.reset(); // the option changed meanwhile
         }
         const uint64_t generation = ctx.generation;
         std::weak_ptr<SpeakerController> weak = self;
-        self->_poller->async([weak, winner, generation, err_msg, err, failure]() {
+        self->_poller->async([weak, winner, generation, err_msg, err, failure, clock]() {
             if (auto strong = weak.lock()) {
-                strong->onProbeDone(winner, generation, err_msg, err, failure);
+                strong->onProbeDone(winner, generation, err_msg, err, failure, clock);
             }
         }, false);
         if (winner) {
@@ -394,7 +406,8 @@ void SpeakerController::startProtocolProbe() {
 }
 
 void SpeakerController::onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
-                                    ConnectError err, DeviceFailure failure) {
+                                    ConnectError err, DeviceFailure failure,
+                                    const DeviceClockReading &clock) {
     if (generation != _ctrl_generation.load()) {
         return;
     }
@@ -407,6 +420,8 @@ void SpeakerController::onProbeDone(const DeviceControl::Ptr &device_ctr, uint64
         onAuthResult(err);
         result.error = err;
         result.msg = err_msg;
+        result.failure = failure;
+        result.clock = clock;
         finishReconnect(result);
         return;
     }

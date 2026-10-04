@@ -117,6 +117,7 @@ ProtocolProbeResult probeControlProtocols(const std::vector<ControlProtocol> &or
     // Set when ONVIF rejected the credentials: the error reported if no other protocol connects.
     std::string onvif_auth_err;
     DeviceFailure onvif_auth_failure = DeviceFailure::None;
+    DeviceClockReading onvif_auth_clock;
     for (auto protocol : order) {
         auto device_ctr = factory(protocol);
         if (!device_ctr) {
@@ -126,6 +127,7 @@ ProtocolProbeResult probeControlProtocols(const std::vector<ControlProtocol> &or
             result.winner = device_ctr;
             result.err = ConnectError::NONE;
             result.failure = DeviceFailure::None;
+            result.clock = DeviceClockReading();
             onvif_auth_err.clear();
             break;
         }
@@ -133,6 +135,7 @@ ProtocolProbeResult probeControlProtocols(const std::vector<ControlProtocol> &or
         result.err = err;
         result.err_msg = std::string(controlProtocolToString(protocol)) + ": " + device_ctr->lastError();
         result.failure = device_ctr->lastFailure();
+        result.clock = device_ctr->clockReading();
         if (sync_clock_on_skew && result.failure == DeviceFailure::ClockSkew) {
             device_ctr->setCameraTimeManual();
         }
@@ -145,6 +148,7 @@ ProtocolProbeResult probeControlProtocols(const std::vector<ControlProtocol> &or
             // ONVIF while its web account still works for ISAPI.
             onvif_auth_err = result.err_msg;
             onvif_auth_failure = result.failure;
+            onvif_auth_clock = result.clock;
             continue;
         }
         if (err != ConnectError::NOT_THIS_PROTOCOL) {
@@ -156,6 +160,7 @@ ProtocolProbeResult probeControlProtocols(const std::vector<ControlProtocol> &or
         result.err_msg = onvif_auth_err;
         result.err = ConnectError::AUTH_FAILED;
         result.failure = onvif_auth_failure;
+        result.clock = onvif_auth_clock;
     }
     return result;
 }

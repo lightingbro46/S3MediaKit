@@ -35,6 +35,10 @@ public:
     // failed (credentials, network, clock) when known, else CODE_DEVICE_OFFLINE.
     toolkit::SockException notReadyError() const;
 
+    // Reads the device clock last measured by a rejected request (for CODE_DEVICE_CLOCK_SKEW responses).
+    // Get it on _poller; the returned function may run on any thread. Null without a controller.
+    std::function<DeviceClockReading()> clockReader() const;
+
     void setupController(const SpeakerOption &option);
 
     // Protocol the speaker was controlled with before ("ONVIF", "PSIA", "ISAPI", "" = unknown), from the
@@ -91,7 +95,8 @@ private:
     // ── Control protocol selection (on _poller unless noted), as CameraController ──
     void startProtocolProbe();
     void onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
-                     ConnectError err, DeviceFailure failure);
+                     ConnectError err, DeviceFailure failure,
+                     const DeviceClockReading &clock);
     void onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err);
     void onAuthResult(ConnectError err);
     void unlockProtocol(const std::string &reason);

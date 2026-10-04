@@ -5,6 +5,7 @@
 #include "WebApiErrCode.h"
 #include "Control/SubnetScan.h"
 #include "Speaker/SpeakerController.h"
+#include "Common/DeviceFailureCode.h"
 #include "Camera/VideoConfigJobManager.h"
 #include "Manager.h"
 #include "ApiWorkDispatcher.h"
@@ -652,8 +653,13 @@ void registerControlApis() {
                 if (auto strong_listener = weak_listener.lock()) {
                     auto impl = dynamic_pointer_cast<GenericIPSpeakerImp>(strong_listener);
                     if (impl) {
+                        // As for camera commands: a clock rejection says how far off the speaker is.
+                        auto clock_reader = impl->clockReader();
                         impl->setAudioVolume(volume, [=](const SockException &ex) mutable {
                             if (ex) {
+                                if (ex.getCustomCode() == ApiErrCode::CODE_DEVICE_CLOCK_SKEW && clock_reader) {
+                                    val["data"] = makeClockSkewJson(clock_reader());
+                                }
                                 RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                             } else {
                                 val["msg"] = ex.what();
@@ -700,6 +706,11 @@ void registerControlApis() {
                         val["data"]["connected"] = result.connected;
                         val["data"]["controlProtocol"] = result.protocol;
                         val["data"]["error"] = result.error == ConnectError::NONE ? "" : connectErrorToString(result.error);
+                        // The API error code of the failure (905004…905008), 0 when there is none to report.
+                        val["data"]["code"] = static_cast<int>(deviceFailureCode(result.failure, ApiErrCode::CODE_SUCCESS));
+                        if (result.failure == DeviceFailure::ClockSkew) {
+                            val["data"]["clock"] = makeClockSkewJson(result.clock);
+                        }
                         val["msg"] = result.msg;
                         invoker(200, headerOut, val.toStyledString());
                     });
