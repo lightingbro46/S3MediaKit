@@ -455,6 +455,7 @@ std::vector<ControlProtocol> parseProtocolOrder(const std::string &order_str);
 struct ProtocolProbeResult {
     CameraDeviceControl::Ptr winner; // connected controller, null when none answered
     std::string err_msg;             // why, when there is no winner
+    ConnectError err = ConnectError::NONE; // classification of err_msg
 };
 typedef std::function<CameraDeviceControl::Ptr(ControlProtocol)> DeviceControlFactory;
 // Blocking, for the device queue: connects the protocols of `order` in turn and returns the first
@@ -463,6 +464,40 @@ typedef std::function<CameraDeviceControl::Ptr(ControlProtocol)> DeviceControlFa
 // credentials (a Hikvision camera with ONVIF off answers 401); the error reported then is ONVIF's.
 ProtocolProbeResult probeControlProtocols(const std::vector<ControlProtocol> &order,
                                           const DeviceControlFactory &factory, const std::string &log_name);
+
+// Outcome of the connect attempt a /device/reconnect request waits for.
+struct ReconnectResult {
+    bool finished = false;  // false: the attempt did not end in time and keeps running
+    bool connected = false;
+    ConnectError error = ConnectError::NONE;
+    std::string protocol;   // controlProtocolToString of the controller that connected or failed
+    std::string msg;
+};
+typedef std::function<void(const ReconnectResult &)> ReconnectCallback;
+
+// When the reconnect cycle of a device runs next: `interval_sec` after the last attempt, or
+// `auth_retry_sec` while the last attempt was rejected for its credentials (many devices, Hikvision
+// among them, lock the client IP after a few failed logins). Plain data, owner poller only.
+class ReconnectPacer {
+public:
+    bool due(uint64_t now, int interval_sec, int auth_retry_sec) const;
+    void onAttempt(uint64_t now) { _last_attempt = now; }
+    // Result of a connect() or a probe; NONE after a success.
+    void onResult(ConnectError err) { _auth_failed = err == ConnectError::AUTH_FAILED; }
+    // The next cycle runs at once and with the normal interval: the credentials changed, the protocol
+    // was unlocked, or a reconnect was requested.
+    void reset() {
+        _last_attempt = 0;
+        _auth_failed = false;
+    }
+    // The next cycle runs at once; the credentials verdict stays.
+    void skipWait() { _last_attempt = 0; }
+    bool authFailed() const { return _auth_failed; }
+
+private:
+    uint64_t _last_attempt = 0;
+    bool _auth_failed = false;
+};
 
 // Which protocol a device is controlled with, and when AUTO probes again. Plain data, no thread or
 // timer: the owner calls it on its own poller.

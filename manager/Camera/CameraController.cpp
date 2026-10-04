@@ -137,8 +137,11 @@ void CameraController::setupController(const CameraOption &option) {
         // A changed address or credentials may mean another protocol now: AUTO probes again.
         _lock.unlock();
         _probing = false;
-        _last_reconnect_time = 0;
+        _pacer.reset();
         ++_ctrl_generation;
+        ReconnectResult pending;
+        pending.msg = "Device settings changed, connecting with the new settings";
+        finishReconnect(pending);
     }
 
     if (option.manufacturer == GENERIC_RTSP_CAMERA && option.ip.empty()) {
@@ -220,12 +223,13 @@ void CameraController::onManager() {
         return;
     }
 
-    if (_probing || time(nullptr) - _last_reconnect_time < 60) {
-        // avoid reconnecting too frequently
+    GET_CONFIG(int, auth_retry_sec, CameraControl::kAuthRetrySec);
+    const uint64_t now = time(nullptr);
+    if (_probing || !_pacer.due(now, 60, auth_retry_sec)) {
+        // avoid reconnecting too frequently, and logging in with a rejected password even less often
         return;
     }
-    const uint64_t now = time(nullptr);
-    _last_reconnect_time = now;
+    _pacer.onAttempt(now);
     if (!_device_ctr) {
         startProtocolProbe();
         return;
@@ -277,12 +281,22 @@ void CameraController::onManager() {
             if (resync_profiles && device_ctr->refreshMediaProfiles()) {
                 strong_self->syncMediaProfile(device_ctr);
             }
+            ReconnectResult result;
+            result.finished = result.connected = true;
+            result.protocol = controlProtocolToString(device_ctr->protocol());
+            result.msg = "connected";
+            strong_self->postReconnectResult(result);
             return;
         }
 
         // reconnect to device
+        ReconnectResult result;
+        result.finished = true;
+        result.protocol = controlProtocolToString(device_ctr->protocol());
         if (device_ctr->connect()) {
             strong_self->publishConnected(device_ctr);
+            result.connected = true;
+            result.msg = "connected";
         } else {
             auto err_msg = device_ctr->lastError();
             auto err = device_ctr->lastConnectError();
@@ -295,8 +309,54 @@ void CameraController::onManager() {
                 }
             }, false);
             strong_self->onControllerReady(false, err_msg, nullptr);
+            result.error = err;
+            result.msg = err_msg;
         }
+        // Queued after onConnectResult: a waiter sees the pacer as this attempt left it.
+        strong_self->postReconnectResult(result);
     });
+}
+
+void CameraController::reconnectNow(const ReconnectCallback &cb) {
+    CHECK(_poller->isCurrentThread(), "reconnectNow must be called on the owner poller");
+    if (!_configured || (!_device_ctr && !_lock.isAuto())) {
+        ReconnectResult result;
+        result.finished = true;
+        result.msg = "Device control is not configured";
+        cb(result);
+        return;
+    }
+    if (_device_ctr && _device_ctr->isControlled()) {
+        ReconnectResult result;
+        result.finished = true;
+        result.connected = _ready.load();
+        result.protocol = controlProtocolToString(_device_ctr->protocol());
+        result.msg = "Device controller is busy with another command, try again later";
+        cb(result);
+        return;
+    }
+    InfoL << "Reconnect of device " << _tuple.shortUrl() << " (" << _address << ") requested";
+    _reconnect_waiters.push_back(cb);
+    _pacer.reset();
+    // A probe already running answers the waiter when it ends.
+    onManager();
+}
+
+void CameraController::finishReconnect(const ReconnectResult &result) {
+    std::vector<ReconnectCallback> waiters;
+    waiters.swap(_reconnect_waiters);
+    for (auto &cb : waiters) {
+        cb(result);
+    }
+}
+
+void CameraController::postReconnectResult(const ReconnectResult &result) {
+    std::weak_ptr<CameraController> weak_self = shared_from_this();
+    _poller->async([weak_self, result]() {
+        if (auto self = weak_self.lock()) {
+            self->finishReconnect(result);
+        }
+    }, false);
 }
 
 void CameraController::publishConnected(const CameraDeviceControl::Ptr &device_ctr) {
@@ -354,13 +414,14 @@ void CameraController::startProtocolProbe() {
         }, self->_tuple.shortUrl() + " (" + address + ")");
         CameraDeviceControl::Ptr winner = result.winner;
         const std::string err_msg = result.err_msg;
+        const ConnectError err = result.err;
         if (winner && self->_ctrl_generation.load() != generation) {
             winner.reset(); // the option changed meanwhile
         }
         std::weak_ptr<CameraController> weak = self;
-        self->_poller->async([weak, winner, generation, err_msg]() {
+        self->_poller->async([weak, winner, generation, err_msg, err]() {
             if (auto strong = weak.lock()) {
-                strong->onProbeDone(winner, generation, err_msg);
+                strong->onProbeDone(winner, generation, err_msg, err);
             }
         }, false);
         if (winner) {
@@ -371,22 +432,35 @@ void CameraController::startProtocolProbe() {
     });
 }
 
-void CameraController::onProbeDone(const CameraDeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg) {
+void CameraController::onProbeDone(const CameraDeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
+                                   ConnectError err) {
     if (generation != _ctrl_generation.load()) {
         return;
     }
     _probing = false;
+    ReconnectResult result;
+    result.finished = true;
     if (!device_ctr) {
         WarnL << "No control protocol for device " << _tuple.shortUrl() << " (" << _address << "): " << err_msg;
+        onAuthResult(err);
+        result.error = err;
+        result.msg = err_msg;
+        finishReconnect(result);
         return;
     }
     _device_ctr = device_ctr;
+    result.connected = true;
+    result.protocol = controlProtocolToString(device_ctr->protocol());
+    result.msg = "connected";
+    // onConnectResult (queued by publishConnected) clears the credentials verdict.
+    finishReconnect(result);
 }
 
 void CameraController::onConnectResult(const CameraDeviceControl::Ptr &device_ctr, ConnectError err) {
     if (!device_ctr || device_ctr != _device_ctr) {
         return;
     }
+    onAuthResult(err);
     if (err == ConnectError::NONE) {
         onProtocolConnected(device_ctr->protocol());
         return;
@@ -429,8 +503,18 @@ void CameraController::unlockProtocol(const std::string &reason) {
     onControllerReady(false, "Control protocol changed", nullptr);
     _device_ctr.reset();
     _lock.unlock();
-    _last_reconnect_time = 0;
+    _pacer.reset();
     ++_ctrl_generation;
+}
+
+void CameraController::onAuthResult(ConnectError err) {
+    const bool was_rejected = _pacer.authFailed();
+    _pacer.onResult(err);
+    if (_pacer.authFailed() && !was_rejected) {
+        GET_CONFIG(int, auth_retry_sec, CameraControl::kAuthRetrySec);
+        WarnL << "Device " << _tuple.shortUrl() << " (" << _address << ") rejected the credentials: next attempt in "
+              << auth_retry_sec << " s, or at once through /media/mserver/device/reconnect";
+    }
 }
 
 // ── Imaging control (focus / iris) ───────────────────────────────────────────

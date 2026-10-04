@@ -1026,6 +1026,8 @@ extern const std::string kControlAutoOrder;
 // Connect failures of the "device does not speak this protocol" kind, in a row, after which a
 // speaker locked by AUTO probes the protocols again
 extern const std::string kControlReprobeFailures;
+// Seconds between connect attempts after a speaker rejected the credentials (instead of 60)
+extern const std::string kControlAuthRetrySec;
 } // namespace Speaker
 
 ////////////Camera control configuration///////////
@@ -1035,6 +1037,9 @@ extern const std::string kAutoOrder;
 // Connect failures of the "device does not speak this protocol" kind, in a row, after which a
 // camera locked by AUTO probes the protocols again
 extern const std::string kReprobeFailures;
+// Seconds between connect attempts after a camera rejected the credentials (instead of 60). Many
+// devices (Hikvision) lock the client IP after a few failed logins; /device/reconnect skips the wait.
+extern const std::string kAuthRetrySec;
 } // namespace CameraControl
 
 } // namespace mediakit

@@ -112,8 +112,11 @@ void SpeakerController::setupController(const SpeakerOption &option) {
     _device_ctr.reset();
     _configured = false;
     _probing = false;
-    _last_reconnect_time = 0;
+    _pacer.reset();
     ++_ctrl_generation;
+    ReconnectResult pending;
+    pending.msg = "Device settings changed, connecting with the new settings";
+    finishReconnect(pending);
 
     if (_vendor_ctr) {
         _vendor_ctr.reset();
@@ -191,11 +194,13 @@ void SpeakerController::onManager() {
         return;
     }
 
-    if (_probing || time(nullptr) - _last_reconnect_time < 60) {
-        // avoid reconnecting too frequently
+    GET_CONFIG(int, auth_retry_sec, mediakit::Speaker::kControlAuthRetrySec);
+    const uint64_t now = time(nullptr);
+    if (_probing || !_pacer.due(now, 60, auth_retry_sec)) {
+        // avoid reconnecting too frequently, and logging in with a rejected password even less often
         return;
     }
-    _last_reconnect_time = time(nullptr);
+    _pacer.onAttempt(now);
     if (!_device_ctr) {
         startProtocolProbe();
         return;
@@ -213,7 +218,13 @@ void SpeakerController::onManager() {
         if (!strong_self) {
             return;
         }
+        ReconnectResult result;
+        result.finished = true;
+        result.protocol = controlProtocolToString(device_ctr->protocol());
         if (was_ready && device_ctr->probeConnection()) {
+            result.connected = true;
+            result.msg = "connected";
+            strong_self->postReconnectResult(result);
             return;
         }
         auto tuple = strong_self->_tuple;
@@ -221,6 +232,8 @@ void SpeakerController::onManager() {
         // reconnect to device
         if (device_ctr->connect()) {
             strong_self->publishConnected(device_ctr, ctx);
+            result.connected = true;
+            result.msg = "connected";
         } else {
             auto err_msg = device_ctr->lastError();
             auto err = device_ctr->lastConnectError();
@@ -233,8 +246,45 @@ void SpeakerController::onManager() {
                 }
             }, false);
             strong_self->onControllerReady(false, err_msg, nullptr);
+            result.error = err;
+            result.msg = err_msg;
         }
+        // Queued after onConnectResult: a waiter sees the pacer as this attempt left it.
+        strong_self->postReconnectResult(result);
     });
+}
+
+void SpeakerController::reconnectNow(const ReconnectCallback &cb) {
+    CHECK(_poller->isCurrentThread(), "reconnectNow must be called on the owner poller");
+    if (!_configured || (!_device_ctr && !_lock.isAuto())) {
+        ReconnectResult result;
+        result.finished = true;
+        result.msg = "Device control is not configured";
+        cb(result);
+        return;
+    }
+    InfoL << "Reconnect of speaker " << _tuple.shortUrl() << " (" << _address << ") requested";
+    _reconnect_waiters.push_back(cb);
+    _pacer.reset();
+    // A probe already running answers the waiter when it ends.
+    onManager();
+}
+
+void SpeakerController::finishReconnect(const ReconnectResult &result) {
+    std::vector<ReconnectCallback> waiters;
+    waiters.swap(_reconnect_waiters);
+    for (auto &cb : waiters) {
+        cb(result);
+    }
+}
+
+void SpeakerController::postReconnectResult(const ReconnectResult &result) {
+    std::weak_ptr<SpeakerController> weak_self = shared_from_this();
+    _poller->async([weak_self, result]() {
+        if (auto self = weak_self.lock()) {
+            self->finishReconnect(result);
+        }
+    }, false);
 }
 
 void SpeakerController::publishConnected(const CameraDeviceControl::Ptr &device_ctr, const ConnectContext &ctx) {
@@ -282,14 +332,15 @@ void SpeakerController::startProtocolProbe() {
         }, self->_tuple.shortUrl() + " (" + address + ")");
         CameraDeviceControl::Ptr winner = result.winner;
         const std::string err_msg = result.err_msg;
+        const ConnectError err = result.err;
         if (winner && self->_ctrl_generation.load() != ctx.generation) {
             winner.reset(); // the option changed meanwhile
         }
         const uint64_t generation = ctx.generation;
         std::weak_ptr<SpeakerController> weak = self;
-        self->_poller->async([weak, winner, generation, err_msg]() {
+        self->_poller->async([weak, winner, generation, err_msg, err]() {
             if (auto strong = weak.lock()) {
-                strong->onProbeDone(winner, generation, err_msg);
+                strong->onProbeDone(winner, generation, err_msg, err);
             }
         }, false);
         if (winner) {
@@ -300,22 +351,35 @@ void SpeakerController::startProtocolProbe() {
     });
 }
 
-void SpeakerController::onProbeDone(const CameraDeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg) {
+void SpeakerController::onProbeDone(const CameraDeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
+                                    ConnectError err) {
     if (generation != _ctrl_generation.load()) {
         return;
     }
     _probing = false;
+    ReconnectResult result;
+    result.finished = true;
     if (!device_ctr) {
         WarnL << "No control protocol for speaker " << _tuple.shortUrl() << " (" << _address << "): " << err_msg;
+        onAuthResult(err);
+        result.error = err;
+        result.msg = err_msg;
+        finishReconnect(result);
         return;
     }
     _device_ctr = device_ctr;
+    result.connected = true;
+    result.protocol = controlProtocolToString(device_ctr->protocol());
+    result.msg = "connected";
+    // onConnectResult (queued by publishConnected) clears the credentials verdict.
+    finishReconnect(result);
 }
 
 void SpeakerController::onConnectResult(const CameraDeviceControl::Ptr &device_ctr, ConnectError err) {
     if (!device_ctr || device_ctr != _device_ctr) {
         return;
     }
+    onAuthResult(err);
     if (err == ConnectError::NONE) {
         const ControlProtocol previous = _lock.last();
         if (_lock.onConnected(device_ctr->protocol())) {
@@ -337,8 +401,18 @@ void SpeakerController::unlockProtocol(const std::string &reason) {
     BackchannelManager::Instance().unregisterDevice(_tuple.device_id);
     _device_ctr.reset();
     _lock.unlock();
-    _last_reconnect_time = 0;
+    _pacer.reset();
     ++_ctrl_generation;
+}
+
+void SpeakerController::onAuthResult(ConnectError err) {
+    const bool was_rejected = _pacer.authFailed();
+    _pacer.onResult(err);
+    if (_pacer.authFailed() && !was_rejected) {
+        GET_CONFIG(int, auth_retry_sec, mediakit::Speaker::kControlAuthRetrySec);
+        WarnL << "Speaker " << _tuple.shortUrl() << " (" << _address << ") rejected the credentials: next attempt in "
+              << auth_retry_sec << " s, or at once through /media/mserver/device/reconnect";
+    }
 }
 
 void SpeakerController::onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps) {

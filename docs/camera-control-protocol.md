@@ -41,6 +41,18 @@ Camera Hikvision tắt ONVIF, hoặc chưa tạo user ONVIF (tài khoản ONVIF 
 lỗi ONVIF. ISAPI/PSIA trả 401 thì dừng ngay, để camera không bị khoá IP vì đăng nhập sai nhiều lần. Camera đã khoá
 vào ONVIF vẫn giữ luật cũ: 401 không làm nó chuyển giao thức.
 
+### Sai mật khẩu: giãn chu kỳ thử lại
+
+Khi lần kết nối (hoặc lượt dò) gần nhất kết thúc vì thiết bị từ chối tài khoản (`AUTH_FAILED`), lần thử kế tiếp
+cách `camera.control_auth_retry_sec` giây (mặc định 300) thay vì 60 giây; loa dùng `speaker.control_auth_retry_sec`.
+Nhiều thiết bị (Hikvision) khoá IP của client sau vài lần đăng nhập sai liên tiếp, nên mật khẩu sai chỉ tốn một lần
+đăng nhập mỗi 5 phút. Kết nối được, lỗi khác (mất mạng, 404) hoặc đổi tài khoản/địa chỉ trong cấu hình thì quay về
+60 giây ngay. Log `rejected the credentials: next attempt in N s` ghi một lần khi bắt đầu bị từ chối.
+
+Người dùng sửa mật khẩu ngay trên thiết bị thì không phải chờ: client gọi `/media/mserver/device/reconnect` (mục
+"API kết nối lại"). Sửa mật khẩu trên giao diện VMS thì không cần gọi: service API gọi `/incur`, cấu hình camera được
+nạp lại và controller được tạo lại với mật khẩu mới.
+
 Camera đã khoá chỉ dò lại giao thức khi:
 - địa chỉ, cổng, tài khoản hoặc `control.protocol` của camera đổi;
 - hoặc `camera.control_reprobe_failures` lần kết nối liên tiếp (mặc định 5, khoảng 5 phút) đều báo "không phải
@@ -77,6 +89,35 @@ năng, không theo tên giao thức:
 chức năng đã trung lập nên camera ISAPI hiện đúng các mục như camera PSIA.
 
 Option camera (`makeCameraOptionJson`, dùng khi đồng bộ cluster) có thêm `controlProtocol`.
+
+## API kết nối lại
+
+`GET|POST /media/mserver/device/reconnect?deviceId=<id>`: JWT như các API điều khiển, người dùng phải có quyền với
+thiết bị. Dùng cho camera và loa.
+
+Chạy ngay chu kỳ kết nối của thiết bị, không chờ hết 60 giây hay `control_auth_retry_sec`, rồi trả kết quả của chính
+lần thử đó:
+- thiết bị đang online: một request kiểm tra (`probeConnection`), lỗi thì `connect()` đầy đủ;
+- đang offline: `connect()` với giao thức đang dùng;
+- `AUTO` chưa có giao thức: dò lại theo `control_auto_order`;
+- một lượt dò đang chạy: chờ lượt đó xong.
+
+```json
+{"code": 0, "msg": "connected",
+ "data": {"finished": true, "connected": true, "controlProtocol": "ISAPI", "error": ""}}
+```
+
+| Field | Ý nghĩa |
+|---|---|
+| `finished` | `false`: lần thử chưa xong sau 30 giây (dò nhiều giao thức với thiết bị không trả lời). Lần thử vẫn chạy, kết quả xem ở trạng thái thiết bị |
+| `connected` | Lần thử kết nối được |
+| `controlProtocol` | Giao thức của controller vừa thử: `ONVIF`, `ISAPI`, `PSIA`; rỗng khi không có |
+| `error` | Rỗng khi kết nối được; không thì `AUTH_FAILED` (sai tài khoản), `UNREACHABLE`, `NOT_THIS_PROTOCOL`, `OTHER` |
+| `msg` | Lỗi chi tiết của thiết bị, ví dụ `ISAPI GET /ISAPI/System/deviceInfo: HTTP 401` |
+
+Thiết bị không tồn tại trả `905001`; thiết bị chưa cấu hình điều khiển (camera RTSP thuần) trả `code 0`,
+`finished=true`, `connected=false`, `msg` ghi lý do. Camera đang chạy lệnh PTZ dài thì trả ngay `msg` "busy", không
+chen vào lệnh đó. Sau khi kết nối được, chu kỳ quay về 60 giây.
 
 ## Khi giao thức của camera đổi
 
@@ -171,8 +212,10 @@ nghĩa đang chạy ONVIF. Option loa (`makeSpeakerOptionJson`) có thêm `contr
 |---|---|---|
 | `camera.control_auto_order` | `onvif,isapi,psia` | Thứ tự thử khi `AUTO`. Camera đã khoá không bị ảnh hưởng khi đổi |
 | `camera.control_reprobe_failures` | `5` | Số lần liên tiếp báo "không phải giao thức này" trước khi camera đã khoá dò lại |
+| `camera.control_auth_retry_sec` | `300` | Khoảng cách giữa hai lần thử khi camera từ chối tài khoản (thay cho 60 giây) |
 | `speaker.control_auto_order` | `onvif,isapi,psia` | Như trên, cho loa |
 | `speaker.control_reprobe_failures` | `5` | Như trên, cho loa |
+| `speaker.control_auth_retry_sec` | `300` | Như trên, cho loa |
 | `psia.request_timeout_ms` | `5000` | Timeout mỗi request PSIA |
 | `isapi.request_timeout_ms` | `5000` | Timeout mỗi request ISAPI |
 

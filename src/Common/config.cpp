@@ -766,6 +766,7 @@ const string kMaxAudioFileSizeBytes = SPEAKER_FIELD "maxAudioFileSizeBytes";
 const string kOnvifUsername = SPEAKER_FIELD "onvifUsername";
 const string kControlAutoOrder = SPEAKER_FIELD "control_auto_order";
 const string kControlReprobeFailures = SPEAKER_FIELD "control_reprobe_failures";
+const string kControlAuthRetrySec = SPEAKER_FIELD "control_auth_retry_sec";
 
 static onceToken token([]() {
     mINI::Instance()[kSpeakerSavePath] = "./www";
@@ -776,6 +777,7 @@ static onceToken token([]() {
     // Same rules as camera.control_auto_order / camera.control_reprobe_failures, tunable apart.
     mINI::Instance()[kControlAutoOrder] = "onvif,isapi,psia";
     mINI::Instance()[kControlReprobeFailures] = 5;
+    mINI::Instance()[kControlAuthRetrySec] = 300;
 });
 } // namespace Speaker
 
@@ -784,6 +786,7 @@ namespace CameraControl {
 #define CAMERA_CONTROL_FIELD "camera."
 const string kAutoOrder = CAMERA_CONTROL_FIELD "control_auto_order";
 const string kReprobeFailures = CAMERA_CONTROL_FIELD "control_reprobe_failures";
+const string kAuthRetrySec = CAMERA_CONTROL_FIELD "control_auth_retry_sec";
 
 static onceToken token([]() {
     // ONVIF first: every camera that worked before keeps working the same way. ISAPI before PSIA:
@@ -791,6 +794,8 @@ static onceToken token([]() {
     mINI::Instance()[kAutoOrder] = "onvif,isapi,psia";
     // About 5 minutes at one reconnect per minute; a timeout or a rejected password never counts.
     mINI::Instance()[kReprobeFailures] = 5;
+    // A wrong password costs one failed login per 5 minutes instead of one per minute.
+    mINI::Instance()[kAuthRetrySec] = 300;
 });
 } // namespace CameraControl
 

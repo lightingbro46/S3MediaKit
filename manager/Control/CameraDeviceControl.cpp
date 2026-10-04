@@ -122,9 +122,12 @@ ProtocolProbeResult probeControlProtocols(const std::vector<ControlProtocol> &or
         }
         if (device_ctr->connect()) {
             result.winner = device_ctr;
+            result.err = ConnectError::NONE;
+            onvif_auth_err.clear();
             break;
         }
         ConnectError err = device_ctr->lastConnectError();
+        result.err = err;
         result.err_msg = std::string(controlProtocolToString(protocol)) + ": " + device_ctr->lastError();
         InfoL << "Probe " << controlProtocolToString(protocol) << " on device " << log_name << ": "
               << connectErrorToString(err);
@@ -143,8 +146,14 @@ ProtocolProbeResult probeControlProtocols(const std::vector<ControlProtocol> &or
     }
     if (!result.winner && !onvif_auth_err.empty()) {
         result.err_msg = onvif_auth_err;
+        result.err = ConnectError::AUTH_FAILED;
     }
     return result;
+}
+
+bool ReconnectPacer::due(uint64_t now, int interval_sec, int auth_retry_sec) const {
+    const int wait_sec = (_auth_failed && auth_retry_sec > interval_sec) ? auth_retry_sec : interval_sec;
+    return _last_attempt == 0 || now < _last_attempt || now - _last_attempt >= static_cast<uint64_t>(wait_sec);
 }
 
 void ProtocolLock::setSetting(const std::string &setting) {

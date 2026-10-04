@@ -5,6 +5,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <condition_variable>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -33,7 +34,10 @@ public:
     static void setReady(CameraController &c, bool ready) { c._ready = ready; }
 
     // Lifts the 60 s pacing of the maintenance cycle.
-    static void allowReconnect(CameraController &c) { c._last_reconnect_time = 0; }
+    static void allowReconnect(CameraController &c) { c._pacer.skipWait(); }
+
+    // The last attempt was rejected for its credentials: the cycle waits camera.control_auth_retry_sec.
+    static bool authRejected(CameraController &c) { return c._pacer.authFailed(); }
 
     static ControlProtocol deviceProtocol(CameraController &c) {
         return c._device_ctr ? c._device_ctr->protocol() : ControlProtocol::NONE;
@@ -1549,6 +1553,121 @@ TEST_F(CameraProtocolTest, LockedOnvifStaysLockedWhenItRejectsThePassword) {
     EXPECT_EQ(ControlProtocol::ONVIF, current());
 }
 
+// Waits (on the test thread) for the answer of a reconnectNow() request.
+struct ReconnectWait {
+    std::mutex mtx;
+    std::condition_variable cv;
+    int answers = 0;
+    ReconnectResult result;
+
+    ReconnectCallback callback() {
+        return [this](const ReconnectResult &r) {
+            std::lock_guard<std::mutex> lck(mtx);
+            result = r;
+            ++answers;
+            cv.notify_all();
+        };
+    }
+    bool wait() {
+        std::unique_lock<std::mutex> lck(mtx);
+        return cv.wait_for(lck, std::chrono::seconds(5), [this]() { return answers > 0; });
+    }
+};
+
+TEST_F(CameraProtocolTest, RejectedPasswordSlowsDownTheCycleUntilItConnects) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    setup("ONVIF");
+    cycle();
+    auto controller = _controller;
+    bool rejected = false;
+    onPoller([&]() { rejected = CameraControllerTestPeer::authRejected(*controller); });
+    EXPECT_TRUE(rejected);
+
+    // The 10 s timer tick right after does not log in again (60 s or 300 s, see ReconnectPacerTest).
+    onPoller([controller]() { CameraControllerTestPeer::onManager(*controller); });
+    settle();
+    EXPECT_EQ(1, _world->count("connect ONVIF live=1"));
+
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NONE);
+    cycle();
+    onPoller([&]() { rejected = CameraControllerTestPeer::authRejected(*controller); });
+    EXPECT_FALSE(rejected);
+    EXPECT_TRUE(_controller->isReady());
+}
+
+TEST_F(CameraProtocolTest, ReconnectNowLogsInAtOnceAndReportsTheResult) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    setup("ONVIF");
+    cycle();
+    EXPECT_EQ(1, _world->count("connect ONVIF live=1"));
+
+    // Still the wrong password: the request answers with the rejection.
+    auto controller = _controller;
+    ReconnectWait first;
+    onPoller([&]() { controller->reconnectNow(first.callback()); });
+    ASSERT_TRUE(first.wait());
+    EXPECT_TRUE(first.result.finished);
+    EXPECT_FALSE(first.result.connected);
+    EXPECT_EQ(ConnectError::AUTH_FAILED, first.result.error);
+    EXPECT_EQ("ONVIF", first.result.protocol);
+    EXPECT_EQ(2, _world->count("connect ONVIF live=1")) << "no wait for the auth retry interval";
+
+    // The password was fixed on the camera: the next request connects without waiting.
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NONE);
+    ReconnectWait second;
+    onPoller([&]() { controller->reconnectNow(second.callback()); });
+    ASSERT_TRUE(second.wait());
+    EXPECT_TRUE(second.result.connected);
+    EXPECT_EQ(ConnectError::NONE, second.result.error);
+    settle();
+    EXPECT_TRUE(_controller->isReady());
+    bool rejected = true;
+    onPoller([&]() { rejected = CameraControllerTestPeer::authRejected(*controller); });
+    EXPECT_FALSE(rejected);
+
+    // Already connected: one probe request is enough.
+    _world->probe_ok = true;
+    _world->clear();
+    ReconnectWait third;
+    onPoller([&]() { controller->reconnectNow(third.callback()); });
+    ASSERT_TRUE(third.wait());
+    EXPECT_TRUE(third.result.connected);
+    EXPECT_EQ(1, _world->count("probe ONVIF"));
+    EXPECT_FALSE(contains(_world->events(), "connect"));
+}
+
+TEST_F(CameraProtocolTest, ReconnectNowProbesAnAutoCameraWithoutProtocol) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::AUTH_FAILED);
+    setup("AUTO");
+    cycle();
+    auto controller = _controller;
+    bool rejected = false;
+    onPoller([&]() { rejected = CameraControllerTestPeer::authRejected(*controller); });
+    EXPECT_TRUE(rejected) << "a probe that ends on a rejected password slows down too";
+
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::NONE);
+    ReconnectWait wait;
+    onPoller([&]() { controller->reconnectNow(wait.callback()); });
+    ASSERT_TRUE(wait.wait());
+    EXPECT_TRUE(wait.result.connected);
+    EXPECT_EQ("ISAPI", wait.result.protocol);
+    settle();
+    EXPECT_EQ(ControlProtocol::ISAPI, current());
+    onPoller([&]() { rejected = CameraControllerTestPeer::authRejected(*controller); });
+    EXPECT_FALSE(rejected);
+}
+
+TEST_F(CameraProtocolTest, ReconnectNowWithoutControllerAnswersAtOnce) {
+    auto controller = _controller;
+    ReconnectWait wait;
+    onPoller([&]() { controller->reconnectNow(wait.callback()); });
+    ASSERT_TRUE(wait.wait());
+    EXPECT_TRUE(wait.result.finished);
+    EXPECT_FALSE(wait.result.connected);
+    EXPECT_FALSE(contains(_world->events(), "create"));
+}
+
 TEST_F(CameraProtocolTest, AutoKeepsTheSavedProtocolWithoutProbing) {
     setup("AUTO", "PSIA");
     EXPECT_EQ(ControlProtocol::PSIA, current());
@@ -1682,6 +1801,41 @@ TEST(ProtocolLockTest, OnlyConsecutiveNotThisProtocolUnlocks) {
     EXPECT_TRUE(lock.onConnectError(ConnectError::NOT_THIS_PROTOCOL, 0));
 }
 
+TEST(ReconnectPacerTest, RejectedCredentialsWaitTheLongerInterval) {
+    ReconnectPacer pacer;
+    EXPECT_TRUE(pacer.due(1000, 60, 300)) << "first cycle runs at once";
+    pacer.onAttempt(1000);
+    EXPECT_FALSE(pacer.due(1059, 60, 300));
+    EXPECT_TRUE(pacer.due(1060, 60, 300));
+
+    pacer.onAttempt(1060);
+    pacer.onResult(ConnectError::AUTH_FAILED);
+    EXPECT_TRUE(pacer.authFailed());
+    EXPECT_FALSE(pacer.due(1120, 60, 300));
+    EXPECT_FALSE(pacer.due(1359, 60, 300));
+    EXPECT_TRUE(pacer.due(1360, 60, 300));
+    // An auth retry shorter than the normal interval (or 0) does not speed the cycle up.
+    EXPECT_FALSE(pacer.due(1100, 60, 0));
+    EXPECT_TRUE(pacer.due(1120, 60, 0));
+
+    // Other failures and successes go back to the normal interval.
+    pacer.onResult(ConnectError::UNREACHABLE);
+    EXPECT_TRUE(pacer.due(1120, 60, 300));
+    pacer.onResult(ConnectError::AUTH_FAILED);
+
+    // skipWait keeps the verdict, reset drops it; both make the next cycle due at once.
+    pacer.skipWait();
+    EXPECT_TRUE(pacer.due(1061, 60, 300));
+    EXPECT_TRUE(pacer.authFailed());
+    pacer.onAttempt(1061);
+    pacer.reset();
+    EXPECT_TRUE(pacer.due(1062, 60, 300));
+    EXPECT_FALSE(pacer.authFailed());
+    // A clock that went backwards does not stall the cycle.
+    pacer.onAttempt(5000);
+    EXPECT_TRUE(pacer.due(4000, 60, 300));
+}
+
 TEST(ProtocolOrderTest, UnknownAndRepeatedNamesAreSkipped) {
     typedef std::vector<ControlProtocol> Order;
     EXPECT_EQ((Order{ControlProtocol::ISAPI, ControlProtocol::ONVIF}), parseProtocolOrder(" isapi , foo,ONVIF,isapi"));
@@ -1696,12 +1850,13 @@ namespace managerkit {
 class SpeakerControllerTestPeer {
 public:
     static void cycle(SpeakerController &c) {
-        c._last_reconnect_time = 0;
+        c._pacer.skipWait();
         c.onManager();
     }
     static ControlProtocol deviceProtocol(SpeakerController &c) {
         return c._device_ctr ? c._device_ctr->protocol() : ControlProtocol::NONE;
     }
+    static bool authRejected(SpeakerController &c) { return c._pacer.authFailed(); }
 };
 } // namespace managerkit
 
@@ -1842,6 +1997,27 @@ TEST_F(SpeakerProtocolTest, SavedProtocolLocksAutoAtStartup) {
 }
 
 // The Bosch plugin provisions an ONVIF account and needs ONVIF for its backchannel.
+TEST_F(SpeakerProtocolTest, RejectedPasswordSlowsDownAndReconnectNowLogsInAtOnce) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    setup("ONVIF");
+    cycle();
+    auto speaker = _speaker;
+    bool rejected = false;
+    _poller->sync([&]() { rejected = SpeakerControllerTestPeer::authRejected(*speaker); });
+    EXPECT_TRUE(rejected);
+
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NONE);
+    ReconnectWait wait;
+    _poller->sync([&]() { speaker->reconnectNow(wait.callback()); });
+    ASSERT_TRUE(wait.wait());
+    EXPECT_TRUE(wait.result.finished);
+    EXPECT_TRUE(wait.result.connected);
+    EXPECT_EQ("ONVIF", wait.result.protocol);
+    EXPECT_EQ(2, _world->count("connect ONVIF live=1"));
+    _poller->sync([&]() { rejected = SpeakerControllerTestPeer::authRejected(*speaker); });
+    EXPECT_FALSE(rejected);
+}
+
 TEST_F(SpeakerProtocolTest, BoschSpeakerIsAlwaysOnvif) {
     setup("ISAPI", "", "Bosch");
     EXPECT_EQ(ControlProtocol::ONVIF, current());

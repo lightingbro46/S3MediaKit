@@ -37,6 +37,10 @@ public:
     // saved capabilities: an AUTO speaker starts locked to it instead of probing. Call before setupController().
     void setLastControlProtocol(const std::string &protocol);
 
+    // Owner poller. Runs the reconnect cycle now, also while the speaker is waiting out a rejected
+    // password (speaker.control_auth_retry_sec), and reports the outcome of that attempt.
+    void reconnectNow(const ReconnectCallback &cb);
+
     void stopController();
 
     // ================== Vendor-specific operations ==================
@@ -82,9 +86,15 @@ private:
 
     // ── Control protocol selection (on _poller unless noted), as CameraController ──
     void startProtocolProbe();
-    void onProbeDone(const CameraDeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg);
+    void onProbeDone(const CameraDeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
+                     ConnectError err);
     void onConnectResult(const CameraDeviceControl::Ptr &device_ctr, ConnectError err);
+    void onAuthResult(ConnectError err);
     void unlockProtocol(const std::string &reason);
+    // Answers the reconnectNow() requests waiting for the attempt that just ended (_poller).
+    void finishReconnect(const ReconnectResult &result);
+    // Device queue: hands `result` to finishReconnect() on _poller.
+    void postReconnectResult(const ReconnectResult &result);
     // Device queue: capabilities, backchannel and the connected event after a successful connect().
     void publishConnected(const CameraDeviceControl::Ptr &device_ctr, const ConnectContext &ctx);
 
@@ -113,7 +123,9 @@ private:
     SerialTaskQueue::Ptr _device_queue;
     std::atomic<bool> _ready { false };
     std::string _err_msg;
-    uint64_t _last_reconnect_time = 0;
+    // When the reconnect cycle runs next; slowed down while the speaker rejects the credentials.
+    ReconnectPacer _pacer;
+    std::vector<ReconnectCallback> _reconnect_waiters;
     toolkit::Timer::Ptr _timer_ctr;
     // The one controller of this speaker, whatever its protocol; only set or reset on _poller.
     CameraDeviceControl::Ptr _device_ctr;

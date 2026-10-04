@@ -2,8 +2,9 @@
 
 Ngày lập: 2026-10-04. Nhánh đề xuất: tiếp trên `feature/psi-controller` (cần `CameraDeviceControl`, `PsiaControl` và
 logic chọn/khoá giao thức của plan PSIA, chưa merge `develop`).
-Trạng thái (2026-10-04): I0–I3, S1–S5 xong theo đề xuất mặc định của mục 8 (user không trả lời Q1–Q6); S4 mới
-kiểm trên mock. E (thiết bị thật) chưa làm. Kết quả ở mục 9.
+Trạng thái (2026-10-04): I0–I3, S1–S5 xong theo đề xuất mặc định của mục 8 (Q1–Q4 không trả lời); S4 mới kiểm
+trên mock. Q6 user chốt làm luôn, kèm API kết nối lại: xong. Q5 mới tìm tài liệu. E (thiết bị thật) chưa làm. Kết
+quả ở mục 9.
 
 Hai phần:
 - **Phần I — ISAPI cho camera.** ISAPI là REST/XML của Hikvision (`/ISAPI/...`), phát triển từ PSIA. Thêm giao thức
@@ -372,6 +373,36 @@ thêm `ProtocolLockTest`, `ProtocolOrderTest`.
 - Chưa chạy: loa ISAPI/ONVIF đi qua `SpeakerController` trong MediaServer (loa và file âm thanh đến từ đồng bộ ESC),
   `OnvifControl::setupAudioBackchannel` với thiết bị (logic SOAP không đổi), thiết bị Hikvision thật. Cần kiểm trên thiết bị: `audioData` cùng kết nối với `open` có được không (pusher tự nối lại nếu thiết bị
   trả `Connection: close`), có cần `?sessionId=` không, nhịp gửi 20 ms có đủ mượt.
+
+**Q6 — xong (user chốt 2026-10-04: làm luôn, thêm API kết nối lại).**
+- `ReconnectPacer` (thuần dữ liệu, `CameraDeviceControl.h`) thay `_last_reconnect_time` của camera và loa: sau một
+  lần kết nối/lượt dò kết thúc bằng `AUTH_FAILED`, chu kỳ chờ `camera.control_auth_retry_sec` /
+  `speaker.control_auth_retry_sec` (300) thay vì 60 s. Kết nối được, lỗi khác, đổi cấu hình hoặc mở khoá giao thức
+  thì về 60 s. `probeControlProtocols` trả thêm `ConnectError` để lượt dò `AUTO` cũng được tính.
+- `reconnectNow(cb)` ở `CameraController`/`SpeakerController` và API `/media/mserver/device/reconnect?deviceId=`
+  (camera và loa): chạy chu kỳ ngay, trả kết quả của chính lần thử đó (`finished/connected/controlProtocol/error`),
+  hết 30 s chưa xong thì trả `finished=false`. Đổi mật khẩu trên giao diện VMS không cần API này (`/incur` nạp lại
+  cấu hình, controller được tạo lại).
+- Unit: `ReconnectPacerTest`; `CameraProtocolTest` thêm 4 case (sai mật khẩu giãn chu kỳ rồi về bình thường khi
+  kết nối được; `reconnectNow` báo `AUTH_FAILED` rồi kết nối ngay sau khi sửa mật khẩu, online chỉ probe; `AUTO` chưa
+  có giao thức thì dò lại; chưa cấu hình trả ngay); `SpeakerProtocolTest` thêm 1 case. `unit_camera_controller`
+  67/67 (3 lần), `ctest -R unit.` đạt hết.
+- Chạy thật (MediaServer Debug harness `e2e_real` + `psia_mock.py --dialect isapi --password <khác>`, camera
+  `ISAPI`): 14:08:14 `AUTH_FAILED`, log `next attempt in 300 s`; 3 phút sau không có lần đăng nhập nào khác. API
+  reconnect khi mật khẩu vẫn sai: `connected=false, error=AUTH_FAILED` trong 0,01 s. Đổi mật khẩu trên mock → API
+  reconnect `connected=true, controlProtocol=ISAPI` ngay; sau đó `deviceInfo` mỗi 60 s như cũ. Thiết bị không có trả
+  `905001`. Loa chỉ có unit test (harness chỉ dựng camera).
+
+**Q5 — tài liệu tìm được (chưa làm code).** Hikvision Europe có hướng dẫn Postman cho loa IP DS-QA (thử trên
+DS-QA6H07G1, firmware V1.2.1), đủ cho upload + phát:
+- `POST /ISAPI/AccessControl/EventCardLinkageCfg/CustomAudio?format=json`, multipart: `CustomAudioInfo` (JSON
+  `{"CustomAudioInfo": {"customAudioName", "audioFileFormat": "mp3", "audioFileSize"}}`) + `audioData` (file). Trả
+  `{"statusCode": 1, "statusString": "OK", "subStatusCode": "ok", "customAudioID": 4}`.
+- `PUT /ISAPI/Event/triggers/notifications/AudioAlarm/AudioOut/1/PlayCustomAudioFile?format=json&customAudioID=<id>&audioVolume=<1..100>&loopPlaybackTimes=<n>`.
+- Collection còn "Get audio list", "Delete an audio clip", "Stop play an audio clip" nhưng tài liệu không ghi URL.
+  Bộ ISAPI đầy đủ cho DS-QAZ chỉ có trên Hikvision TPP (cần ký Materials License Agreement).
+- Web loa nhận mp3/wav < 100 MB (trang Material Library); camera Hikvision thì file cảnh báo tuỳ chỉnh là wav mono
+  8 kHz < 512 KB.
 
 **E — chưa làm:** camera Hikvision tắt ONVIF ở `AUTO` (đo R1), Hikvision ở `ISAPI` (PTZ relative), camera ONVIF
 thật, loa Bosch hồi quy (đặc biệt `runVendorOp` và ép ONVIF), two-way audio Hikvision (các điểm ở S4).

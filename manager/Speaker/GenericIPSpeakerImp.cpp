@@ -158,6 +158,18 @@ void GenericIPSpeakerImp::playAudioFile(const std::string& speakerId, const std:
     it->second();
 }
 
+void GenericIPSpeakerImp::reconnectController(const ReconnectCallback &cb) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call reconnectController in it's owner poller");
+    if (!_controller) {
+        ReconnectResult result;
+        result.finished = true;
+        result.msg = "Speaker controller is not ready";
+        cb(result);
+        return;
+    }
+    _controller->reconnectNow(cb);
+}
+
 void GenericIPSpeakerImp::setAudioVolume(int volume, const std::function<void(const toolkit::SockException &ex)> &cb) {
     CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call setAudioVolume in it's owner poller");
     if (!_controller) {

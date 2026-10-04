@@ -29,6 +29,9 @@ public:
 
     void setAudioVolume(int volume, const std::function<void(const toolkit::SockException &ex)> &cb);
 
+    // Owner poller: SpeakerController::reconnectNow().
+    void reconnectController(const ReconnectCallback &cb);
+
 public:
     //////////////DeviceSourceEvent related interface implementation////////////////
     toolkit::EventPoller::Ptr getOwnerPoller(DeviceSource &sender) override { return _poller; }

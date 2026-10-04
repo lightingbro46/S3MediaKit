@@ -28,6 +28,11 @@ public:
     // capabilities: an AUTO camera starts locked to it instead of probing. Call before setupController().
     void setLastControlProtocol(const std::string &protocol);
 
+    // Owner poller. Runs the reconnect cycle now instead of at the next interval, also while the
+    // camera is waiting out a rejected password (camera.control_auth_retry_sec), and reports the
+    // outcome of that attempt: for a client that just changed the password on the camera itself.
+    void reconnectNow(const ReconnectCallback &cb);
+
     void stopController();
     
     void PTZMove(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
@@ -100,15 +105,22 @@ private:
     // AUTO without a lock: tries the protocols of camera.control_auto_order in one device task, keeping
     // at most one controller alive, and hands the first that connects to onProbeDone.
     void startProtocolProbe();
-    void onProbeDone(const CameraDeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg);
+    void onProbeDone(const CameraDeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
+                     ConnectError err);
     // Result of a connect() of the current controller: locks the protocol, or counts the failures that
     // say the camera no longer speaks it (AUTO only).
     void onConnectResult(const CameraDeviceControl::Ptr &device_ctr, ConnectError err);
     // A controller connected with `protocol`: drops the profile/rule/preset state of the previous
     // protocol when it differs, then locks AUTO to it.
     void onProtocolConnected(ControlProtocol protocol);
+    // Feeds the pacer the result of a connect attempt; logs when the credentials start being rejected.
+    void onAuthResult(ConnectError err);
     // Drops the current controller so that the next cycle probes the protocols again.
     void unlockProtocol(const std::string &reason);
+    // Answers the reconnectNow() requests waiting for the attempt that just ended.
+    void finishReconnect(const ReconnectResult &result);
+    // Device queue: hands `result` to finishReconnect() on _poller.
+    void postReconnectResult(const ReconnectResult &result);
     // Device queue: the work after a successful connect() — clock, profile sync, capabilities, events.
     void publishConnected(const CameraDeviceControl::Ptr &device_ctr);
 
@@ -168,7 +180,9 @@ private:
     uint64_t _ptz_generation = 0;
     std::atomic<bool> _ready { false };
     std::string _err_msg;
-    uint64_t _last_reconnect_time = 0;
+    // When the reconnect cycle runs next; slowed down while the camera rejects the credentials.
+    ReconnectPacer _pacer;
+    std::vector<ReconnectCallback> _reconnect_waiters;
     // Last time the maintenance cycle re-read the media profiles of this camera, and last time it
     // checked the camera clock; only touched on _poller. See OnvifCtrl::kProfileResyncIntervalSec
     // and OnvifCtrl::kClockSyncIntervalSec.

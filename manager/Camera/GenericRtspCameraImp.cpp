@@ -179,6 +179,18 @@ void GenericRtspCameraImp::PTZMove(const std::string &strDirect, int speed, cons
     _controller->PTZMove(strDirect, speed, cb);
 }
 
+void GenericRtspCameraImp::reconnectController(const ReconnectCallback &cb) {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call reconnectController in it's owner poller");
+    if (!_controller) {
+        ReconnectResult result;
+        result.finished = true;
+        result.msg = "Device controller is not ready";
+        cb(result);
+        return;
+    }
+    _controller->reconnectNow(cb);
+}
+
 CameraStatisticImp::Ptr GenericRtspCameraImp::getCameraStatisticImp() {
     auto strong_statistic = _statistic.lock();
     if (!strong_statistic) {
