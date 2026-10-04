@@ -382,6 +382,8 @@ echo $! > "$WORK/rtsp_source.pid"
 ONVIF_EXTRA=""
 # Video config rule tìm profile chính bằng URI luồng, nên mock phải trả đúng URL camera.
 [ "$SCENARIO" = "videorule" ] && ONVIF_EXTRA="--stream-base rtsp://127.0.0.1:$RTSP_PORT"
+# vd ONVIF_MOCK_ARGS="--auth digest --auth-pass stress-pass": camera chỉ nhận HTTP Digest.
+ONVIF_EXTRA="$ONVIF_EXTRA ${ONVIF_MOCK_ARGS:-}"
 nohup python3 "$HERE/onvif_mock.py" --port "$ONVIF_PORT" $ONVIF_EXTRA \
     --fault-spec "$WORK/onvif_fault_spec.json" --state "$WORK/onvif_state.json" \
     > "$WORK/onvif_mock.log" 2>&1 &

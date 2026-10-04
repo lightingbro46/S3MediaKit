@@ -1,0 +1,87 @@
+# Mã lỗi điều khiển thiết bị: phân biệt lỗi mạng và lỗi xác thực
+
+Áp dụng từ 2026-10-04 (905008 thêm sau, cùng ngày). Dành cho FE hiển thị đúng nguyên nhân khi thao tác ONVIF với camera thất bại.
+
+## API áp dụng
+
+| API | Ghi chú |
+|---|---|
+| `/media/mserver/device/ptz_control` | PTZ (absolute/relative/continuous, home) |
+| `/media/mserver/device/ptz_control/goto_preset` | ONVIF preset và user preset |
+| `/media/mserver/device/ptz_control/set_preset` | đọc vị trí hiện tại (GetStatus) để lưu preset |
+| `/media/mserver/device/imageMoveControl` | focus / iris |
+| `/media/mserver/device/relayOutputControl` | relay output |
+| `/media/mserver/device/onvifSetVideoConfigs`, `onvifGetConfigProfiles`, `onvifApplyVideoConfigRule` | cấu hình encoder, kết quả từng camera |
+
+`ptz_control/get_presets` và `remove_preset` không gọi camera nên không trả các mã này.
+
+## Mã lỗi mới
+
+| `code` | HTTP | Nguyên nhân | Gợi ý hiển thị |
+|---|---|---|---|
+| `905004` | 403 | Camera từ chối tài khoản/mật khẩu ONVIF (HTTP 401/403, hoặc SOAP fault NotAuthorized/FailedAuthentication). Lệch giờ từ 30 s trở lên thì báo `905008` thay vì mã này | "Sai tài khoản hoặc mật khẩu camera. Kiểm tra lại thông tin đăng nhập của camera." |
+| `905005` | 502 | Không mở được kết nối tới camera: bị từ chối, không có route, quá thời gian kết nối | "Không kết nối được tới camera. Kiểm tra mạng/địa chỉ IP/cổng ONVIF." |
+| `905006` | 504 | Đã kết nối nhưng camera không trả lời trong 10 s hoặc ngắt kết nối giữa chừng | "Camera không phản hồi. Thử lại sau." |
+| `905007` | 403 | Camera chỉ chấp nhận HTTP Basic, server đang tắt (`onvif.allowHttpBasicAuth=0`) vì Basic gửi mật khẩu dạng rõ | "Camera chỉ hỗ trợ xác thực Basic. Đổi camera sang Digest hoặc liên hệ quản trị." |
+| `905008` | 403 | Camera từ chối chữ ký WS-Security và **đồng hồ camera lệch** server từ `onvif.clockSkewThresholdSec` (30 s) trở lên, hoặc camera báo `MessageExpired`. Kèm `data` (bên dưới) | "Giờ camera lệch {clockOffsetSec} giây so với server. Hệ thống sẽ tự đồng bộ giờ trong chu kỳ kiểm tra kế tiếp (≤ 1 phút)." |
+
+HTTP status chỉ để tham khảo: FE phân nhánh theo `code`. Mã xác thực của camera dùng 403, **không** dùng 401, để FE
+không nhầm với token người dùng hết hạn (`901001`).
+
+### `data` của `905008`
+
+```json
+{
+  "code": 905008,
+  "msg": "Device execute ptz absolute move failed: ...",
+  "data": {
+    "cameraTime": "2026-10-04T08:34:41Z",
+    "serverTime": "2026-10-04T08:24:41Z",
+    "clockOffsetSec": 600,
+    "source": "GetSystemDateAndTime"
+  }
+}
+```
+
+- `clockOffsetSec` = giờ camera − giờ server (dương: camera chạy nhanh), theo cách server đồng bộ giờ camera
+  (giờ hiển thị trên camera bằng giờ server). `cameraTime` = `serverTime` + `clockOffsetSec`.
+- `source`: `GetSystemDateAndTime`, hoặc `HttpDate` khi camera không cho đọc giờ và server lấy từ header `Date`.
+- `data` có thể không có (không đo được giờ camera) — FE vẫn hiển thị theo `code`.
+
+### Lệch giờ: server tự xử lý thế nào
+
+1. Lệnh bị camera từ chối chữ ký → server **đọc** giờ camera (`GetSystemDateAndTime`, không cần xác thực; không
+   được thì lấy header `Date` của chính lần bị từ chối). Giờ đổi so với lúc ký từ 5 s trở lên thì ký lại và gửi lại
+   **một lần** — thường lệnh thành công luôn, FE không thấy lỗi.
+2. Ký lại vẫn bị từ chối, hoặc giờ không đổi: lệch ≥ 30 s → `905008`, ngược lại → `905004`.
+3. API **không bao giờ đặt giờ camera**. Chỉ chu kỳ kiểm tra kết nối của camera (60 s) đặt giờ: chu kỳ kế tiếp sau
+   khi một lệnh phát hiện lệch ≥ 10 s, mỗi `onvif.clockSyncIntervalSec` (3600 s) khi đang kết nối, và ngay khi kết nối
+   thất bại vì lệch giờ (`905008`).
+4. Tắt đồng bộ giờ: toàn server `onvif.clockSyncEnable=0`, hoặc từng camera
+   `cameraAdvanceConfig.onvif.enableTimeSync=false` (mặc định `true`). Khi tắt, lỗi vẫn báo `905008` nhưng server
+   không sửa giờ — người dùng phải chỉnh giờ trên camera.
+
+## Quy tắc trả mã
+
+1. **Thao tác gửi tới camera thất bại** (camera đang kết nối): nếu nguyên nhân là mạng hoặc xác thực thì trả
+   `905004`–`905008`. Nguyên nhân khác (camera trả SOAP fault, thao tác không hỗ trợ…) giữ mã riêng của thao tác như
+   trước: `907004` PTZ absolute, `907005` continuous, `907006` relative, `907009` home, `907010` get status,
+   `907011`/`907012` goto preset, `912005` focus, `912007` iris, `912009` relay, `912002`/`912003` set/get config.
+2. **Camera chưa kết nối được** (trước đây luôn là `905002 Device offline`): nếu lần kết nối ONVIF gần nhất thất bại
+   vì mạng hoặc xác thực thì trả `905004`–`905008`, `msg` có dạng `Device controller is not ready: <nguyên nhân>`.
+   Không biết nguyên nhân (camera chưa từng kết nối, đang dừng, lỗi khác) thì vẫn `905002`.
+3. Camera tự kết nối lại mỗi 60 s. Sau khi người dùng sửa mật khẩu camera, lỗi `905004` hết sau lần kết nối lại kế tiếp.
+
+## Gợi ý xử lý ở FE
+
+```js
+switch (res.code) {
+  case 905004: showError('Sai tài khoản hoặc mật khẩu camera'); break;
+  case 905007: showError('Camera chỉ hỗ trợ xác thực Basic (đang bị tắt)'); break;
+  case 905005: showError('Không kết nối được tới camera'); break;
+  case 905006: showError('Camera không phản hồi, thử lại sau'); break;
+  case 905008: showError(`Giờ camera lệch ${res.data?.clockOffsetSec ?? '?'} giây so với server`); break;
+  case 905002: showError('Camera đang offline'); break;
+  default:     showError(res.msg);
+}
+```

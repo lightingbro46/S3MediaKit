@@ -1,12 +1,17 @@
 #include "wsdd.nsmap" //Namespaces
 #include "plugin/wsseapi.h" //WS-Sercurity
+#include "plugin/httpda.h" //HTTP Digest
 #include "Util/logger.h"
+#include "Util/util.h"
 #include "Util/onceToken.h"
 #include "Common/config.h"
 #include "Extension/Plugin.h"
+#include "Onvif/SoapUtil.h"
 #include "OnvifDeviceControl.h"
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
+#include <cstring>
 
 using namespace std;
 using namespace toolkit;
@@ -17,6 +22,8 @@ namespace OnvifCtrl {
 const string kClockOffsetTtlSec = ONVIF_CTRL_FIELD"clockOffsetTtlSec";
 const string kProfileResyncIntervalSec = ONVIF_CTRL_FIELD"profileResyncIntervalSec";
 const string kClockSyncIntervalSec = ONVIF_CTRL_FIELD"clockSyncIntervalSec";
+const string kClockSkewThresholdSec = ONVIF_CTRL_FIELD"clockSkewThresholdSec";
+const string kClockSyncEnable = ONVIF_CTRL_FIELD"clockSyncEnable";
 
 static onceToken token([]() {
     // How long a camera's clock offset stays usable before it is measured again.
@@ -34,10 +41,285 @@ static onceToken token([]() {
     // slowly, so once an hour corrects it long before the drift matters, while the round trip this
     // costs no longer runs on every cycle. <= 0 checks the clock on every cycle.
     mINI::Instance()[kClockSyncIntervalSec] = 3600;
+    // A camera rejecting our WS-Security signature looks the same whether the password is wrong or
+    // its clock is off. Off by this much or more, the failure is reported as a clock problem.
+    mINI::Instance()[kClockSkewThresholdSec] = 30;
+    // Whether the maintenance cycle may set a camera clock at all (only ever from that cycle,
+    // never from an API command).
+    mINI::Instance()[kClockSyncEnable] = 1;
 });
 } // namespace OnvifCtrl
 
 namespace managerkit {
+
+// ---- HTTP authentication ---------------------------------------------------
+// A camera whose ONVIF web service is set to "Digest" (rather than "Digest&WS-UsernameToken")
+// ignores the WS-Security header and answers every request with 401 and a WWW-Authenticate
+// challenge. gSOAP's http_da plugin answers Digest challenges; the small plugin below records
+// which challenges a response carried, because neither gSOAP nor http_da keep that.
+
+static const char kHttpAuthChallengeId[] = "S3-ONVIF-HTTP-AUTH/1.0";
+
+struct HttpAuthChallenge {
+    int (*fparsehdr)(struct soap *, const char *, const char *);
+    bool digest;    // a Digest challenge http_da can answer
+    bool basic;     // a Basic challenge
+    char realm[256]; // realm of the Digest challenge
+    time_t date;    // HTTP Date header of the last response (camera clock, UTC), 0 = none
+};
+
+// RFC 7231 IMF-fixdate, e.g. "Sun, 04 Oct 2026 08:12:03 GMT". 0 when it does not parse.
+static time_t parseHttpDate(const char *val) {
+    struct tm tm_val;
+    memset(&tm_val, 0, sizeof(tm_val));
+    const char *end = strptime(val, "%a, %d %b %Y %H:%M:%S", &tm_val);
+    return end ? timegm(&tm_val) : 0;
+}
+
+static HttpAuthChallenge *lookupHttpAuthChallenge(struct soap *soap) {
+    return static_cast<HttpAuthChallenge *>(soap_lookup_plugin(soap, kHttpAuthChallengeId));
+}
+
+static int httpAuthParseHeader(struct soap *soap, const char *key, const char *val) {
+    auto data = lookupHttpAuthChallenge(soap);
+    if (!data) {
+        return SOAP_PLUGIN_ERROR;
+    }
+    if (key && val && !soap_tag_cmp(key, "WWW-Authenticate")) {
+        if (!soap_tag_cmp(val, "Digest *")) {
+            const char *alg = soap_http_header_attribute(soap, val + 7, "algorithm");
+            // http_da cannot compute SHA-512-256; keep the first challenge it can answer.
+            if (!data->digest && (!alg || soap_tag_cmp(alg, "SHA-512-256*"))) {
+                const char *realm = soap_http_header_attribute(soap, val + 7, "realm");
+                if (realm) {
+                    data->digest = true;
+                    snprintf(data->realm, sizeof(data->realm), "%s", realm);
+                    // http_da only takes a challenge whose realm differs from soap->authrealm,
+                    // which a Basic header with the same realm earlier in this response has set.
+                    soap->authrealm = nullptr;
+                }
+            }
+        } else if (!soap_tag_cmp(val, "Basic*")) {
+            data->basic = true;
+        }
+    } else if (key && val && !soap_tag_cmp(key, "Date")) {
+        data->date = parseHttpDate(val);
+    }
+    return data->fparsehdr(soap, key, val);
+}
+
+static void httpAuthPluginDelete(struct soap *, struct soap_plugin *p) {
+    free(p->data);
+}
+
+static int httpAuthPlugin(struct soap *soap, struct soap_plugin *p, void *) {
+    auto data = static_cast<HttpAuthChallenge *>(calloc(1, sizeof(HttpAuthChallenge)));
+    if (!data) {
+        return SOAP_EOM;
+    }
+    data->fparsehdr = soap->fparsehdr;
+    soap->fparsehdr = httpAuthParseHeader;
+    p->id = kHttpAuthChallengeId;
+    p->data = data;
+    p->fcopy = nullptr;
+    p->fdelete = httpAuthPluginDelete;
+    return SOAP_OK;
+}
+
+static bool qopHasToken(const char *qop, const char *token) {
+    if (!qop) {
+        return false;
+    }
+    for (auto &item : split(qop, ",")) {
+        if (strcasecmp(trim(item, " \t\"").data(), token) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// HTTP credentials of one soap context, learnt from its 401 challenges. gSOAP clears
+// soap->userid/passwd/authrealm after every response, so apply() must run before every request.
+struct OnvifHttpAuth {
+    enum Mode { NONE, DIGEST, BASIC };
+
+    // Registers the plugins; must be called once, right after soap_new(). Registration order
+    // matters: the challenge recorder has to see a header before http_da does.
+    static void attach(struct soap *soap) {
+        soap_register_plugin(soap, http_da);
+        soap_register_plugin(soap, httpAuthPlugin);
+    }
+
+    OnvifHttpAuth(struct soap *soap, std::string ip) : _soap(soap), _ip(std::move(ip)) {
+        memset(&_info, 0, sizeof(_info));
+    }
+
+    // Must run while _soap is still alive: it releases what http_da_save() allocated.
+    ~OnvifHttpAuth() { releaseInfo(); }
+
+    void apply() {
+        _basic_refused = false;
+        if (auto data = lookupHttpAuthChallenge(_soap)) {
+            data->digest = data->basic = false;
+            data->realm[0] = '\0';
+        }
+        _sent = _mode != NONE;
+        if (_mode == DIGEST) {
+            http_da_restore(_soap, &_info);
+        } else if (_mode == BASIC) {
+            _soap->userid = _user.c_str();
+            _soap->passwd = _pass.c_str();
+        }
+    }
+
+    // After a 401: take the challenge of that response. Returns true when the request should be
+    // sent once more with the new credentials.
+    bool learn(const std::string &user, const std::string &pass) {
+        auto data = lookupHttpAuthChallenge(_soap);
+        if (!data || user.empty()) {
+            return false;
+        }
+        if (data->digest) {
+            // Save into a fresh store before releasing the old one: releasing clears the
+            // plugin's nonce, which http_da_save() copies.
+            struct http_da_info fresh;
+            memset(&fresh, 0, sizeof(fresh));
+            http_da_save(_soap, &fresh, data->realm, user.c_str(), pass.c_str());
+            if (!fresh.nonce) {
+                http_da_release(_soap, &fresh);
+                return false;
+            }
+            releaseInfo();
+            _info = fresh;
+            // auth-int hashes the body before installSoapHook() rewrites its timestamps, so the
+            // digest would no longer match. Plain auth signs only method and URI.
+            if (qopHasToken(_info.qop, "auth")) {
+                free(_info.qop);
+                _info.qop = soap_strdup(nullptr, "auth");
+            }
+            if (_mode != DIGEST) {
+                InfoL << "Onvif device " << _ip << " requires HTTP Digest authentication, realm " << data->realm;
+            }
+            _mode = DIGEST;
+            return true;
+        }
+        if (data->basic) {
+            GET_CONFIG(bool, allow_basic, OnvifAuth::kAllowHttpBasicAuth);
+            if (!allow_basic) {
+                _basic_refused = true;
+                WarnL << "Onvif device " << _ip << " only offers HTTP Basic authentication, which sends the password "
+                      << "in clear text; refused (set " << OnvifAuth::kAllowHttpBasicAuth << "=1 to allow it)";
+                return false;
+            }
+            if (_mode != BASIC) {
+                WarnL << "Onvif device " << _ip << " uses HTTP Basic authentication: the password is sent in clear text";
+            }
+            releaseInfo();
+            _user = user;
+            _pass = pass;
+            _mode = BASIC;
+            return true;
+        }
+        return false;
+    }
+
+    // Whether the last request carried HTTP credentials, i.e. a 401 to it means bad credentials.
+    bool sentCredentials() const { return _sent; }
+
+    // Whether the last 401 only offered HTTP Basic and onvif.allowHttpBasicAuth refused it.
+    bool basicRefused() const { return _basic_refused; }
+
+    // auth-int is only kept when the camera offers nothing else.
+    bool signsBody() const { return _mode == DIGEST && qopHasToken(_info.qop, "auth-int"); }
+
+private:
+    void releaseInfo() {
+        if (_mode == DIGEST) {
+            http_da_release(_soap, &_info);
+        }
+        memset(&_info, 0, sizeof(_info));
+        if (_mode != BASIC) {
+            return;
+        }
+        _soap->userid = _soap->passwd = nullptr;
+        _user.clear();
+        _pass.clear();
+    }
+
+private:
+    struct soap *_soap;
+    std::string _ip;
+    Mode _mode = NONE;
+    bool _sent = false;
+    bool _basic_refused = false;
+    struct http_da_info _info;
+    std::string _user;
+    std::string _pass;
+};
+
+int OnvifControl::callWithAuth(const std::function<int()> &call) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
+    // reportError() sets it again if this call fails.
+    _last_failure = static_cast<int>(DeviceFailure::None);
+    _measured_this_call = false;
+    if (_http_auth) {
+        // Also covers a second call after one setCredentials(): the first response cleared the
+        // HTTP credentials gSOAP keeps.
+        _http_auth->apply();
+    }
+    int ret = call();
+    if (ret == 401 && _http_auth && _http_auth->learn(_strUsername, _strPassword)) {
+        if (!setCredentials()) {
+            return ret;
+        }
+        _http_auth->apply();
+        ret = call();
+    } else if (ret != SOAP_OK && rejectedSignature(ret) && resignWithFreshClock()) {
+        _http_auth->apply();
+        ret = call();
+    }
+    return ret;
+}
+
+bool OnvifControl::rejectedSignature(int soap_error) {
+    if (!_http_auth || _http_auth->sentCredentials() || _http_auth->basicRefused()) {
+        return false;
+    }
+    // A bare 401 (no challenge we could answer) or a SOAP fault naming the credentials.
+    if (soap_error == 401) {
+        return true;
+    }
+    std::ostringstream oss;
+    soap_stream_fault(_m_soap, oss);
+    return isAuthOrTimestampFault(oss.str());
+}
+
+bool OnvifControl::resignWithFreshClock() {
+    // Same threshold as setCredentials() uses to sign with the camera clock at all.
+    static const time_t kResignDeltaSec = 5;
+    const time_t signed_offset = _signed_offset;
+    if (!measureCameraClock()) {
+        return false;
+    }
+    const time_t offset = _clock_offset.load(std::memory_order_relaxed);
+    const time_t delta = offset > signed_offset ? offset - signed_offset : signed_offset - offset;
+    if (delta < kResignDeltaSec) {
+        // Signing again would send the same signature: most likely the password is wrong, and
+        // another attempt would only count against the camera's lockout.
+        return false;
+    }
+    InfoL << "Onvif device " << _strDeviceIp << " rejected a request signed " << signed_offset
+          << " s off the local clock; its clock is " << offset << " s off, signing again";
+    return setCredentials();
+}
+
+DeviceClockReading OnvifControl::clockReading() const {
+    DeviceClockReading reading;
+    reading.server_time = _reading_server_time.load(std::memory_order_acquire);
+    reading.offset_sec = _reading_offset.load(std::memory_order_relaxed);
+    reading.from_http_date = _reading_from_date.load(std::memory_order_relaxed);
+    return reading;
+}
 
 OnvifControl::OnvifControl(std::string strDeviceIp, std::string strUsername, std::string strPassword)
     : DeviceControl(), _strDeviceIp(strDeviceIp), _strUsername(strUsername), _strPassword(strPassword) {}
@@ -280,6 +562,8 @@ bool OnvifControl::connect() {
         _m_soap = soap_new();
         _m_soap->connect_timeout = _m_soap->recv_timeout = _m_soap->send_timeout = 10; // timeout connection for 10 seconds
         soap_register_plugin(_m_soap, soap_wsse);
+        OnvifHttpAuth::attach(_m_soap);
+        _http_auth.reset(new OnvifHttpAuth(_m_soap, _strDeviceIp));
 
         _proxyDevice = new DeviceBindingProxy(_m_soap);
     }
@@ -353,6 +637,8 @@ void OnvifControl::disconnect() {
     delete _proxySearch;  _proxySearch = nullptr;
     delete _proxyReplay;  _proxyReplay = nullptr;
     delete _proxyRecording;  _proxyRecording = nullptr;
+    // Releases what http_da allocated, so it has to go before the context it belongs to.
+    _http_auth.reset();
     if (_m_soap != nullptr) {
         soap_destroy(_m_soap);
         soap_end(_m_soap);
@@ -372,7 +658,7 @@ bool OnvifControl::getDeviceInformation() {
         return false;
     }
 
-    if (_proxyDevice->GetDeviceInformation(GetDeviceInformation, GetDeviceInformationResponse)) {
+    if (callWithAuth([&] { return _proxyDevice->GetDeviceInformation(GetDeviceInformation, GetDeviceInformationResponse); })) {
         reportError();
         return false;
     }
@@ -456,7 +742,7 @@ bool OnvifControl::getDeviceCapabilities() {
         return false;
     }
 
-    if (_proxyDevice->GetCapabilities(GetCapabilities, GetCapabilitiesResponse)) {
+    if (callWithAuth([&] { return _proxyDevice->GetCapabilities(GetCapabilities, GetCapabilitiesResponse); })) {
         reportError();
     }
 
@@ -519,7 +805,7 @@ bool OnvifControl::getDeviceCapabilities() {
             return false;
         }
 
-        if (_proxyMedia->GetProfiles(GetProfiles, GetProfilesResponse)) {
+        if (callWithAuth([&] { return _proxyMedia->GetProfiles(GetProfiles, GetProfilesResponse); })) {
             reportError();
             return false;
         }
@@ -535,7 +821,7 @@ bool OnvifControl::getDeviceCapabilities() {
                 return false;
             }
 
-            if (_proxyPTZ->GetConfigurationOptions(GetConfigurationOptions, GetConfigurationOptionsResponse)) {
+            if (callWithAuth([&] { return _proxyPTZ->GetConfigurationOptions(GetConfigurationOptions, GetConfigurationOptionsResponse); })) {
                 reportError();
                 return false;
             }
@@ -612,7 +898,7 @@ bool OnvifControl::getAudioCapabilities() {
         return false;
     }
 
-    if (_proxyMedia->GetAudioDecoderConfigurationOptions(GetAudioDecoderConfigurationOptions, GetAudioDecoderConfigurationOptionsResponse)) {
+    if (callWithAuth([&] { return _proxyMedia->GetAudioDecoderConfigurationOptions(GetAudioDecoderConfigurationOptions, GetAudioDecoderConfigurationOptionsResponse); })) {
         reportError();
         return false;
     }
@@ -647,7 +933,7 @@ bool OnvifControl::getMediaProfiles() {
         return false;
     }
 
-    if (_proxyMedia->GetProfiles(GetProfiles, GetProfilesResponse)) {
+    if (callWithAuth([&] { return _proxyMedia->GetProfiles(GetProfiles, GetProfilesResponse); })) {
         reportError();
         return false;
     }
@@ -684,7 +970,7 @@ bool OnvifControl::getMediaProfiles() {
             if (!setCredentials()) {
                 return false;
             }
-            if (!_proxyMedia2->GetVideoEncoderConfigurations(GetVideoConfig, GetVideoConfigResponse)) {
+            if (!callWithAuth([&] { return _proxyMedia2->GetVideoEncoderConfigurations(GetVideoConfig, GetVideoConfigResponse); })) {
                 TraceL << "Get video encoder configuration for token " << profile->token << ", configurations size = " << GetVideoConfigResponse.Configurations.size();
                 if (GetVideoConfigResponse.Configurations.empty()) {
                     WarnL << "No video encoder configuration returned for profile: " << profile->token;
@@ -717,7 +1003,7 @@ bool OnvifControl::getMediaProfiles() {
                     reportError();
                     return false;
                 }
-                if (_proxyMedia2->GetVideoEncoderConfigurationOptions(GetVideoConfigOptions, GetVideoConfigOptionResponse)) {
+                if (callWithAuth([&] { return _proxyMedia2->GetVideoEncoderConfigurationOptions(GetVideoConfigOptions, GetVideoConfigOptionResponse); })) {
                     reportError();
                     return false;
                 }
@@ -776,7 +1062,7 @@ bool OnvifControl::getMediaProfiles() {
                 _trt__GetAudioSources *GetAudioSources = soap_new__trt__GetAudioSources(_m_soap);
                 _trt__GetAudioSourcesResponse GetAudioSourcesResponse;
                 if (setCredentials()) {
-                    if (_proxyMedia->GetAudioSources(GetAudioSources, GetAudioSourcesResponse) == SOAP_OK) {
+                    if (callWithAuth([&] { return _proxyMedia->GetAudioSources(GetAudioSources, GetAudioSourcesResponse); }) == SOAP_OK) {
                         _audioInputProfile.enable = !GetAudioSourcesResponse.AudioSources.empty();
                         for (const auto &audioSource : GetAudioSourcesResponse.AudioSources) {
                             if (audioSource->token == _audioInputProfile.sourceToken) {
@@ -851,7 +1137,7 @@ bool OnvifControl::getMediaProfiles() {
                 return false;
             }
 
-            if (_proxyMedia->GetStreamUri(GetStreamUri, GetStreamUriResponse)) {
+            if (callWithAuth([&] { return _proxyMedia->GetStreamUri(GetStreamUri, GetStreamUriResponse); })) {
                 reportError();
                 return false;
             }
@@ -892,7 +1178,7 @@ tt__VideoEncoder2Configuration* OnvifControl::getConfigVideoEncoder2ByToken(cons
         return nullptr;
     }
 
-    if (_proxyMedia->GetProfiles(GetProfiles, GetProfilesResponse)) {
+    if (callWithAuth([&] { return _proxyMedia->GetProfiles(GetProfiles, GetProfilesResponse); })) {
         reportError();
         return nullptr;
     }
@@ -908,7 +1194,7 @@ tt__VideoEncoder2Configuration* OnvifControl::getConfigVideoEncoder2ByToken(cons
             if (!setCredentials()) {
                 return nullptr;
             }
-            if (_proxyMedia2->GetVideoEncoderConfigurations(GetVideoConfig, GetVideoConfigResponse)) {
+            if (callWithAuth([&] { return _proxyMedia2->GetVideoEncoderConfigurations(GetVideoConfig, GetVideoConfigResponse); })) {
                 reportError();
                 return nullptr;
             }
@@ -952,7 +1238,7 @@ bool OnvifControl::setVideoEncoderConfigByToken(const std::string& token, const 
         return false;
     }
 
-    if (_proxyMedia2->SetVideoEncoderConfiguration(setReq, setResp))
+    if (callWithAuth([&] { return _proxyMedia2->SetVideoEncoderConfiguration(setReq, setResp); }))
     {
         reportError();
         return false;
@@ -966,7 +1252,7 @@ bool OnvifControl::setVideoEncoderConfigByToken(const std::string& token, const 
         return false;
     }
 
-    if (_proxyMedia2->GetStreamUri(GetStreamUri, GetStreamUriResponse)) {
+    if (callWithAuth([&] { return _proxyMedia2->GetStreamUri(GetStreamUri, GetStreamUriResponse); })) {
         reportError();
         return false;
     }
@@ -1004,7 +1290,7 @@ bool OnvifControl::getNetworkInterfaces() {
     if (!setCredentials()) {
         return false;
     }
-    if (_proxyDevice->GetNetworkInterfaces(GetNetworkInterfaces, GetNetworkInterfacesResponse)) {
+    if (callWithAuth([&] { return _proxyDevice->GetNetworkInterfaces(GetNetworkInterfaces, GetNetworkInterfacesResponse); })) {
         reportError();
         return false;
     }
@@ -1046,30 +1332,148 @@ bool OnvifControl::isAuthOrTimestampFault(const std::string &fault) {
     return false;
 }
 
+DeviceFailure OnvifControl::classifyFailure(const FailureContext &ctx) {
+    switch (ctx.soap_error) {
+        case 401:
+            if (ctx.basic_refused) {
+                return DeviceFailure::AuthMethodUnsupported;
+            }
+            if (ctx.http_credentials_sent) {
+                return DeviceFailure::Unauthorized;
+            }
+            // A bare 401 to WS-Security: handled as a rejected signature below.
+            break;
+        // Some cameras answer a locked or disabled account with 403.
+        case 403:
+            return DeviceFailure::Unauthorized;
+        // Connect failed: refused, no route, or the connect timeout.
+        case SOAP_TCP_ERROR:
+        case SOAP_UDP_ERROR:
+        case SOAP_SSL_ERROR:
+            return DeviceFailure::Unreachable;
+        // Connected, but no complete answer: receive timeout or the camera dropped the connection.
+        case SOAP_EOF:
+            return DeviceFailure::Timeout;
+        default:
+            // A SOAP fault (any HTTP status) saying the WS-Security credentials were rejected.
+            if (!isAuthOrTimestampFault(ctx.fault)) {
+                return DeviceFailure::Other;
+            }
+            break;
+    }
+    // The WS-Security signature was rejected: wrong credentials and a camera clock too far off look
+    // the same, unless the camera names the timestamp or its clock was measured far off.
+    std::string lower(ctx.fault);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    if (lower.find("messageexpired") != std::string::npos) {
+        return DeviceFailure::ClockSkew;
+    }
+    const time_t skew = ctx.clock_offset < 0 ? -ctx.clock_offset : ctx.clock_offset;
+    if (ctx.clock_known && skew >= ctx.skew_threshold_sec) {
+        return DeviceFailure::ClockSkew;
+    }
+    return DeviceFailure::Unauthorized;
+}
+
+DeviceFailure OnvifControl::classifyFailure(int soap_error, const std::string &fault, bool basic_refused) {
+    FailureContext ctx;
+    ctx.soap_error = soap_error;
+    ctx.fault = fault;
+    ctx.basic_refused = basic_refused;
+    return classifyFailure(ctx);
+}
+
 void OnvifControl::reportError() {
     std::ostringstream oss;
     soap_stream_fault(_m_soap, oss);
     _soapErrMsg = oss.str();
-    if (OnvifControl::isAuthOrTimestampFault(_soapErrMsg)) {
+    // A 401 to a request that already carried HTTP credentials means wrong user or password,
+    // not a clock problem: keep the offset.
+    const bool http_auth_rejected = _m_soap->error == 401 && _http_auth && _http_auth->sentCredentials();
+    FailureContext ctx;
+    ctx.soap_error = _m_soap->error;
+    ctx.fault = _soapErrMsg;
+    ctx.basic_refused = _http_auth && _http_auth->basicRefused();
+    ctx.http_credentials_sent = _http_auth && _http_auth->sentCredentials();
+    if (_measured_this_call) {
+        const auto reading = clockReading();
+        ctx.clock_known = reading.valid();
+        ctx.clock_offset = reading.offset_sec;
+    }
+    GET_CONFIG(int, skew_threshold_sec, OnvifCtrl::kClockSkewThresholdSec);
+    ctx.skew_threshold_sec = skew_threshold_sec;
+    _last_failure = static_cast<int>(classifyFailure(ctx));
+    if (!http_auth_rejected && OnvifControl::isAuthOrTimestampFault(_soapErrMsg)) {
         invalidateClockOffset();
     }
     WarnL << "Oops, something went wrong: " << oss.str();
+}
+
+// An own soap context talking to the camera's device service, for requests that must not disturb
+// _m_soap (the error of the request being handled) or that run while it does not exist.
+struct LocalDeviceSoap {
+    explicit LocalDeviceSoap(const std::string &url) : endpoint(url) {
+        soap = soap_new();
+        soap->connect_timeout = soap->recv_timeout = soap->send_timeout = 10;
+        soap_register_plugin(soap, soap_wsse);
+        OnvifHttpAuth::attach(soap);
+        proxy = new DeviceBindingProxy(soap);
+        proxy->soap_endpoint = endpoint.c_str();
+    }
+    // Proxy before soap_free: its destructor still uses the context.
+    ~LocalDeviceSoap() {
+        delete proxy;
+        soap_destroy(soap);
+        soap_end(soap);
+        soap_free(soap);
+    }
+    std::string endpoint;
+    struct soap *soap;
+    DeviceBindingProxy *proxy;
+};
+
+static bool isNetworkError(int soap_error) {
+    return soap_error == SOAP_TCP_ERROR || soap_error == SOAP_UDP_ERROR || soap_error == SOAP_SSL_ERROR
+        || soap_error == SOAP_EOF;
 }
 
 bool OnvifControl::getCameraTime() {
     if (!_proxyDevice || !_m_soap) {
         return false;
     }
-    _tds__GetSystemDateAndTime* req = soap_new__tds__GetSystemDateAndTime(_m_soap, -1);
+    bool request_failed = false;
+    if (readCameraClock(_m_soap, _proxyDevice, request_failed)) {
+        return true;
+    }
+    if (request_failed) {
+        reportError();
+    } else {
+        WarnL << "Invalid camera time response";
+    }
+    return false;
+}
+
+bool OnvifControl::readCameraClock(struct soap *soap, DeviceBindingProxy *proxy, bool &request_failed) {
+    request_failed = false;
+    auto challenge = lookupHttpAuthChallenge(soap);
+    if (challenge) {
+        challenge->date = 0;
+    }
+    _tds__GetSystemDateAndTime* req = soap_new__tds__GetSystemDateAndTime(soap, -1);
     _tds__GetSystemDateAndTimeResponse resp;
 
-    if (_proxyDevice->GetSystemDateAndTime(req, resp)) {
-        reportError();
+    if (proxy->GetSystemDateAndTime(req, resp)) {
+        request_failed = true;
+        // ONVIF lets anyone read the clock, but some cameras want credentials even for this, and
+        // signing needs the very clock we cannot read. Their refusal still carries a Date header.
+        if (challenge && challenge->date && !isNetworkError(soap->error)) {
+            setCameraClock(challenge->date, true, true);
+            return true;
+        }
         return false;
     }
 
     if (!resp.SystemDateAndTime) {
-        WarnL << "Invalid camera time response";
         return false;
     }
 
@@ -1100,11 +1504,7 @@ bool OnvifControl::getCameraTime() {
     if (resp.SystemDateAndTime->UTCDateTime) {
         time_t t = buildTime(resp.SystemDateAndTime->UTCDateTime, true);
         if (t > 0) {
-            _camTimeInfo.cam_time = t;
-            int offset_cam = parse_timezone_offset_seconds(_camTimeInfo.TZ);
-            int offset_sys = get_system_offset_seconds();
-            _camTimeInfo.cam_sys_time = _camTimeInfo.cam_time + offset_cam - offset_sys;
-            cacheClockOffset();
+            setCameraClock(t, true, false);
             return true;
         }
     }
@@ -1112,14 +1512,47 @@ bool OnvifControl::getCameraTime() {
     if (resp.SystemDateAndTime->LocalDateTime) {
         time_t t = buildTime(resp.SystemDateAndTime->LocalDateTime, false);
         if (t > 0) {
-            _camTimeInfo.cam_time = t;
-            _camTimeInfo.cam_sys_time = t;
-            cacheClockOffset();
+            setCameraClock(t, false, false);
             return true;
         }
     }
 
     return false;
+}
+
+void OnvifControl::setCameraClock(time_t camera_time, bool is_utc, bool from_http_date) {
+    _camTimeInfo.cam_time = camera_time;
+    if (is_utc) {
+        int offset_cam = parse_timezone_offset_seconds(_camTimeInfo.TZ);
+        int offset_sys = get_system_offset_seconds();
+        _camTimeInfo.cam_sys_time = _camTimeInfo.cam_time + offset_cam - offset_sys;
+    } else {
+        _camTimeInfo.cam_sys_time = camera_time;
+    }
+    cacheClockOffset();
+
+    // The reading reports the clock the way the maintenance cycle keeps it in sync (cam_sys_time,
+    // see setCameraTimeManual()), not the raw UTC offset used for signing: a camera this server set
+    // to its own wall clock in another time zone is not skewed.
+    const time_t now = time(nullptr);
+    _reading_offset.store(_camTimeInfo.cam_sys_time - now, std::memory_order_relaxed);
+    _reading_from_date.store(from_http_date, std::memory_order_relaxed);
+    _reading_server_time.store(now != 0 ? now : 1, std::memory_order_release);
+}
+
+bool OnvifControl::measureCameraClock() {
+    LocalDeviceSoap local(deviceServiceUrl());
+    bool request_failed = false;
+    _measured_this_call = readCameraClock(local.soap, local.proxy, request_failed);
+    if (!_measured_this_call) {
+        return false;
+    }
+    const time_t skew = _reading_offset.load(std::memory_order_relaxed);
+    // Same threshold as setCameraTimeManual(). Only flagged: the maintenance cycle sets the clock.
+    if (skew >= 10 || skew <= -10) {
+        _clock_sync_wanted = true;
+    }
+    return true;
 }
 
 void OnvifControl::cacheClockOffset() {
@@ -1237,15 +1670,22 @@ void OnvifControl::installSoapHook(struct soap* soap, time_t offset) {
 
         std::string xml(buf, len);
 
-        if (ctx->enabled && xml.find("wsse:Security") != std::string::npos) {
+        // Only the wsu:Timestamp, which soap_wsse_add_Timestamp() stamps with the local clock. The
+        // UsernameToken's wsu:Created is already the camera time and is covered by the password
+        // digest: rewriting it a second later broke the signature.
+        const size_t ts_begin = xml.find("<wsu:Timestamp");
+        const size_t ts_end = ts_begin == std::string::npos ? std::string::npos : xml.find("</wsu:Timestamp>", ts_begin);
+        if (ctx->enabled && ts_end != std::string::npos) {
 
             time_t now = time(nullptr) + ctx->offset;
 
             std::string created = makeUtcTime(now);
             std::string expires = makeUtcTime(now + 10);
 
-            replaceTagValue(xml, "wsu:Created", created);
-            replaceTagValue(xml, "wsu:Expires", expires);
+            std::string timestamp = xml.substr(ts_begin, ts_end - ts_begin);
+            replaceTagValue(timestamp, "wsu:Created", created);
+            replaceTagValue(timestamp, "wsu:Expires", expires);
+            xml.replace(ts_begin, ts_end - ts_begin, timestamp);
         }
 
         return ctx->original_fsend(soap, xml.c_str(), xml.size());
@@ -1254,28 +1694,18 @@ void OnvifControl::installSoapHook(struct soap* soap, time_t offset) {
 
 void OnvifControl::setCameraTimeManual() {
     std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
-    if (!_proxyDevice) return;
+    // Called from the maintenance cycle only, connected or not: a camera whose clock is too far
+    // off to accept us never connects, and setting its clock is how it recovers. Uses its own soap
+    // context, so neither _m_soap nor the reason the last connect failed is touched.
+    LocalDeviceSoap local(deviceServiceUrl());
+    struct soap *local_soap = local.soap;
+    DeviceBindingProxy *proxy = local.proxy;
+    // Declared after `local` so it is released before local_soap is freed. Not shared with
+    // _m_soap: a fresh http_da starts its nonce count again, which the camera takes as a replay.
+    OnvifHttpAuth http_auth(local_soap, _strDeviceIp);
 
-    soap *local_soap = soap_new();
-    local_soap->connect_timeout = local_soap->recv_timeout = local_soap->send_timeout = 10; // timeout connection for 10 seconds
-    soap_register_plugin(local_soap, soap_wsse);
-
-    // RAII guard: ensures local_soap and proxy are freed on ALL exit paths,
-    // including early returns when getCameraTime() fails or time is in sync.
-    // Proxy is deleted before soap_free to avoid a use-after-free in the
-    // proxy destructor.
-    struct Guard {
-        soap *s;
-        DeviceBindingProxy *p;
-        ~Guard() {
-            delete p;
-            if (s) { soap_destroy(s); soap_end(s); soap_free(s); }
-        }
-    } guard{local_soap, new DeviceBindingProxy(local_soap)};
-    DeviceBindingProxy *proxy = guard.p;
-    proxy->soap_endpoint = _proxyDevice->soap_endpoint;
-
-    if (!getCameraTime() || _camTimeInfo.TZ.empty()) {
+    bool request_failed = false;
+    if (!readCameraClock(local_soap, proxy, request_failed) || _camTimeInfo.TZ.empty()) {
         return;
     }
 
@@ -1309,12 +1739,20 @@ void OnvifControl::setCameraTimeManual() {
 
         if (soap_wsse_add_Timestamp(local_soap, "Time", 10) == SOAP_OK && soap_wsse_add_UsernameTokenDigest_at(local_soap, "Auth", _strUsername.c_str(), _strPassword.c_str(), _camTimeInfo.cam_time) == SOAP_OK) {
             int ret = proxy->SetSystemDateAndTime(&req, resp);
+            if (ret == 401 && http_auth.learn(_strUsername, _strPassword)) {
+                // The WS-Security header is still in place; only the HTTP credentials are new.
+                http_auth.apply();
+                ret = proxy->SetSystemDateAndTime(&req, resp);
+            }
             if (ret != SOAP_OK) {
                 WarnL << "Set camera time failed, ret " << ret;
             } else {
+                InfoL << "Onvif device " << _strDeviceIp << " clock set, it was "
+                      << (_camTimeInfo.cam_sys_time - now) << " s off";
                 // The camera clock just moved, so the offset measured above no
                 // longer describes it. Let the next operation measure it again.
                 invalidateClockOffset();
+                _reading_server_time.store(0, std::memory_order_release);
             }
         }
     }
@@ -1331,13 +1769,15 @@ bool OnvifControl::setCredentials() {
     const bool have_offset = clockOffset(offset_time);
     const time_t drift = offset_time < 0 ? -offset_time : offset_time;
     const bool need_update_time = have_offset && drift >= 5;
+    _signed_offset = need_update_time ? offset_time : 0;
 
     // The hook rewrites wsu:Created/wsu:Expires on the way out, so it has to stay
     // in step with the timestamp the digest was computed over: refreshed when we
     // sign with the camera clock, switched off when we sign with the local one.
     // Installing it only above the threshold left an already-installed hook
     // stamping with a stale offset forever once the drift dropped below it.
-    if (need_update_time) {
+    // HTTP Digest with qop=auth-int hashes the body before the hook rewrites it.
+    if (need_update_time && !(_http_auth && _http_auth->signsBody())) {
         installSoapHook(_m_soap, offset_time);
     } else {
         disableSoapHook(_m_soap);
@@ -1384,7 +1824,7 @@ bool OnvifControl::PTZ_AbsoluteMove(float pan, float tilt, float zoom) {
         return false;
     }
 
-    if (_proxyPTZ->AbsoluteMove(AbsoluteMove, AbsoluteMoveResponse)) {
+    if (callWithAuth([&] { return _proxyPTZ->AbsoluteMove(AbsoluteMove, AbsoluteMoveResponse); })) {
         reportError();
         return false;
     }
@@ -1429,7 +1869,7 @@ bool OnvifControl::PTZ_AbsoluteMove(float pan, float tilt, float zoom, float pan
         return false;
     }
 
-    if (_proxyPTZ->AbsoluteMove(AbsoluteMove, AbsoluteMoveResponse)) {
+    if (callWithAuth([&] { return _proxyPTZ->AbsoluteMove(AbsoluteMove, AbsoluteMoveResponse); })) {
         reportError();
         return false;
     }
@@ -1449,7 +1889,7 @@ tt__MoveStatus OnvifControl::PTZ_GetStatus(float &pan, float &tilt, float &zoom)
     GetStatus->ProfileToken = _ptzProfile.strMediaProfileToken;
     if (!setCredentials())
         return tt__MoveStatus__UNKNOWN;
-    if (_proxyPTZ->GetStatus(GetStatus, GetStatusResponse)) {
+    if (callWithAuth([&] { return _proxyPTZ->GetStatus(GetStatus, GetStatusResponse); })) {
         reportError();
         return tt__MoveStatus__UNKNOWN;
     }
@@ -1511,7 +1951,7 @@ bool OnvifControl::PTZ_ContinuousMove(float pan, float tilt, float zoom, int tim
         return false;
     }
 
-    if (_proxyPTZ->ContinuousMove(ContinuosMove, ContinuosMoveResponse)) {
+    if (callWithAuth([&] { return _proxyPTZ->ContinuousMove(ContinuosMove, ContinuosMoveResponse); })) {
         reportError();
         return false;
     }
@@ -1544,7 +1984,7 @@ bool OnvifControl::PTZ_Stop(bool panTilt, bool zoom) {
         return false;
     }
 
-    if (_proxyPTZ->Stop(Stop, StopResponse)) {
+    if (callWithAuth([&] { return _proxyPTZ->Stop(Stop, StopResponse); })) {
         reportError();
         return false;
     }
@@ -1578,7 +2018,7 @@ bool OnvifControl::PTZ_RelativeMove(float pan, float tilt, float zoom) {
         return false;
     }
 
-    if (_proxyPTZ->RelativeMove(RelativeMove, RelativeMoveResponse)) {
+    if (callWithAuth([&] { return _proxyPTZ->RelativeMove(RelativeMove, RelativeMoveResponse); })) {
         reportError();
         return false;
     }
@@ -1623,7 +2063,7 @@ bool OnvifControl::PTZ_RelativeMove(float pan, float tilt, float zoom, float pan
         return false;
     }
 
-    if (_proxyPTZ->RelativeMove(RelativeMove, RelativeMoveResponse)) {
+    if (callWithAuth([&] { return _proxyPTZ->RelativeMove(RelativeMove, RelativeMoveResponse); })) {
         reportError();
         return false;
     }
@@ -1683,7 +2123,7 @@ bool OnvifControl::PTZ_GotoPreset(const string &presetToken, float panSpeed, flo
         return false;
     }
 
-    if (_proxyPTZ->GotoPreset(GotoPreset, GotoPresetResponse)) {
+    if (callWithAuth([&] { return _proxyPTZ->GotoPreset(GotoPreset, GotoPresetResponse); })) {
         reportError();
         return false;
     }
@@ -1722,7 +2162,7 @@ bool OnvifControl::PTZ_SetPreset(const string &presetName, const string &presetT
         return false;
     }
 
-    if (_proxyPTZ->SetPreset(SetPreset, SetPresetResponse)) {
+    if (callWithAuth([&] { return _proxyPTZ->SetPreset(SetPreset, SetPresetResponse); })) {
         reportError();
         return false;
     }
@@ -1763,7 +2203,7 @@ bool  OnvifControl::PTZ_GotoHomePosition(float panSpeed, float tiltSpeed, float 
         return false;
     }
 
-    if (_proxyPTZ->GotoHomePosition(GotoHomePosition, GotoHomePositionResponse)) {
+    if (callWithAuth([&] { return _proxyPTZ->GotoHomePosition(GotoHomePosition, GotoHomePositionResponse); })) {
         reportError();
         return false;
     }
@@ -1783,7 +2223,7 @@ bool OnvifControl::getPTZPresets() {
     if (!setCredentials()) {
         return false;
     }
-    if (_proxyPTZ->GetPresets(GetPresets, GetPresetsResponse)) {
+    if (callWithAuth([&] { return _proxyPTZ->GetPresets(GetPresets, GetPresetsResponse); })) {
         reportError();
         return false;
     }
@@ -1858,7 +2298,7 @@ bool OnvifControl::getImagingCapabilities() {
     GetImagingSettings->VideoSourceToken = _imageProfile.videoSourceToken;
 
     _timg__GetImagingSettingsResponse GetImagingSettingsResponse;
-    if (_proxyImaging->GetImagingSettings(GetImagingSettings, GetImagingSettingsResponse) != SOAP_OK) {
+    if (callWithAuth([&] { return _proxyImaging->GetImagingSettings(GetImagingSettings, GetImagingSettingsResponse); }) != SOAP_OK) {
         reportError();
         return false;
     }
@@ -1871,7 +2311,7 @@ bool OnvifControl::getImagingCapabilities() {
         GetMoveOptions->VideoSourceToken = _imageProfile.videoSourceToken;
 
         _timg__GetMoveOptionsResponse GetMoveOptionsResponse;
-        if (_proxyImaging->GetMoveOptions(GetMoveOptions, GetMoveOptionsResponse) != SOAP_OK) {
+        if (callWithAuth([&] { return _proxyImaging->GetMoveOptions(GetMoveOptions, GetMoveOptionsResponse); }) != SOAP_OK) {
             reportError();
             return false;
         }
@@ -1917,7 +2357,7 @@ bool OnvifControl::getRelayOutputCapabilities() {
 
     _tds__GetRelayOutputs *GetRelayOutputs = soap_new__tds__GetRelayOutputs(_m_soap);
     _tds__GetRelayOutputsResponse GetRelayOutputsResponse;
-    if (_proxyDevice->GetRelayOutputs(GetRelayOutputs, GetRelayOutputsResponse) != SOAP_OK) {
+    if (callWithAuth([&] { return _proxyDevice->GetRelayOutputs(GetRelayOutputs, GetRelayOutputsResponse); }) != SOAP_OK) {
         reportError();
         return false;
     }
@@ -1977,7 +2417,7 @@ bool OnvifControl::Imaging_FocusMove(float speed) {
         return false;
     }
 
-    if (_proxyImaging->Move(Move, MoveResponse) != SOAP_OK) {
+    if (callWithAuth([&] { return _proxyImaging->Move(Move, MoveResponse); }) != SOAP_OK) {
         reportError();
         return false;
     }
@@ -2004,7 +2444,7 @@ bool OnvifControl::Imaging_FocusStop() {
     _timg__Stop *Stop = soap_new__timg__Stop(_m_soap);
     _timg__StopResponse StopResponse;
     Stop->VideoSourceToken = _imageProfile.videoSourceToken;
-    if (_proxyImaging->Stop(Stop, StopResponse) != SOAP_OK) {
+    if (callWithAuth([&] { return _proxyImaging->Stop(Stop, StopResponse); }) != SOAP_OK) {
         reportError();
         return false;
     }
@@ -2046,7 +2486,7 @@ bool OnvifControl::PTZ_AuxiliaryCommand(const std::string &auxiliaryData) {
     SendAuxiliaryCommand->AuxiliaryData = auxiliaryData;
 
     _tptz__SendAuxiliaryCommandResponse SendAuxiliaryCommandResponse;
-    if (_proxyPTZ->SendAuxiliaryCommand(SendAuxiliaryCommand, SendAuxiliaryCommandResponse) != SOAP_OK) {
+    if (callWithAuth([&] { return _proxyPTZ->SendAuxiliaryCommand(SendAuxiliaryCommand, SendAuxiliaryCommandResponse); }) != SOAP_OK) {
         reportError();
         return false;
     }
@@ -2083,7 +2523,7 @@ bool OnvifControl::Relay_SetOutputState(const std::string &relayToken, bool acti
     SetRelayOutputState->LogicalState = active ? tt__RelayLogicalState__active : tt__RelayLogicalState__inactive;
 
     _tds__SetRelayOutputStateResponse SetRelayOutputStateResponse;
-    if (_proxyDevice->SetRelayOutputState(SetRelayOutputState, SetRelayOutputStateResponse) != SOAP_OK) {
+    if (callWithAuth([&] { return _proxyDevice->SetRelayOutputState(SetRelayOutputState, SetRelayOutputStateResponse); }) != SOAP_OK) {
         reportError();
         return false;
     }
@@ -2107,7 +2547,7 @@ std::string OnvifControl::getReplayUri(const std::string& recordingToken) {
         return uri;
     }
 
-    if (_proxyReplay->GetReplayUri(GetReplayUri, GetReplayUriResponse)) {
+    if (callWithAuth([&] { return _proxyReplay->GetReplayUri(GetReplayUri, GetReplayUriResponse); })) {
         reportError();
         return uri;
     }
@@ -2129,7 +2569,7 @@ void OnvifControl::getRecordingSearchResults() {
         return;
     }
 
-    if (_proxySearch->FindRecordings(FindRecordings, FindRecordingsResponse)) {
+    if (callWithAuth([&] { return _proxySearch->FindRecordings(FindRecordings, FindRecordingsResponse); })) {
         reportError();
         return;
     }
@@ -2145,7 +2585,7 @@ void OnvifControl::getRecordingSearchResults() {
         return;
     }
 
-    if (_proxySearch->GetRecordingSearchResults(GetRecordingSearchResults, GetRecordingSearchResultsResponse)) {
+    if (callWithAuth([&] { return _proxySearch->GetRecordingSearchResults(GetRecordingSearchResults, GetRecordingSearchResultsResponse); })) {
         endSearch(GetRecordingSearchResults->SearchToken);
         reportError();
         return;
@@ -2233,7 +2673,7 @@ bool OnvifControl::findEvents(time_t& startTime, time_t& endTime, const Recordin
         return false;
     }
 
-    if (_proxySearch->FindEvents(FindEvents, FindEventsResponse)) {
+    if (callWithAuth([&] { return _proxySearch->FindEvents(FindEvents, FindEventsResponse); })) {
         reportError();
         return false;
     }
@@ -2264,7 +2704,7 @@ bool OnvifControl::getEventSearchResults(const std::string& searchToken, const R
             return false;
         }
 
-        if (_proxySearch->GetEventSearchResults(GetEventSearchResults, GetEventSearchResultsResponse)) {
+        if (callWithAuth([&] { return _proxySearch->GetEventSearchResults(GetEventSearchResults, GetEventSearchResultsResponse); })) {
             endSearch(searchToken);
             reportError();
             return false;
@@ -2442,7 +2882,7 @@ void OnvifControl::endSearch(const std::string& searchToken) {
         return;
     }
 
-    int ret = _proxySearch->EndSearch(EndSearch, EndSearchResponse);
+    int ret = callWithAuth([&] { return _proxySearch->EndSearch(EndSearch, EndSearchResponse); });
     if (ret != SOAP_OK) {
         TraceL << "EndSearch error " << ret << " but ok if already completed";
     }
@@ -2462,7 +2902,7 @@ VideoEncoderConfig OnvifControl::GetRecordingVideoEncoder(const std::string& rec
         return config;
     }
 
-    if (_proxySearch->GetMediaAttributes(GetMediaAttributes, GetMediaAttributesResponse)) {
+    if (callWithAuth([&] { return _proxySearch->GetMediaAttributes(GetMediaAttributes, GetMediaAttributesResponse); })) {
         reportError();
         return config;
     }
@@ -2550,7 +2990,7 @@ void OnvifControl::getRecordingSummary() {
         return;
     }
 
-    if (_proxySearch->GetRecordingSummary(GetRecordingSummary, GetRecordingSummaryResponse)) {
+    if (callWithAuth([&] { return _proxySearch->GetRecordingSummary(GetRecordingSummary, GetRecordingSummaryResponse); })) {
         reportError();
         return;
     }
@@ -2575,7 +3015,7 @@ void OnvifControl::getStorageConfiguration() {
         return;
     }
 
-    if (_proxyDevice->GetStorageConfigurations(GetStorageConfigurations, GetStorageConfigurationsResponse)) {
+    if (callWithAuth([&] { return _proxyDevice->GetStorageConfigurations(GetStorageConfigurations, GetStorageConfigurationsResponse); })) {
         reportError();
     } else {
         auto StorageConfig = GetStorageConfigurationsResponse.StorageConfigurations[0];
@@ -2628,7 +3068,7 @@ bool OnvifControl::setupAudioBackchannel(std::string &backchannelUri, const bool
                 return false;
             }
 
-            if (_proxyMedia->SetAudioEncoderConfiguration(SetAudioEncoderConfiguration, SetAudioEncoderConfigurationResponse)) {
+            if (callWithAuth([&] { return _proxyMedia->SetAudioEncoderConfiguration(SetAudioEncoderConfiguration, SetAudioEncoderConfigurationResponse); })) {
                 reportError();
                 return false;
             }
@@ -2644,7 +3084,7 @@ bool OnvifControl::setupAudioBackchannel(std::string &backchannelUri, const bool
             return false;
         }
 
-        if (_proxyMedia->GetAudioOutputConfiguration(GetAudioOutputConfiguration, GetAudioOutputConfigurationResponse)) {
+        if (callWithAuth([&] { return _proxyMedia->GetAudioOutputConfiguration(GetAudioOutputConfiguration, GetAudioOutputConfigurationResponse); })) {
             reportError();
             return false;
         }
@@ -2661,7 +3101,7 @@ bool OnvifControl::setupAudioBackchannel(std::string &backchannelUri, const bool
             return false;
         }
 
-        if (_proxyMedia->SetAudioOutputConfiguration(SetAudioOutputConfiguration, SetAudioOutputConfigurationResponse)) {
+        if (callWithAuth([&] { return _proxyMedia->SetAudioOutputConfiguration(SetAudioOutputConfiguration, SetAudioOutputConfigurationResponse); })) {
             reportError();
             return false;
         }
@@ -2678,7 +3118,7 @@ bool OnvifControl::setupAudioBackchannel(std::string &backchannelUri, const bool
         return false;
     }
 
-    if (_proxyMedia->GetStreamUri(GetStreamUri, GetStreamUriResponse)) {
+    if (callWithAuth([&] { return _proxyMedia->GetStreamUri(GetStreamUri, GetStreamUriResponse); })) {
         reportError();
         return false;
     }

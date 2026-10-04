@@ -2,7 +2,9 @@
 #define S3PLUGINKIT_ONVIFCONTROL_H
 
 #include <atomic>
+#include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include "soapDeviceBindingProxy.h"
@@ -26,9 +28,16 @@ extern const std::string kProfileResyncIntervalSec;
 // How often (seconds) the maintenance cycle re-checks the clock of a connected camera and pushes
 // the server clock to it when they differ. <= 0 checks it on every cycle.
 extern const std::string kClockSyncIntervalSec;
+// A rejected request is reported as a clock problem (DeviceFailure::ClockSkew) instead of bad
+// credentials when the camera clock is at least this many seconds off.
+extern const std::string kClockSkewThresholdSec;
+// 0 stops the server from ever setting a camera clock (cameras kept in time by their own NTP).
+extern const std::string kClockSyncEnable;
 } // namespace OnvifCtrl
 
 namespace managerkit {
+
+struct OnvifHttpAuth;
 
 struct OnvifDeviceInfo {
     std::string manufacturer;
@@ -523,6 +532,41 @@ public:
     virtual std::string getSoapErrMsg() { return _soapErrMsg; }
 
     /**
+     * Why the last failed request failed (network, credentials, clock, other). Kept after
+     * disconnect(), so a camera that cannot connect still says why. Readable from any thread.
+     */
+    virtual DeviceFailure lastFailure() const { return static_cast<DeviceFailure>(_last_failure.load()); }
+
+    /**
+     * The camera clock as last measured after a rejected request (GetSystemDateAndTime, or the HTTP
+     * Date header when the camera refuses that). Readable from any thread.
+     */
+    DeviceClockReading clockReading() const;
+
+    /**
+     * Whether a command found the camera clock 10 s or more off since the last call; clears the
+     * flag. Commands only read the camera clock: setting it is left to the maintenance cycle.
+     */
+    virtual bool takeClockSyncWanted() { return _clock_sync_wanted.exchange(false); }
+
+    struct FailureContext {
+        int soap_error = 0;
+        std::string fault;
+        bool basic_refused = false;         // the 401 only offered HTTP Basic, which is refused
+        bool http_credentials_sent = false; // the request carried HTTP Digest/Basic credentials
+        bool clock_known = false;           // the camera clock was measured for this request
+        time_t clock_offset = 0;            // DeviceClockReading::offset_sec
+        int skew_threshold_sec = 30;        // onvif.clockSkewThresholdSec
+    };
+
+    /**
+     * Classify a gSOAP failure. A rejected WS-Security signature is ClockSkew when the camera says
+     * the message expired or its clock is skew_threshold_sec or more off, else Unauthorized.
+     */
+    static DeviceFailure classifyFailure(const FailureContext &ctx);
+    static DeviceFailure classifyFailure(int soap_error, const std::string &fault, bool basic_refused);
+
+    /**
      * Execute PTZ Goto Preset
      */
     virtual bool PTZ_GotoPreset(const std::string &presetToken, float panSpeed, float tiltSpeed, float zoomSpeed);
@@ -658,6 +702,42 @@ private:
     bool setCredentials();
 
     /**
+     * Run one authenticated gSOAP call on _m_soap, after setCredentials(). A camera whose ONVIF
+     * service only accepts HTTP Digest ignores WS-Security and answers 401 with a challenge: the
+     * challenge is learnt and the call sent once more, and every later call carries the Digest
+     * header up front. Returns the gSOAP result of the last attempt.
+     */
+    int callWithAuth(const std::function<int()> &call);
+
+    /**
+     * Whether a failed call is the camera rejecting our WS-Security signature (no HTTP credentials
+     * were involved), i.e. possibly a clock problem.
+     */
+    bool rejectedSignature(int soap_error);
+
+    /**
+     * Measure the camera clock again and, when it moved 5 s or more from the offset the failed
+     * request was signed with, sign again. Only reads the camera clock.
+     */
+    bool resignWithFreshClock();
+
+    /**
+     * Read the camera clock on its own soap context, so the failed request's error is kept for
+     * reportError(). Sets _measured_this_call and the clock reading.
+     */
+    bool measureCameraClock();
+
+    /**
+     * GetSystemDateAndTime on `soap`/`proxy`, falling back to the HTTP Date header of the answer
+     * when the camera refuses it. `request_failed` tells a refused request from a bad answer.
+     */
+    bool readCameraClock(struct soap *soap, DeviceBindingProxy *proxy, bool &request_failed);
+
+    void setCameraClock(time_t camera_time, bool is_utc, bool from_http_date);
+
+    std::string deviceServiceUrl() const { return "http://" + _strDeviceIp + "/onvif/device_service"; }
+
+    /**
      * get device information by soap protocol
      */
     bool getDeviceInformation();
@@ -781,6 +861,16 @@ private:
     std::vector<OnvifRelayOutputProfile> _relayOutputProfiles;
 
     std::string _soapErrMsg;
+    std::atomic<int> _last_failure {static_cast<int>(DeviceFailure::None)};
+    // Clock offset the current request was signed with (0 = local clock), set by setCredentials().
+    time_t _signed_offset = 0;
+    // The camera clock was measured during the current callWithAuth().
+    bool _measured_this_call = false;
+    // Last clock reading, see clockReading().
+    std::atomic<time_t> _reading_server_time {0};
+    std::atomic<time_t> _reading_offset {0};
+    std::atomic<bool> _reading_from_date {false};
+    std::atomic<bool> _clock_sync_wanted {false};
 
     struct CamTimeInfo {
         std::string TZ;
@@ -804,6 +894,8 @@ private:
     SDCardInformation _sdCardInfo;
 private:
     soap   *_m_soap = nullptr;  //Soap for onvif
+    // HTTP authentication learnt from _m_soap's 401 challenges; lives and dies with _m_soap.
+    std::unique_ptr<OnvifHttpAuth> _http_auth;
     DeviceBindingProxy  *_proxyDevice  = nullptr;    //Device API
     MediaBindingProxy   *_proxyMedia   = nullptr;    //Media API
     Media2BindingProxy   *_proxyMedia2   = nullptr;  //Media2 API

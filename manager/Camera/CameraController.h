@@ -27,6 +27,11 @@ public:
     
     void PTZMove(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
 
+    // Reads the camera clock last measured by a rejected command (for CODE_DEVICE_CLOCK_SKEW
+    // responses). Get it on _poller; the returned function may run on any thread. Null without a
+    // controller.
+    std::function<DeviceClockReading()> clockReader() const;
+
     void ImageMoveControl(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
 
     void RelayOutputControl(const std::string &strDirect, const std::string &relayToken, const std::function<void(const toolkit::SockException &ex)> &cb);
@@ -89,6 +94,10 @@ private:
     void onManager();
 
     void onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps);
+
+    // Error for a command that needs the ONVIF controller while it is not connected: says why the
+    // last connect failed (credentials, network) when known, else CODE_DEVICE_OFFLINE.
+    toolkit::SockException controllerNotReady() const;
 
     // Media profile sync after (re)connect, in three steps so _profileConfigMap is only touched on
     // _poller: read the camera profiles (device queue) → decide per profile (_poller) → send the
@@ -162,6 +171,7 @@ private:
     bool _reversePanAxis = false;
     bool _reverseTiltAxis = false;
     bool _enablePTZControl = true;
+    bool _enableTimeSync = true; // CameraOption::enableTimeSync; read on _poller only
     OnvifPTZProfile::PTZPresetMap _userPresets; // user defined preset list, used for preset operation when device does not support get preset api or preset info is incomplete
     // whether to keep config of profile and stream changed from camera web page, default false, 
     // if true then when camera report controller ready with new profile and stream config, 

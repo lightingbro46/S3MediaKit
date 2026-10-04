@@ -639,6 +639,8 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     option.enableFailover = ret["enableFailover"].asBool();
     option.preferedMediaServer = ret["preferedMediaServer"].asString();
     option.enablePTZControl = ret["enablePTZControl"].asBool();
+    // Absent in statistics written before the option existed: keep its default (on).
+    option.enableTimeSync = ret.isMember("enableTimeSync") ? ret["enableTimeSync"].asBool() : true;
     option.motionPreRecordSec = ret["motionPreRecordSec"].asInt();
     option.motionPostRecordSec = ret["motionPostRecordSec"].asInt();
     option.recordSchedules = ret["recordSchedules"].asString();
@@ -770,6 +772,7 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     root["enableFailover"] = stats.option.enableFailover;
     root["preferedMediaServer"] = stats.option.preferedMediaServer;
     root["enablePTZControl"] = stats.option.enablePTZControl;
+    root["enableTimeSync"] = stats.option.enableTimeSync;
     root["motionPreRecordSec"] = stats.option.motionPreRecordSec;
     root["motionPostRecordSec"] = stats.option.motionPostRecordSec;
     root["recordSchedules"] = stats.option.recordSchedules;
@@ -1382,6 +1385,7 @@ struct ResourceAdapter<CameraStatistic> {
         kvs.push_back(make("ptzSpeed",                   std::to_string(opt.ptzSpeed)));
         kvs.push_back(make("onvifMainProfile",           opt.onvifMainProfile));
         kvs.push_back(make("onvifSubProfile",            opt.onvifSubProfile));
+        kvs.push_back(make("enableTimeSync",             std::to_string(opt.enableTimeSync)));
 
         // ── motion ────────────────────────────────────────────────────────
         kvs.push_back(make("enableMotion",               std::to_string(opt.enableMotion)));
@@ -1493,6 +1497,8 @@ struct ResourceAdapter<CameraStatistic> {
                     stats.option.preferedMediaServer = kv.value;
                 } else if (kv.name == "enablePTZControl") {
                     stats.option.enablePTZControl = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "enableTimeSync") {
+                    stats.option.enableTimeSync = static_cast<bool>(std::stoi(kv.value));
                 } else if (kv.name == "reversePanAxis") {
                     stats.option.reversePanAxis = static_cast<bool>(std::stoi(kv.value));
                 } else if (kv.name == "reverseTiltAxis") {

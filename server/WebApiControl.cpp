@@ -33,6 +33,28 @@ static ServiceController<SubnetScan> s_subnet_scan;
 using DeviceCommandCb = std::function<void(const toolkit::SockException &ex)>;
 using DeviceCommand = std::function<void(const std::shared_ptr<GenericRtspCameraImp> &impl, const DeviceCommandCb &cb)>;
 
+static string isoUtc(time_t t) {
+    struct tm tm_val;
+    gmtime_r(&t, &tm_val);
+    char buf[32];
+    strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_val);
+    return buf;
+}
+
+// `data` of a CODE_DEVICE_CLOCK_SKEW response: the camera clock against the server's, measured when
+// the command was rejected. Null when it could not be measured.
+static Json::Value makeClockSkewJson(const DeviceClockReading &reading) {
+    Json::Value data;
+    if (!reading.valid()) {
+        return data;
+    }
+    data["serverTime"] = isoUtc(reading.server_time);
+    data["cameraTime"] = isoUtc(reading.server_time + reading.offset_sec);
+    data["clockOffsetSec"] = static_cast<Json::Int64>(reading.offset_sec);
+    data["source"] = reading.from_http_date ? "HttpDate" : "GetSystemDateAndTime";
+    return data;
+}
+
 static void runDeviceCommand(const EventPoller::Ptr &owner, const std::weak_ptr<SocketHelper> &session,
                              HttpSession::KeyValue headerOut, Json::Value val,
                              const HttpSession::HttpResponseInvoker &invoker, const string &device_id,
@@ -42,8 +64,11 @@ static void runDeviceCommand(const EventPoller::Ptr &owner, const std::weak_ptr<
             // Answers the request once, on the request poller, whatever thread gets here.
             // `mutable` all the way down: a copy captured from a const lambda body is itself const,
             // and RETURN_API_RESPONSE writes into `val`.
-            DeviceCommandCb respond = [reply, headerOut, val, invoker](const SockException &ex) mutable {
-                reply([headerOut, val, invoker, ex]() mutable {
+            auto respond_with = [reply, headerOut, val, invoker](const SockException &ex, const Json::Value &data) mutable {
+                reply([headerOut, val, invoker, ex, data]() mutable {
+                    if (!data.isNull()) {
+                        val["data"] = data;
+                    }
                     if (ex) {
                         RETURN_API_RESPONSE(ex.getCustomCode(), ex.what());
                         return;
@@ -51,6 +76,9 @@ static void runDeviceCommand(const EventPoller::Ptr &owner, const std::weak_ptr<
                     val["msg"] = ex.what();
                     invoker(200, headerOut, val.toStyledString());
                 });
+            };
+            DeviceCommandCb respond = [respond_with](const SockException &ex) mutable {
+                respond_with(ex, Json::Value());
             };
 
             auto ret = findDeviceSource(device_id);
@@ -63,7 +91,7 @@ static void runDeviceCommand(const EventPoller::Ptr &owner, const std::weak_ptr<
                 return;
             }
             // The camera methods assert they run on the device's owner poller.
-            ret->getOwnerPoller()->async([ret, command, respond]() {
+            ret->getOwnerPoller()->async([ret, command, respond, respond_with]() mutable {
                 auto strong_listener = ret->getListener().lock();
                 if (!strong_listener) {
                     /* Unreachable */
@@ -75,7 +103,16 @@ static void runDeviceCommand(const EventPoller::Ptr &owner, const std::weak_ptr<
                     respond(SockException(Err_other, "Device is not a camera", ApiErrCode::CODE_DEVICE_NOT_FOUND));
                     return;
                 }
-                command(impl, respond);
+                // A clock rejection says how far off the camera is, so the UI can show it. The reader
+                // is taken here, on the owner poller, and only reads atomics later.
+                auto clock_reader = impl->clockReader();
+                command(impl, [respond_with, clock_reader](const SockException &ex) mutable {
+                    Json::Value data;
+                    if (ex.getCustomCode() == ApiErrCode::CODE_DEVICE_CLOCK_SKEW && clock_reader) {
+                        data = makeClockSkewJson(clock_reader());
+                    }
+                    respond_with(ex, data);
+                });
             });
         }, apiWorkLimit("device.control"));
 }

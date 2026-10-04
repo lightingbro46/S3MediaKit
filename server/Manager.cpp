@@ -710,6 +710,7 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
             };
             option.onvifMainProfile = parseOnvifProfile(onvif["mainStream"]);
             option.onvifSubProfile = parseOnvifProfile(onvif["subStream"]);
+            GET_OPTION_PROPERTY(option, enableTimeSync, onvif, enableTimeSync)
         }
 
         if (adv.isMember("mediaStreaming") && !adv["mediaStreaming"].isNull()) {
@@ -1833,6 +1834,7 @@ Json::Value makeCameraOptionJson(const CameraOption &option) {
     val["ptzSpeed"]            = option.ptzSpeed;
     val["onvifMainProfile"]    = option.onvifMainProfile;
     val["onvifSubProfile"]     = option.onvifSubProfile;
+    val["enableTimeSync"]      = option.enableTimeSync;
 
     // Motion detection
     val["enableMotion"]         = option.enableMotion;

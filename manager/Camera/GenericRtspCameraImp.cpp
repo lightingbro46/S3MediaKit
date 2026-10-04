@@ -177,6 +177,11 @@ void GenericRtspCameraImp::PTZMove(const std::string &strDirect, int speed, cons
     _controller->PTZMove(strDirect, speed, cb);
 }
 
+std::function<DeviceClockReading()> GenericRtspCameraImp::clockReader() {
+    CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call clockReader in it's owner poller");
+    return _controller ? _controller->clockReader() : nullptr;
+}
+
 CameraStatisticImp::Ptr GenericRtspCameraImp::getCameraStatisticImp() {
     auto strong_statistic = _statistic.lock();
     if (!strong_statistic) {
