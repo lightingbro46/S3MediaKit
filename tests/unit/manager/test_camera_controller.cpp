@@ -1283,6 +1283,13 @@ public:
     ConnectError result(ControlProtocol protocol) const {
         return static_cast<ConnectError>(_results[static_cast<int>(protocol)].load());
     }
+    // lastFailure() of every fake of `protocol` (DeviceFailure::None unless a test sets it).
+    void setFailure(ControlProtocol protocol, DeviceFailure failure) {
+        _failures[static_cast<int>(protocol)] = static_cast<int>(failure);
+    }
+    DeviceFailure failure(ControlProtocol protocol) const {
+        return static_cast<DeviceFailure>(_failures[static_cast<int>(protocol)].load());
+    }
 
     std::atomic<int> live{0};
     // probeConnection() of a connected fake succeeds; off, every cycle runs a full connect().
@@ -1296,6 +1303,7 @@ private:
                                     {static_cast<int>(ConnectError::NONE)},
                                     {static_cast<int>(ConnectError::NONE)},
                                     {static_cast<int>(ConnectError::NOT_THIS_PROTOCOL)}};
+    std::atomic<int> _failures[4] = {{0}, {0}, {0}, {0}};
 };
 
 class FakeProtocolControl : public DeviceControl {
@@ -1326,7 +1334,8 @@ public:
     }
     bool isConnected() const override { return _connected; }
     bool isControlled() const override { return false; }
-    void setCameraTimeManual() override {}
+    DeviceFailure lastFailure() const override { return _world->failure(_protocol); }
+    void setCameraTimeManual() override { _world->log(std::string("settime ") + controlProtocolToString(_protocol)); }
     OnvifDeviceInfo getDeviceInfo() override { return OnvifDeviceInfo(); }
     OnvifMediaProfileMap getMediaProfilesInfo() override { return OnvifMediaProfileMap(); }
     bool refreshMediaProfiles() override { return true; }
@@ -1873,6 +1882,7 @@ public:
         return c._device_ctr ? c._device_ctr->protocol() : ControlProtocol::NONE;
     }
     static bool authRejected(SpeakerController &c) { return c._pacer.authFailed(); }
+    static int notReadyCode(SpeakerController &c) { return c.notReadyError().getCustomCode(); }
 };
 } // namespace managerkit
 
@@ -2040,6 +2050,37 @@ TEST_F(SpeakerProtocolTest, BoschSpeakerIsAlwaysOnvif) {
     cycle();
     EXPECT_FALSE(contains(_world->events(), "create ISAPI"));
     EXPECT_EQ(1, _world->count("connect ONVIF live=1"));
+}
+
+// A command sent while the speaker is not ready says why the last attempt failed.
+TEST_F(SpeakerProtocolTest, NotReadyErrorSaysWhyTheProbeFailed) {
+    auto speaker = _speaker;
+    int code = 0;
+    setup("");
+    _poller->sync([&]() { code = SpeakerControllerTestPeer::notReadyCode(*speaker); });
+    EXPECT_EQ(ApiErrCode::CODE_DEVICE_OFFLINE, code) << "nothing tried yet";
+
+    // ONVIF rejects the account, ISAPI and PSIA are not spoken: the ONVIF verdict is reported.
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    _world->setFailure(ControlProtocol::ONVIF, DeviceFailure::Unauthorized);
+    _world->setResult(ControlProtocol::PSIA, ConnectError::NOT_THIS_PROTOCOL);
+    cycle();
+    EXPECT_FALSE(_speaker->isReady());
+    EXPECT_EQ(ControlProtocol::NONE, current());
+    _poller->sync([&]() { code = SpeakerControllerTestPeer::notReadyCode(*speaker); });
+    EXPECT_EQ(ApiErrCode::CODE_DEVICE_UNAUTHORIZED, code);
+}
+
+TEST_F(SpeakerProtocolTest, NotReadyErrorSaysWhyTheLockedProtocolFailed) {
+    auto speaker = _speaker;
+    int code = 0;
+    setup("ONVIF");
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::UNREACHABLE);
+    _world->setFailure(ControlProtocol::ONVIF, DeviceFailure::Unreachable);
+    cycle();
+    EXPECT_FALSE(_speaker->isReady());
+    _poller->sync([&]() { code = SpeakerControllerTestPeer::notReadyCode(*speaker); });
+    EXPECT_EQ(ApiErrCode::CODE_DEVICE_UNREACHABLE, code);
 }
 
 // ── Camera clock: only ever set by the maintenance cycle ──────────────────────

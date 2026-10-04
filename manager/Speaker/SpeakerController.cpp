@@ -4,6 +4,7 @@
 #include "ext-plugin/Bosch/BoschIpSpeaker.h"
 #include "Backchannel/BackchannelManager.h"
 #include "Common/StrUtil.h"
+#include "Common/DeviceFailureCode.h"
 
 using namespace std;
 using namespace toolkit;
@@ -89,6 +90,11 @@ void SpeakerController::setListener(const std::shared_ptr<DeviceSourceEvent> &li
 
 bool SpeakerController::isReady() const {
     return _ready.load(); 
+}
+
+SockException SpeakerController::notReadyError() const {
+    CHECK(_poller->isCurrentThread(), "notReadyError must be called on the owner poller");
+    return deviceNotReadyError(_device_ctr ? _device_ctr->lastFailure() : _probe_failure);
 }
 
 DeviceControl::Ptr SpeakerController::createDeviceControl(ControlProtocol protocol, const std::string &address,
@@ -333,14 +339,15 @@ void SpeakerController::startProtocolProbe() {
         DeviceControl::Ptr winner = result.winner;
         const std::string err_msg = result.err_msg;
         const ConnectError err = result.err;
+        const DeviceFailure failure = result.failure;
         if (winner && self->_ctrl_generation.load() != ctx.generation) {
             winner.reset(); // the option changed meanwhile
         }
         const uint64_t generation = ctx.generation;
         std::weak_ptr<SpeakerController> weak = self;
-        self->_poller->async([weak, winner, generation, err_msg, err]() {
+        self->_poller->async([weak, winner, generation, err_msg, err, failure]() {
             if (auto strong = weak.lock()) {
-                strong->onProbeDone(winner, generation, err_msg, err);
+                strong->onProbeDone(winner, generation, err_msg, err, failure);
             }
         }, false);
         if (winner) {
@@ -352,10 +359,11 @@ void SpeakerController::startProtocolProbe() {
 }
 
 void SpeakerController::onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
-                                    ConnectError err) {
+                                    ConnectError err, DeviceFailure failure) {
     if (generation != _ctrl_generation.load()) {
         return;
     }
+    _probe_failure = failure;
     _probing = false;
     ReconnectResult result;
     result.finished = true;

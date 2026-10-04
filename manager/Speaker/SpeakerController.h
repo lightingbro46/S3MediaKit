@@ -31,6 +31,10 @@ public:
 
     bool isReady() const;
 
+    // Owner poller. Error for a command while the speaker is not ready: why the last connect or probe
+    // failed (credentials, network, clock) when known, else CODE_DEVICE_OFFLINE.
+    toolkit::SockException notReadyError() const;
+
     void setupController(const SpeakerOption &option);
 
     // Protocol the speaker was controlled with before ("ONVIF", "PSIA", "ISAPI", "" = unknown), from the
@@ -87,7 +91,7 @@ private:
     // ── Control protocol selection (on _poller unless noted), as CameraController ──
     void startProtocolProbe();
     void onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
-                     ConnectError err);
+                     ConnectError err, DeviceFailure failure);
     void onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err);
     void onAuthResult(ConnectError err);
     void unlockProtocol(const std::string &reason);
@@ -136,6 +140,8 @@ private:
     // Fixed protocol of the option (ONVIF for vendors whose plugin needs it), or the one AUTO locked to.
     ProtocolLock _lock;
     bool _probing = false;
+    // lastFailure() of the controller the last failed AUTO probe reported; read when there is no controller.
+    DeviceFailure _probe_failure = DeviceFailure::None;
     // Bumped whenever the controller is replaced, so a probe or connect started for an older one is dropped.
     std::atomic<uint64_t> _ctrl_generation { 0 };
     // Vendor plugin (audio files, volume, ONVIF account), for brands that have one.

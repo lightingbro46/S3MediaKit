@@ -96,6 +96,10 @@ void GenericIPSpeakerImp::playAudioFile(const std::string& speakerId, const std:
         cb(SockException(Err_other, "Speaker controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
         return;
     }
+    if (!_controller->isReady()) {
+        cb(_controller->notReadyError());
+        return;
+    }
 
     auto strong_statistic = _statistic.lock();
     if (!strong_statistic) {
@@ -175,6 +179,10 @@ void GenericIPSpeakerImp::setAudioVolume(int volume, const std::function<void(co
     if (!_controller) {
         WarnL << "Speaker " << _src->getUrl() << " controller is not ready. Ignoring set audio volume request";
         cb(SockException(Err_other, "Speaker controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
+        return;
+    }
+    if (!_controller->isReady()) {
+        cb(_controller->notReadyError());
         return;
     }
 

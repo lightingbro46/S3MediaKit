@@ -1,6 +1,7 @@
 #include "CameraController.h"
 #include "Common/BlockingExecutors.h"
 #include "server/WebApiErrCode.h"
+#include "Common/DeviceFailureCode.h"
 #include "Local/MediaGapFillManager.h"
 #include "Util/onceToken.h"
 #include "Util/util.h"
@@ -16,21 +17,8 @@ namespace managerkit {
 // Posts a device task after a delay; `on_cancel` runs instead if the task no longer applies.
 using DelayedDeviceTask = function<void(int delay_ms, const function<void()> &task, const function<void()> &on_cancel)>;
 
-// A device command that failed because of the network or the credentials reports that, so the UI
-// can tell the user what to fix; any other failure keeps the command's own code.
-static ApiErrCode failureCode(DeviceFailure failure, ApiErrCode fallback) {
-    switch (failure) {
-        case DeviceFailure::Unauthorized: return ApiErrCode::CODE_DEVICE_UNAUTHORIZED;
-        case DeviceFailure::AuthMethodUnsupported: return ApiErrCode::CODE_DEVICE_AUTH_METHOD_NOT_ALLOWED;
-        case DeviceFailure::Unreachable: return ApiErrCode::CODE_DEVICE_UNREACHABLE;
-        case DeviceFailure::Timeout: return ApiErrCode::CODE_DEVICE_TIMEOUT;
-        case DeviceFailure::ClockSkew: return ApiErrCode::CODE_DEVICE_CLOCK_SKEW;
-        default: return fallback;
-    }
-}
-
 static ApiErrCode failureCode(const DeviceControl::Ptr &ptr, ApiErrCode fallback) {
-    return failureCode(ptr->lastFailure(), fallback);
+    return deviceFailureCode(ptr->lastFailure(), fallback);
 }
 
 std::function<DeviceClockReading()> CameraController::clockReader() const {
@@ -43,21 +31,7 @@ std::function<DeviceClockReading()> CameraController::clockReader() const {
 }
 
 SockException CameraController::controllerNotReady() const {
-    const auto failure = _device_ctr ? _device_ctr->lastFailure() : _probe_failure;
-    const char *reason = nullptr;
-    switch (failure) {
-        case DeviceFailure::Unauthorized: reason = "device rejected the username or password"; break;
-        case DeviceFailure::AuthMethodUnsupported: reason = "device only offers HTTP Basic authentication"; break;
-        case DeviceFailure::Unreachable: reason = "device unreachable"; break;
-        case DeviceFailure::Timeout: reason = "device did not respond"; break;
-        case DeviceFailure::ClockSkew: reason = "device clock is out of sync with the server"; break;
-        default: break;
-    }
-    string msg = "Device controller is not ready";
-    if (reason) {
-        msg += string(": ") + reason;
-    }
-    return SockException(Err_other, msg, failureCode(failure, ApiErrCode::CODE_DEVICE_OFFLINE));
+    return deviceNotReadyError(_device_ctr ? _device_ctr->lastFailure() : _probe_failure);
 }
 
 CameraController::CameraController(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller)
