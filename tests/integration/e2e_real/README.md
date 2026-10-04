@@ -74,6 +74,13 @@ Tham số `camera` (giá trị không truyền được giữ nguyên từ lần
 `--disable-audio 0|1`, `--motion 0|1`, `--rtp-transport TCP|UDP|AUTO`,
 `--keep-max-hours N`, `--keep-min-hours N`, `--present 0|1` (gỡ camera khỏi cấu hình).
 
+Loa IP (tuỳ chọn, chỉ khi đặt `E2E_SPEAKER_IP`): thêm loa `e2e-speaker` vào `speakers` của `api-config.json`
+với `E2E_SPEAKER_HTTP_PORT` (80), `E2E_SPEAKER_USER`, `E2E_SPEAKER_PASS`, `E2E_SPEAKER_PROTOCOL` (`AUTO`),
+`E2E_SPEAKER_TIME_SYNC` (`1`, `speakerAdvanceConfig.onvif.enableTimeSync`), `E2E_SPEAKER_MANUFACTURER` (`Generic`).
+Các biến được đọc lại mỗi lần ghi cấu hình: đổi biến rồi chạy `camera` để nạp lại. Chỉ cần loa thì
+`camera --present 0`, URL RTSP có thể là giá trị giả. Ví dụ mock: `onvif_mock.py --wsse-check --clock-offset-sec 900`
+(loa ONVIF lệch giờ), `psia_mock.py --dialect isapi --onvif-401` (loa ISAPI), MediaServer chạy với `TZ=UTC`.
+
 `kill9` dùng cho REC-13 (`$H $W kill9 && $H $W start`).
 
 ## Kết quả

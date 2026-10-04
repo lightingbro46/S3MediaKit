@@ -185,6 +185,30 @@ def camera_entry(env, state):
     return entry
 
 
+SPEAKER_ID = "e2e-speaker"
+
+
+def speaker_entry():
+    # Loa IP điều khiển qua ONVIF/ISAPI/PSIA (mock hoặc thiết bị thật), chỉ khi đặt E2E_SPEAKER_IP.
+    # Đọc lại mỗi lần ghi cấu hình: đổi biến rồi chạy `camera` để nạp lại.
+    return {
+        "id": SPEAKER_ID,
+        "name": "E2E speaker",
+        "ip": os.environ["E2E_SPEAKER_IP"],
+        "httpPort": int(os.environ.get("E2E_SPEAKER_HTTP_PORT", "80")),
+        "manufacturer": os.environ.get("E2E_SPEAKER_MANUFACTURER", "Generic"),
+        "model": "IP speaker",
+        "username": os.environ.get("E2E_SPEAKER_USER", ""),
+        "password": os.environ.get("E2E_SPEAKER_PASS", ""),
+        "enabled": True,
+        "priMediaServerId": NODE_ID,
+        "speakerAdvanceConfig": {
+            "control": {"protocol": os.environ.get("E2E_SPEAKER_PROTOCOL", "AUTO")},
+            "onvif": {"enableTimeSync": os.environ.get("E2E_SPEAKER_TIME_SYNC", "1") == "1"},
+        },
+    }
+
+
 def api_config(work, env, state):
     p = json.load(open(os.path.join(work, "inventory.json")))["ports"]
     server = server_entry(NODE_ID, {"http": p["http"], "rtsp": p["rtsp"], "rtmp": p["rtmp"]})
@@ -197,6 +221,7 @@ def api_config(work, env, state):
         "list_media_server": [server],
         "watermark_configs": [watermark_template()],
         "devices": [camera_entry(env, state)] if state["present"] else [],
+        "speakers": [speaker_entry()] if os.environ.get("E2E_SPEAKER_IP") else [],
     }
 
 

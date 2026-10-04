@@ -142,4 +142,39 @@ User chấp nhận cả ba đề xuất ngày 2026-10-04: Q1 (a), Q2 không đ�
 
 ## 6. Kết quả
 
-(ghi theo từng bước khi làm)
+Trước SP1 có commit đổi tên `CameraDeviceControl` → `DeviceControl` (f56815fe), chỉ đổi tên.
+
+| Bước | Commit | Ghi chú |
+|---|---|---|
+| SP1 | dafe5346 | `manager/Common/DeviceFailureCode.h` dùng chung cho camera và loa; `SpeakerController::notReadyError()` |
+| SP2 | e07210d4 | Đổi `enableTimeSync` tạo lại controller loa: loa không có nhánh cập nhật tại chỗ như camera |
+| SP3 | e7f59caa | `ReconnectResult` thêm `failure`, `clock`; `/device/reconnect` thêm `data.code`, `data.clock` |
+| SP4 | f4f58db9 | `IDevice::lastFailure()`; `BoschIpSpeaker::classifyFailure`; `SpeakerController::lastVendorFailure()` |
+| SP5 | 2a4ca7dc | Docs + chú thích `onvif.clockSyncEnable` |
+
+Unit test: `unit_camera_controller` 83 case (SpeakerProtocolTest thêm 10 case, BoschFailureTest 1 case), ctest unit
+227/227.
+
+**Chạy thật trên mock (2026-10-04)**: harness `e2e_real` thêm loa qua `E2E_SPEAKER_*` (README), MediaServer Debug
+chạy với `TZ=UTC`, không có camera.
+
+| Kịch bản | Kết quả |
+|---|---|
+| A1: loa ONVIF lệch 900 s, mật khẩu đúng, `enableTimeSync=0` | Kết nối được, vì server đo giờ thiết bị rồi ký theo độ lệch. Mock không nhận `SetSystemDateAndTime` nào |
+| A2: như A1 nhưng mật khẩu sai | `setAudioVolume` → 403 `905008`, `data.clockOffsetSec=900`. `/device/reconnect` → `data.code=905008`, `data.clock`, `error=OTHER` (không giãn 300 s). Không có lệnh đặt giờ |
+| B1: mật khẩu sai, `enableTimeSync=1` | Có gửi `SetSystemDateAndTime`, mock từ chối vì sai mật khẩu (`Set camera time failed`), API vẫn `905008`. Camera hành xử y hệt |
+| B2: mật khẩu đúng, `enableTimeSync=1` | Kết nối được; lệnh đặt giờ thành công (log `clock set, it was 900 s off`); giờ mock khớp UTC thật |
+| C1: loa ISAPI (`psia_mock --dialect isapi --onvif-401`), mật khẩu sai, AUTO | `setAudioVolume` → `905004`; `/device/reconnect` → `data.code=905004`, `error=AUTH_FAILED` |
+| C2: như C1, mật khẩu đúng | Khoá ISAPI, `connected=true`; đọc `GET /ISAPI/System/time`, không ghi vì giờ không lệch |
+
+Lỗi tìm thấy khi chạy thật và đã sửa: `/device/reconnect` với loa trả `905001 Device not found`. Lỗi có từ khi thêm
+API (118ec328): `findDeviceSource()` không truyền schema thì chỉ tìm camera. API giờ tìm thêm schema loa.
+
+Quan sát, chưa sửa:
+- Sai mật khẩu và lệch giờ cùng lúc (`ClockSkew`): mỗi chu kỳ 60 s server thử đặt giờ, tức là thêm một lần đăng nhập
+  sai. Camera trên develop cũng vậy. Thiết bị khoá IP sau vài lần sai (Hikvision) có thể bị khoá nhanh hơn so với
+  `AUTH_FAILED` (300 s).
+- Loa Bosch: tài khoản ONVIF do plugin tạo thuộc nhóm `ONVIF_OPERATOR`, có thể không được phép đặt giờ. Cần thiết
+  bị thật để kiểm tra.
+
+Còn lại: loa Bosch thật (đặt giờ, lỗi API hãng 401), loa Hikvision ISAPI thật.

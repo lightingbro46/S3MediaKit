@@ -716,7 +716,11 @@ void registerControlApis() {
                     });
                 };
 
+                // Without a schema findDeviceSource() only looks up cameras.
                 auto ret = findDeviceSource(deviceId);
+                if (!ret) {
+                    ret = findDeviceSource(deviceId, GENERIC_IP_SPEAKER_SCHEMA);
+                }
                 if (!ret) {
                     fail(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Device not found");
                     return;
