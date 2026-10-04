@@ -37,6 +37,11 @@ public:
     
     void PTZMove(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
 
+    // Reads the camera clock last measured by a rejected command (for CODE_DEVICE_CLOCK_SKEW
+    // responses). Get it on _poller; the returned function may run on any thread. Null without a
+    // controller.
+    std::function<DeviceClockReading()> clockReader() const;
+
     void ImageMoveControl(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
 
     void RelayOutputControl(const std::string &strDirect, const std::string &relayToken, const std::function<void(const toolkit::SockException &ex)> &cb);
@@ -106,7 +111,7 @@ private:
     // at most one controller alive, and hands the first that connects to onProbeDone.
     void startProtocolProbe();
     void onProbeDone(const CameraDeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
-                     ConnectError err);
+                     ConnectError err, DeviceFailure failure);
     // Result of a connect() of the current controller: locks the protocol, or counts the failures that
     // say the camera no longer speaks it (AUTO only).
     void onConnectResult(const CameraDeviceControl::Ptr &device_ctr, ConnectError err);
@@ -122,7 +127,11 @@ private:
     // Device queue: hands `result` to finishReconnect() on _poller.
     void postReconnectResult(const ReconnectResult &result);
     // Device queue: the work after a successful connect() — clock, profile sync, capabilities, events.
-    void publishConnected(const CameraDeviceControl::Ptr &device_ctr);
+    // `sync_clock`: set the camera clock first (onvif.clockSyncEnable and the camera's enableTimeSync).
+    void publishConnected(const CameraDeviceControl::Ptr &device_ctr, bool sync_clock);
+    // Error for a command that needs the controller while it is not connected: says why the
+    // last connect failed (credentials, network) when known, else CODE_DEVICE_OFFLINE.
+    toolkit::SockException controllerNotReady() const;
 
     // Media profile sync after (re)connect, in three steps so _profileConfigMap is only touched on
     // _poller: read the camera profiles (device queue) → decide per profile (_poller) → send the
@@ -196,6 +205,8 @@ private:
     // Fixed protocol of the option, or the one AUTO locked to (restored by setLastControlProtocol).
     ProtocolLock _lock;
     bool _probing = false;
+    // lastFailure() of the controller the last failed AUTO probe reported; read when there is no controller.
+    DeviceFailure _probe_failure = DeviceFailure::None;
     // Bumped whenever the controller is replaced, so a probe started for an older one is dropped.
     std::atomic<uint64_t> _ctrl_generation { 0 };
     std::string _address;
@@ -206,6 +217,7 @@ private:
     bool _reversePanAxis = false;
     bool _reverseTiltAxis = false;
     bool _enablePTZControl = true;
+    bool _enableTimeSync = true; // CameraOption::enableTimeSync; read on _poller only
     OnvifPTZProfile::PTZPresetMap _userPresets; // user defined preset list, used for preset operation when device does not support get preset api or preset info is incomplete
     // whether to keep config of profile and stream changed from camera web page, default false, 
     // if true then when camera report controller ready with new profile and stream config, 

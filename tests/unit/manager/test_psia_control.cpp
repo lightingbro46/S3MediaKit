@@ -307,6 +307,16 @@ TEST(PsiaConnectErrorTest, OnlyAClearNonPsiaAnswerIsNotThisProtocol) {
     EXPECT_EQ(ConnectError::NONE, classifyConnectError(200, 0, true));
 }
 
+// The API error codes (905004/905005/905006) of a failed PSIA/ISAPI request.
+TEST(PsiaConnectErrorTest, RequestFailureForTheApi) {
+    EXPECT_EQ(DeviceFailure::Unauthorized, classifyFailure(401, 0));
+    EXPECT_EQ(DeviceFailure::Unauthorized, classifyFailure(403, 0));
+    EXPECT_EQ(DeviceFailure::Unreachable, classifyFailure(0, 28 /* SOAP_TCP_ERROR */));
+    EXPECT_EQ(DeviceFailure::Timeout, classifyFailure(0, -1 /* SOAP_EOF */));
+    EXPECT_EQ(DeviceFailure::Other, classifyFailure(500, 0));
+    EXPECT_EQ(DeviceFailure::None, classifyFailure(200, 0));
+}
+
 // Hikvision ISAPI documents: Hikvision namespace, no manufacturer, no rtspPortNo in the channels.
 TEST(IsapiParseTest, HikvisionDocuments) {
     const std::string info =

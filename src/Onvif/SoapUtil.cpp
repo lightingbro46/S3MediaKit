@@ -1,17 +1,28 @@
-﻿#include <iomanip>
+﻿#include <algorithm>
+#include <iomanip>
 #include <random>
 #include "SoapUtil.h"
 #include "Util/util.h"
+#include "Util/MD5.h"
 #include "Util/SHA1.h"
 #include "Util/logger.h"
 #include "Util/base64.h"
 #include "Util/onceToken.h"
 #include "Http/HttpRequester.h"
 #include "Rtsp/Rtsp.h"
+#include "Common/config.h"
 
 using namespace std;
 using namespace toolkit;
 using namespace mediakit;
+
+namespace OnvifAuth {
+const string kAllowHttpBasicAuth = "onvif.allowHttpBasicAuth";
+
+static onceToken token([]() {
+    mINI::Instance()[kAllowHttpBasicAuth] = 0;
+});
+} // namespace OnvifAuth
 
 static pugi::xml_node find_node(const pugi::xml_node &parent, const std::string &end_str) {
     auto ret = parent.find_child([&](const pugi::xml_node &node) {
@@ -226,17 +237,140 @@ std::ostream& operator<<(std::ostream& sout, const SoapErr &err) {
     return sout;
 }
 
-void SoapUtil::sendSoapRequest(const string &url, const string &SOAPAction, const string &body, const SoapRequestCB &func,
-                               float timeout_sec) {
+// Parameters of one challenge, e.g. `realm="x", nonce="y", qop="auth,auth-int"`. Keys lower case.
+static map<string, string> parseAuthParams(const string &str) {
+    map<string, string> ret;
+    size_t pos = 0;
+    while (pos < str.size()) {
+        while (pos < str.size() && (str[pos] == ' ' || str[pos] == ',' || str[pos] == '\t')) {
+            ++pos;
+        }
+        auto eq = str.find('=', pos);
+        if (eq == string::npos) {
+            break;
+        }
+        auto key = trim(str.substr(pos, eq - pos));
+        transform(key.begin(), key.end(), key.begin(), ::tolower);
+        pos = eq + 1;
+        while (pos < str.size() && str[pos] == ' ') {
+            ++pos;
+        }
+        string val;
+        if (pos < str.size() && str[pos] == '"') {
+            auto end = str.find('"', ++pos);
+            if (end == string::npos) {
+                end = str.size();
+            }
+            val = str.substr(pos, end - pos);
+            pos = end + 1;
+        } else {
+            auto end = str.find(',', pos);
+            if (end == string::npos) {
+                end = str.size();
+            }
+            val = trim(str.substr(pos, end - pos));
+            pos = end;
+        }
+        ret[key] = val;
+    }
+    return ret;
+}
+
+static bool hasToken(const string &list, const char *token) {
+    for (auto &item : split(list, ",")) {
+        if (strcasecmp(trim(item).data(), token) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static string makeDigestAuthorization(const string &params_str, const string &method, const string &uri,
+                                      const string &user_name, const string &pwd, const string &cnonce) {
+    auto params = parseAuthParams(params_str);
+    auto &realm = params["realm"];
+    auto &nonce = params["nonce"];
+    auto &alg = params["algorithm"];
+    if (nonce.empty()) {
+        return "";
+    }
+    bool sess = strcasecmp(alg.data(), "MD5-sess") == 0;
+    if (!alg.empty() && strcasecmp(alg.data(), "MD5") != 0 && !sess) {
+        return "";
+    }
+    string qop;
+    if (hasToken(params["qop"], "auth")) {
+        qop = "auth";
+    } else if (!params["qop"].empty()) {
+        // auth-int only
+        return "";
+    }
+    static constexpr char nc[] = "00000001";
+    auto ha1 = MD5(user_name + ":" + realm + ":" + pwd).hexdigest();
+    if (sess) {
+        ha1 = MD5(ha1 + ":" + nonce + ":" + cnonce).hexdigest();
+    }
+    auto ha2 = MD5(method + ":" + uri).hexdigest();
+    auto response = qop.empty() ? MD5(ha1 + ":" + nonce + ":" + ha2).hexdigest()
+                                : MD5(ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":" + qop + ":" + ha2).hexdigest();
+    _StrPrinter printer;
+    printer << "Digest username=\"" << user_name << "\", realm=\"" << realm << "\", nonce=\"" << nonce
+            << "\", uri=\"" << uri << "\", response=\"" << response << "\"";
+    if (!alg.empty()) {
+        printer << ", algorithm=" << alg;
+    }
+    if (!qop.empty()) {
+        printer << ", qop=" << qop << ", nc=" << nc << ", cnonce=\"" << cnonce << "\"";
+    }
+    if (params.count("opaque")) {
+        printer << ", opaque=\"" << params["opaque"] << "\"";
+    }
+    return printer;
+}
+
+string SoapUtil::makeHttpAuthorization(const vector<string> &challenges, const string &method, const string &uri,
+                                       const string &user_name, const string &pwd, const string &cnonce,
+                                       bool allow_basic) {
+    bool basic = false;
+    for (auto &challenge : challenges) {
+        auto pos = challenge.find(' ');
+        auto scheme = challenge.substr(0, pos);
+        if (strcasecmp(scheme.data(), "Digest") == 0 && pos != string::npos) {
+            auto ret = makeDigestAuthorization(challenge.substr(pos + 1), method, uri, user_name, pwd, cnonce);
+            if (!ret.empty()) {
+                return ret;
+            }
+        } else if (strcasecmp(scheme.data(), "Basic") == 0) {
+            basic = true;
+        }
+    }
+    if (basic && allow_basic) {
+        return "Basic " + encodeBase64(user_name + ":" + pwd);
+    }
+    return "";
+}
+
+static string urlPath(const string &url) {
+    auto pos = url.find("://");
+    pos = url.find('/', pos == string::npos ? 0 : pos + 3);
+    return pos == string::npos ? "/" : url.substr(pos);
+}
+
+static void sendSoapRequest_l(const string &url, const string &SOAPAction, const string &body,
+                              const SoapUtil::SoapRequestCB &func, float timeout_sec, const string &user_name,
+                              const string &pwd, const string &authorization) {
     HttpRequester::Ptr requester(new HttpRequester);
     requester->setMethod("POST");
     requester->setBody(body);
     requester->addHeader("Content-Type", "text/xml; charset=utf-8; action=" + SOAPAction);
     requester->addHeader("Accept", "text/xml; charset=utf-8");
     requester->addHeader("SOAPAction", SOAPAction);
+    if (!authorization.empty()) {
+        requester->addHeader("Authorization", authorization);
+    }
     std::shared_ptr<Ticker> ticker(new Ticker);
-    requester->startRequester(url, [url, SOAPAction, func, requester, ticker](const SockException &ex,
-                                                                              const Parser &parser) mutable {
+    requester->startRequester(url, [url, SOAPAction, body, func, timeout_sec, user_name, pwd, authorization, requester,
+                                    ticker](const SockException &ex, const Parser &parser) mutable {
 
         onceToken token(nullptr, [&]() mutable {
             requester.reset();
@@ -253,6 +387,22 @@ void SoapUtil::sendSoapRequest(const string &url, const string &SOAPAction, cons
         if (ex) {
             invoker(SoapObject(), SoapErr(url, SOAPAction, ex, parser));
             return;
+        }
+        if (parser.status() == "401" && authorization.empty() && !user_name.empty()) {
+            vector<string> challenges;
+            auto range = parser.getHeader().equal_range("WWW-Authenticate");
+            for (auto it = range.first; it != range.second; ++it) {
+                challenges.emplace_back(it->second);
+            }
+            GET_CONFIG(bool, allow_basic, OnvifAuth::kAllowHttpBasicAuth);
+            auto auth = SoapUtil::makeHttpAuthorization(challenges, "POST", urlPath(url), user_name, pwd,
+                                                        makeRandStr(16), allow_basic);
+            if (!auth.empty()) {
+                sendSoapRequest_l(url, SOAPAction, body, func, timeout_sec, user_name, pwd, auth);
+                return;
+            }
+            WarnL << "Onvif request " << url << " got 401 with no challenge that can be answered"
+                  << (allow_basic ? "" : " (HTTP Basic is refused unless onvif.allowHttpBasicAuth=1)");
         }
         if (parser.status() != "200") {
             invoker(SoapObject(), SoapErr(url, SOAPAction, ex, parser));
@@ -283,12 +433,17 @@ void SoapUtil::sendSoapRequest(const string &url, const string &SOAPAction, cons
     }, timeout_sec);
 }
 
+void SoapUtil::sendSoapRequest(const string &url, const string &SOAPAction, const string &body, const SoapRequestCB &func,
+                               float timeout_sec, const string &user_name, const string &pwd) {
+    sendSoapRequest_l(url, SOAPAction, body, func, timeout_sec, user_name, pwd, "");
+}
+
 void SoapUtil::sendGetDeviceInformation(const std::string &device_service, const std::string &user_name,
                                         const std::string &pwd, SoapRequestCB cb) {
     static constexpr char action_url[] = R"("http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation")";
     static constexpr char str_fmt[] = R"(<GetDeviceInformation xmlns="http://www.onvif.org/ver10/device/wsdl"/>)";
     auto body = SoapUtil::createSoapRequest(str_fmt, user_name, pwd);
-    SoapUtil::sendSoapRequest(device_service, action_url, body, std::move(cb));
+    SoapUtil::sendSoapRequest(device_service, action_url, body, std::move(cb), 10, user_name, pwd);
 }
 
 void SoapUtil::sendGetProfiles(bool is_media2, const string &media_url, const string &user_name, const string &pwd,
@@ -326,7 +481,7 @@ void SoapUtil::sendGetProfiles(bool is_media2, const string &media_url, const st
     static constexpr char str_fmt2[] = R"(<GetProfiles xmlns="http://www.onvif.org/ver20/media/wsdl"><Type>All</Type></GetProfiles>)";
 
     auto body = SoapUtil::createSoapRequest(is_media2 ? str_fmt2 : str_fmt, user_name, pwd);
-    SoapUtil::sendSoapRequest(media_url, is_media2 ? action_url2 : action_url, body, invoker);
+    SoapUtil::sendSoapRequest(media_url, is_media2 ? action_url2 : action_url, body, invoker, 10, user_name, pwd);
 }
 
 void SoapUtil::sendGetServices(const std::string &device_service, const std::initializer_list<std::string> &ns_filter,
@@ -353,7 +508,7 @@ void SoapUtil::sendGetServices(const std::string &device_service, const std::ini
             }
         }
         cb(err, mp);
-    });
+    }, 10, user_name, pwd);
 }
 
 static string getRtspUrlWithAuth(const std::string &user_name, const std::string &pwd, const string &url) {
@@ -395,7 +550,7 @@ void SoapUtil::sendGetStreamUri(bool is_media2, const string &media_url, const s
             }
             auto res = node["GetStreamUriResponse/MediaUri/Uri"];
             cb(err, res.as_xml().text().as_string());
-        });
+        }, 10, user_name, pwd);
     } else {
         static constexpr char action_url[] = R"("http://www.onvif.org/ver20/media/wsdl/GetStreamUri")";
         static constexpr char str_fmt[] = R"(<GetStreamUri xmlns="http://www.onvif.org/ver20/media/wsdl">
@@ -410,7 +565,7 @@ void SoapUtil::sendGetStreamUri(bool is_media2, const string &media_url, const s
             }
             auto res = node["GetStreamUriResponse/Uri"];
             cb(err, res.as_xml().text().as_string());
-        });
+        }, 10, user_name, pwd);
     }
 }
 

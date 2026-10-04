@@ -394,6 +394,13 @@ public:
     virtual ConnectError lastConnectError() const = 0;
     // Last device error, for logs and API error messages.
     virtual std::string lastError() = 0;
+    // Why the last failed request failed (network, credentials, clock), so an API error can say what
+    // to fix. Kept after disconnect(); readable from any thread.
+    virtual DeviceFailure lastFailure() const { return DeviceFailure::None; }
+    // The device clock as last measured after a rejected request; only ONVIF measures it.
+    virtual DeviceClockReading clockReading() const { return DeviceClockReading(); }
+    // Whether a command found the device clock off since the last call; clears the flag. ONVIF only.
+    virtual bool takeClockSyncWanted() { return false; }
 
     virtual bool probeConnection() = 0;
     virtual bool isConnected() const = 0;
@@ -456,14 +463,18 @@ struct ProtocolProbeResult {
     CameraDeviceControl::Ptr winner; // connected controller, null when none answered
     std::string err_msg;             // why, when there is no winner
     ConnectError err = ConnectError::NONE; // classification of err_msg
+    DeviceFailure failure = DeviceFailure::None; // lastFailure() of the controller err_msg comes from
 };
 typedef std::function<CameraDeviceControl::Ptr(ControlProtocol)> DeviceControlFactory;
 // Blocking, for the device queue: connects the protocols of `order` in turn and returns the first
 // that connects. At most one controller is alive at a time: a loser is destroyed before the next is
 // created. Moves on only when the device said "not this protocol", or when ONVIF rejected the
 // credentials (a Hikvision camera with ONVIF off answers 401); the error reported then is ONVIF's.
+// `sync_clock_on_skew`: a protocol rejected because the device clock is far off (ONVIF WS-Security)
+// sets the device clock before moving on, so the next probe can connect.
 ProtocolProbeResult probeControlProtocols(const std::vector<ControlProtocol> &order,
-                                          const DeviceControlFactory &factory, const std::string &log_name);
+                                          const DeviceControlFactory &factory, const std::string &log_name,
+                                          bool sync_clock_on_skew = false);
 
 // Outcome of the connect attempt a /device/reconnect request waits for.
 struct ReconnectResult {

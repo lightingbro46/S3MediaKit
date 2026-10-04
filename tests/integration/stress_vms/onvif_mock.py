@@ -28,6 +28,9 @@ luồng video config rule (áp, xác nhận, rollback). --state ghi thêm cấu 
 của từng thiết bị dưới khoá "encoders".
 """
 import argparse
+import base64
+import calendar
+import hashlib
 import json
 import os
 import re
@@ -202,8 +205,19 @@ def op_GetNetworkInterfaces(dev, body, port):
         '</tds:NetworkInterfaces></tds:GetNetworkInterfacesResponse>' % (mac, dev.ip))
 
 
+# Đồng hồ riêng từng thiết bị (giây lệch so với giờ máy): --clock-offset-sec đặt giá trị đầu,
+# SetSystemDateAndTime ghi đè như camera thật.
+CLOCK = {}
+CLOCK_LOCK = threading.Lock()
+
+
+def dev_now(ip):
+    with CLOCK_LOCK:
+        return time.time() + CLOCK.get(ip, REG.args.clock_offset_sec)
+
+
 def op_GetSystemDateAndTime(dev, body, port):
-    t = time.gmtime()
+    t = time.gmtime(dev_now(dev.ip))
     return envelope(
         '<tds:GetSystemDateAndTimeResponse><tds:SystemDateAndTime>'
         '<tt:DateTimeType>Manual</tt:DateTimeType><tt:DaylightSavings>false</tt:DaylightSavings>'
@@ -215,6 +229,17 @@ def op_GetSystemDateAndTime(dev, body, port):
 
 
 def op_SetSystemDateAndTime(dev, body, port):
+    text = body.decode("utf-8", "replace")
+    utc = re.search(r"UTCDateTime>(.*?)</(?:\w+:)?UTCDateTime", text, re.S)
+    if utc:
+        part = utc.group(1)
+        get = lambda name: int(re.search(r"<(?:\w+:)?%s>(\d+)<" % name, part).group(1))
+        t = calendar.timegm((get("Year"), get("Month"), get("Day"), get("Hour"), get("Minute"), get("Second")))
+        with CLOCK_LOCK:
+            CLOCK[dev.ip] = t - time.time()
+        with REG.lock:
+            REG.counts["_clock_set"] += 1
+            REG.counts["_clock_set@" + dev.ip] += 1
     return envelope('<tds:SetSystemDateAndTimeResponse/>')
 
 
@@ -529,10 +554,113 @@ def op_GetConfigurationOptions(dev, body, port):
 HANDLERS = {name[3:]: fn for name, fn in list(globals().items()) if name.startswith("op_")}
 
 
+# ------------------------------------------------------------ HTTP auth
+# --auth digest/basic mô phỏng camera đặt xác thực dịch vụ ONVIF là "digest" (hoặc chỉ Basic):
+# bỏ qua WS-Security, request thiếu/sai Authorization bị 401 kèm challenge. Mặc định "none"
+# giữ hành vi cũ (không kiểm tra gì). GetSystemDateAndTime luôn không cần xác thực (chuẩn ONVIF).
+# Nonce riêng cho từng thiết bị (theo IP đích) như camera thật; dùng chung thì camera này làm
+# hết hạn nonce của camera khác ngay giữa lúc nhận challenge và gửi lại.
+class DigestNonces:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.gen = defaultdict(lambda: 1)
+        self.used = defaultdict(int)
+
+    def current(self, ip):
+        with self.lock:
+            return "s3mk%08x" % self.gen[ip]
+
+    def consume(self, ip, ttl_uses):
+        with self.lock:
+            self.used[ip] += 1
+            if ttl_uses > 0 and self.used[ip] >= ttl_uses:
+                self.gen[ip] += 1
+                self.used[ip] = 0
+
+
+NONCES = DigestNonces()
+
+
+def _auth_params(s):
+    out = {}
+    for m in re.finditer(r'([A-Za-z0-9_-]+)\s*=\s*("([^"]*)"|[^,\s]+)', s):
+        out[m.group(1).lower()] = m.group(3) if m.group(3) is not None else m.group(2)
+    return out
+
+
+def check_http_auth(ip, header, path):
+    """Trả (ok, stale)."""
+    a = REG.args
+    if a.auth == "basic":
+        expect = "Basic " + base64.b64encode(("%s:%s" % (a.auth_user, a.auth_pass)).encode()).decode()
+        return header == expect, False
+    if not header.lower().startswith("digest "):
+        return False, False
+    p = _auth_params(header[7:])
+    if p.get("nonce") != NONCES.current(ip):
+        return False, True
+    md5 = lambda x: hashlib.md5(x.encode()).hexdigest()
+    ha1 = md5("%s:%s:%s" % (a.auth_user, "s3mk-onvif-mock", a.auth_pass))
+    ha2 = md5("POST:%s" % p.get("uri", ""))
+    if p.get("qop"):
+        expect = md5(":".join([ha1, p["nonce"], p.get("nc", ""), p.get("cnonce", ""), p["qop"], ha2]))
+    else:
+        expect = md5(":".join([ha1, p["nonce"], ha2]))
+    if p.get("uri") != path or p.get("response") != expect or p.get("username") != a.auth_user:
+        return False, False
+    NONCES.consume(ip, a.nonce_uses)
+    return True, False
+
+
+def check_wsse(ip, body):
+    """WS-UsernameToken PasswordDigest = Base64(SHA1(nonce + Created + password)), Created phải nằm
+    trong --wsse-window-sec quanh đồng hồ của thiết bị (như camera thật)."""
+    text = body.decode("utf-8", "replace")
+    tok = re.search(r"<(?:\w+:)?UsernameToken[^>]*>(.*?)</(?:\w+:)?UsernameToken>", text, re.S)
+    if not tok:
+        return False
+    tag = lambda name: (re.search(r"<(?:\w+:)?%s[^>]*>(.*?)</" % name, tok.group(1), re.S) or [None, ""])[1]
+    user, pw, nonce, created = tag("Username"), tag("Password"), tag("Nonce"), tag("Created")
+    a = REG.args
+    if user != a.auth_user or not created:
+        return False
+    try:
+        raw_nonce = base64.b64decode(nonce)
+        ts = calendar.timegm(time.strptime(created.split(".")[0].rstrip("Z"), "%Y-%m-%dT%H:%M:%S"))
+    except Exception:
+        return False
+    expect = base64.b64encode(hashlib.sha1(raw_nonce + created.encode() + a.auth_pass.encode()).digest()).decode()
+    if pw != expect:
+        return False
+    return abs(ts - dev_now(ip)) <= a.wsse_window_sec
+
+
+def fault_sender(code, reason):
+    return envelope(
+        '<SOAP-ENV:Fault><SOAP-ENV:Code><SOAP-ENV:Value>SOAP-ENV:Sender</SOAP-ENV:Value>'
+        '<SOAP-ENV:Subcode><SOAP-ENV:Value>ter:%s</SOAP-ENV:Value></SOAP-ENV:Subcode>'
+        '</SOAP-ENV:Code><SOAP-ENV:Reason><SOAP-ENV:Text xml:lang="en">%s</SOAP-ENV:Text>'
+        '</SOAP-ENV:Reason></SOAP-ENV:Fault>' % (code, reason))
+
+
+def auth_challenge(ip, stale):
+    if REG.args.auth == "basic":
+        return 'Basic realm="s3mk-onvif-mock"'
+    return ('Digest realm="s3mk-onvif-mock", qop="auth", nonce="%s", opaque="0f0f"%s'
+            % (NONCES.current(ip), ", stale=TRUE" if stale else ""))
+
+
 # -------------------------------------------------------------------- HTTP
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "s3mk-onvif-mock"
+
+    def date_time_string(self, timestamp=None):
+        # Header Date theo đồng hồ của thiết bị: client dùng nó khi không đọc được giờ camera.
+        ip = getattr(self, "_dev_ip", None)
+        if timestamp is None and ip:
+            timestamp = dev_now(ip)
+        return BaseHTTPRequestHandler.date_time_string(self, timestamp)
 
     def log_message(self, fmt, *a):
         if REG.args.verbose:
@@ -564,6 +692,27 @@ class Handler(BaseHTTPRequestHandler):
         if REG.args.verbose:
             sys.stderr.write("[onvif] %s %s %s\n" % (ip, self.path, op or "<?>"))
             sys.stderr.flush()
+
+        self._dev_ip = ip
+        a = REG.args
+        need_auth = op != "GetSystemDateAndTime" or a.time_requires_auth
+        if need_auth and (a.auth != "none" or a.wsse_check):
+            # Camera "digest&ws-username token": một trong hai là đủ.
+            http_ok, stale = (check_http_auth(ip, self.headers.get("Authorization", ""), self.path)
+                              if a.auth != "none" else (False, False))
+            wsse_ok = a.wsse_check and check_wsse(ip, body)
+            if not (http_ok or wsse_ok):
+                if a.auth != "none":
+                    with REG.lock:
+                        REG.counts["_http_401"] += 1
+                    self.send_response(401)
+                    self.send_header("WWW-Authenticate", auth_challenge(ip, stale))
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                with REG.lock:
+                    REG.counts["_wsse_reject"] += 1
+                return self.reply(fault_sender("NotAuthorized", "Sender not Authorized"), 400)
 
         if op in policy.get("fail_ops", []):
             with REG.lock:
@@ -657,6 +806,19 @@ def main():
     ap.add_argument("--stats-sec", type=float, default=15.0)
     ap.add_argument("--stream-base", default=None,
                     help="vd rtsp://127.0.0.1:18554: GetStreamUri trả URL luồng của harness")
+    ap.add_argument("--auth", choices=["none", "digest", "basic"], default="none",
+                    help="digest/basic: bắt buộc xác thực HTTP như camera đặt chế độ \"digest\"")
+    ap.add_argument("--auth-user", default="admin")
+    ap.add_argument("--auth-pass", default="admin")
+    ap.add_argument("--wsse-check", action="store_true",
+                    help="kiểm WS-UsernameToken thật (PasswordDigest + Created trong cửa sổ quanh giờ thiết bị)")
+    ap.add_argument("--wsse-window-sec", type=float, default=10.0)
+    ap.add_argument("--clock-offset-sec", type=float, default=0.0,
+                    help="đồng hồ ban đầu của mọi thiết bị lệch N giây (SetSystemDateAndTime sửa lại)")
+    ap.add_argument("--time-requires-auth", action="store_true",
+                    help="GetSystemDateAndTime cũng bắt xác thực (camera không theo chuẩn)")
+    ap.add_argument("--nonce-uses", type=int, default=0,
+                    help="digest: nonce hết hạn sau N request hợp lệ (0 = không hết hạn)")
     ap.add_argument("--verbose", action="store_true")
     REG = Registry(ap.parse_args())
     REG.reload()

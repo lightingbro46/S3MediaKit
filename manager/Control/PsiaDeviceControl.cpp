@@ -564,6 +564,30 @@ bool parseTwoWayAudioChannel(const std::string &xml, std::string &id, std::strin
     return false;
 }
 
+DeviceFailure classifyFailure(int http_status, int soap_error) {
+    if (http_status == 401 || http_status == 403) {
+        return DeviceFailure::Unauthorized;
+    }
+    if (http_status / 100 == 2) {
+        return DeviceFailure::None;
+    }
+    if (http_status) {
+        return DeviceFailure::Other;
+    }
+    switch (soap_error) {
+        // Connect failed: refused, no route, or the connect timeout.
+        case SOAP_TCP_ERROR:
+        case SOAP_UDP_ERROR:
+        case SOAP_SSL_ERROR:
+            return DeviceFailure::Unreachable;
+        // Connected, but no complete answer: receive timeout or the camera dropped the connection.
+        case SOAP_EOF:
+            return DeviceFailure::Timeout;
+        default:
+            return DeviceFailure::Other;
+    }
+}
+
 ConnectError classifyConnectError(int http_status, int soap_error, bool is_device_info) {
     if (http_status == 0) {
         // No HTTP answer at all: refused, reset, timed out.
@@ -792,6 +816,7 @@ int PsiaControl::request(const char *method, const std::string &path, const std:
         }
         _lastStatus = status;
         _lastSoapError = status ? 0 : err;
+        _lastFailure = static_cast<int>(psia_detail::classifyFailure(status, _lastSoapError));
         soap_closesock(_soap);
         soap_destroy(_soap);
         soap_end(_soap);

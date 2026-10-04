@@ -43,6 +43,15 @@ public:
         return c._device_ctr ? c._device_ctr->protocol() : ControlProtocol::NONE;
     }
 
+    // Lets the next onManager() run (it is throttled to once per 60 s); `clock_synced_now` makes the
+    // regular clock interval not due yet.
+    static void allowNextCycle(CameraController &c, bool clock_synced_now) {
+        c._pacer.skipWait();
+        if (clock_synced_now) {
+            c._last_clock_sync = time(nullptr);
+        }
+    }
+
     static bool hasPendingProfileConfig(CameraController &c) { return c.hasPendingProfileConfig(); }
 
     static bool profileConfig(CameraController &c, const std::string &token, VideoEncoderConfig &out) {
@@ -81,6 +90,11 @@ public:
     bool probeConnection() override { record("Probe", ""); return _probe_ok.load(); }
     bool refreshMediaProfiles() override { return record("RefreshProfiles", ""); }
     void setCameraTimeManual() override { record("SetCameraTime", ""); }
+    DeviceFailure lastFailure() const override { return _failure.load(); }
+    bool takeClockSyncWanted() override { return _sync_wanted.exchange(false); }
+
+    void setLastFailure(DeviceFailure failure) { _failure = failure; }
+    void setClockSyncWanted(bool wanted) { _sync_wanted = wanted; }
 
     // `connect_ok` is false in the maintenance tests on purpose: the success branch registers a
     // gap-fill provider and publishes capabilities, which a unit test has no database for.
@@ -160,6 +174,8 @@ private:
     std::atomic<int> _max_concurrent{0};
     std::atomic<bool> _probe_ok{true};
     std::atomic<bool> _connect_ok{true};
+    std::atomic<DeviceFailure> _failure{DeviceFailure::None};
+    std::atomic<bool> _sync_wanted{false};
 };
 
 class TestCameraController : public CameraController {
@@ -2024,4 +2040,104 @@ TEST_F(SpeakerProtocolTest, BoschSpeakerIsAlwaysOnvif) {
     cycle();
     EXPECT_FALSE(contains(_world->events(), "create ISAPI"));
     EXPECT_EQ(1, _world->count("connect ONVIF live=1"));
+}
+
+// ── Camera clock: only ever set by the maintenance cycle ──────────────────────
+
+namespace {
+void setClockSyncEnable(bool on) {
+    mINI::Instance()[OnvifCtrl::kClockSyncEnable] = on ? 1 : 0;
+    NOTICE_EMIT(BroadcastReloadConfigArgs, mediakit::Broadcast::kBroadcastReloadConfig);
+}
+
+int countCalls(const std::shared_ptr<FakeOnvifControl> &fake, const std::string &name) {
+    auto names = callNames(fake);
+    return static_cast<int>(std::count(names.begin(), names.end(), name));
+}
+} // namespace
+
+TEST_F(CameraControllerTest, ConnectRejectedForTheClockSetsItFromTheCycle) {
+    auto controller = _controller;
+    auto fake = _fake;
+    fake->setMaintenanceResults(false, false);
+    fake->setLastFailure(DeviceFailure::ClockSkew);
+
+    onPoller([&]() { CameraControllerTestPeer::onManager(*controller); });
+
+    // The camera never connects until its clock is set, so the failed cycle sets it.
+    ASSERT_TRUE(waitFor([&]() { return sawCall(fake, "SetCameraTime"); }));
+    EXPECT_EQ(std::vector<std::string>({"Connect", "SetCameraTime"}), callNames(fake));
+}
+
+TEST_F(CameraControllerTest, ConnectRejectedForAnotherReasonDoesNotTouchTheClock) {
+    auto controller = _controller;
+    auto fake = _fake;
+    fake->setMaintenanceResults(false, false);
+    fake->setLastFailure(DeviceFailure::Unauthorized);
+
+    onPoller([&]() { CameraControllerTestPeer::onManager(*controller); });
+
+    ASSERT_TRUE(waitFor([&]() { return sawCall(fake, "Connect"); }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_EQ(0, countCalls(fake, "SetCameraTime"));
+}
+
+TEST_F(CameraControllerTest, ClockOffFoundByACommandIsSetByTheNextCycleNotTheCommand) {
+    auto controller = _controller;
+    auto fake = _fake;
+    fake->setMaintenanceResults(true, false);
+    onPoller([&]() {
+        CameraControllerTestPeer::setReady(*controller, true);
+        CameraControllerTestPeer::allowNextCycle(*controller, true); // regular clock check not due
+    });
+
+    // A PTZ command found the clock off: it only flags it.
+    fake->setClockSyncWanted(true);
+    CbProbe ptz;
+    onPoller([&]() { controller->PTZMove("left", 50, ptz.cb()); });
+    ASSERT_TRUE(waitFor([&]() { return !ptz.get().empty(); }));
+    EXPECT_EQ(0, countCalls(fake, "SetCameraTime"));
+
+    onPoller([&]() { CameraControllerTestPeer::onManager(*controller); });
+    ASSERT_TRUE(waitFor([&]() { return sawCall(fake, "SetCameraTime"); }));
+
+    // Flag consumed: the following cycle leaves the clock alone until the interval is due.
+    onPoller([&]() { CameraControllerTestPeer::allowNextCycle(*controller, false); });
+    onPoller([&]() { CameraControllerTestPeer::onManager(*controller); });
+    ASSERT_TRUE(waitFor([&]() { return countCalls(fake, "Probe") == 2; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_EQ(1, countCalls(fake, "SetCameraTime"));
+}
+
+TEST_F(CameraControllerTest, CameraOptionTurnsClockSyncOff) {
+    auto controller = _controller;
+    auto fake = _fake;
+    fake->setMaintenanceResults(false, false);
+    fake->setLastFailure(DeviceFailure::ClockSkew);
+    CameraOption option;
+    option.manufacturer = "ONVIF";
+    option.ip = "127.0.0.1";
+    option.port = 1;
+    option.ptzMode = CameraOption::kPTZContinousMode;
+    option.enableTimeSync = false;
+    onPoller([&]() { controller->setupController(option); });
+
+    onPoller([&]() { CameraControllerTestPeer::onManager(*controller); });
+    ASSERT_TRUE(waitFor([&]() { return sawCall(fake, "Connect"); }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_EQ(0, countCalls(fake, "SetCameraTime"));
+}
+
+TEST_F(CameraControllerTest, ServerConfigTurnsClockSyncOffForEveryCamera) {
+    auto controller = _controller;
+    auto fake = _fake;
+    fake->setMaintenanceResults(false, false);
+    fake->setLastFailure(DeviceFailure::ClockSkew);
+    setClockSyncEnable(false);
+
+    onPoller([&]() { CameraControllerTestPeer::onManager(*controller); });
+    ASSERT_TRUE(waitFor([&]() { return sawCall(fake, "Connect"); }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_EQ(0, countCalls(fake, "SetCameraTime"));
+    setClockSyncEnable(true);
 }

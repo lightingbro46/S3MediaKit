@@ -110,11 +110,13 @@ std::vector<ControlProtocol> parseProtocolOrder(const std::string &order_str) {
 }
 
 ProtocolProbeResult probeControlProtocols(const std::vector<ControlProtocol> &order,
-                                          const DeviceControlFactory &factory, const std::string &log_name) {
+                                          const DeviceControlFactory &factory, const std::string &log_name,
+                                          bool sync_clock_on_skew) {
     ProtocolProbeResult result;
     result.err_msg = "No control protocol answered";
     // Set when ONVIF rejected the credentials: the error reported if no other protocol connects.
     std::string onvif_auth_err;
+    DeviceFailure onvif_auth_failure = DeviceFailure::None;
     for (auto protocol : order) {
         auto device_ctr = factory(protocol);
         if (!device_ctr) {
@@ -123,12 +125,17 @@ ProtocolProbeResult probeControlProtocols(const std::vector<ControlProtocol> &or
         if (device_ctr->connect()) {
             result.winner = device_ctr;
             result.err = ConnectError::NONE;
+            result.failure = DeviceFailure::None;
             onvif_auth_err.clear();
             break;
         }
         ConnectError err = device_ctr->lastConnectError();
         result.err = err;
         result.err_msg = std::string(controlProtocolToString(protocol)) + ": " + device_ctr->lastError();
+        result.failure = device_ctr->lastFailure();
+        if (sync_clock_on_skew && result.failure == DeviceFailure::ClockSkew) {
+            device_ctr->setCameraTimeManual();
+        }
         InfoL << "Probe " << controlProtocolToString(protocol) << " on device " << log_name << ": "
               << connectErrorToString(err);
         // Destroyed before the next protocol is tried: never two controllers on one device.
@@ -137,6 +144,7 @@ ProtocolProbeResult probeControlProtocols(const std::vector<ControlProtocol> &or
             // A Hikvision camera with ONVIF disabled, or without an ONVIF user, answers 401 to
             // ONVIF while its web account still works for ISAPI.
             onvif_auth_err = result.err_msg;
+            onvif_auth_failure = result.failure;
             continue;
         }
         if (err != ConnectError::NOT_THIS_PROTOCOL) {
@@ -147,6 +155,7 @@ ProtocolProbeResult probeControlProtocols(const std::vector<ControlProtocol> &or
     if (!result.winner && !onvif_auth_err.empty()) {
         result.err_msg = onvif_auth_err;
         result.err = ConnectError::AUTH_FAILED;
+        result.failure = onvif_auth_failure;
     }
     return result;
 }

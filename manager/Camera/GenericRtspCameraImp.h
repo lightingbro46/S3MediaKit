@@ -37,6 +37,9 @@ public:
     // Owner poller: CameraController::reconnectNow().
     void reconnectController(const ReconnectCallback &cb);
 
+    // See CameraController::clockReader(). Owner poller only; null without a controller.
+    std::function<DeviceClockReading()> clockReader();
+
     void ImageMoveControl(const std::string &strDirect, int speed, const std::function<void(const toolkit::SockException &ex)> &cb);
     
     void RelayOutputControl(const std::string &strDirect, const std::string &relayToken, const std::function<void(const toolkit::SockException &ex)> &cb);

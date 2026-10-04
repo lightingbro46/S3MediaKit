@@ -49,6 +49,11 @@ Nhiều thiết bị (Hikvision) khoá IP của client sau vài lần đăng nh�
 đăng nhập mỗi 5 phút. Kết nối được, lỗi khác (mất mạng, 404) hoặc đổi tài khoản/địa chỉ trong cấu hình thì quay về
 60 giây ngay. Log `rejected the credentials: next attempt in N s` ghi một lần khi bắt đầu bị từ chối.
 
+Camera ONVIF từ chối chữ ký WS-Security vì giờ camera lệch (`DeviceFailure::ClockSkew`, xem
+[onvif-clock-skew-plan.md](onvif-clock-skew-plan.md)) không tính là `AUTH_FAILED` mà là `OTHER`: chu kỳ đó đặt giờ
+camera (khi bật `onvif.clockSyncEnable` và `enableTimeSync` của camera), thử lại sau 60 giây, và lượt dò AUTO dừng ở
+ONVIF thay vì chuyển sang ISAPI/PSIA.
+
 Người dùng sửa mật khẩu ngay trên thiết bị thì không phải chờ: client gọi `/media/mserver/device/reconnect` (mục
 "API kết nối lại"). Sửa mật khẩu trên giao diện VMS thì không cần gọi: service API gọi `/incur`, cấu hình camera được
 nạp lại và controller được tạo lại với mật khẩu mới.

@@ -97,6 +97,10 @@ bool parseTwoWayAudioChannel(const std::string &xml, std::string &id, std::strin
 // back, `soap_error` is soap->error then; `is_device_info` tells whether a 200 carried a DeviceInfo.
 ConnectError classifyConnectError(int http_status, int soap_error, bool is_device_info);
 
+// Why one request failed, as the API reports it (see DeviceFailure): 401/403 the credentials, no
+// HTTP answer the network; None for a 2xx.
+DeviceFailure classifyFailure(int http_status, int soap_error);
+
 // Seconds east of UTC encoded in a POSIX TZ string as PSIA cameras report it: "CST-7:00:00" is UTC+7.
 int posixTimeZoneOffset(const std::string &tz);
 // Parses "YYYY-MM-DDTHH:MM:SS" with an optional "Z"/"+HH:MM" suffix into UTC seconds, using
@@ -142,6 +146,7 @@ public:
     ControlProtocol protocol() const override { return ControlProtocol::PSIA; }
     ConnectError lastConnectError() const override { return _lastConnectError.load(); }
     std::string lastError() override;
+    DeviceFailure lastFailure() const override { return static_cast<DeviceFailure>(_lastFailure.load()); }
 
     bool probeConnection() override;
     bool isConnected() const override { return _connected.load(); }
@@ -227,6 +232,7 @@ private:
 
     std::atomic<int> _isControlled {0};
     std::atomic<ConnectError> _lastConnectError {ConnectError::NONE};
+    std::atomic<int> _lastFailure {static_cast<int>(DeviceFailure::None)};
 };
 
 // Camera control over Hikvision ISAPI (REST + XML under /ISAPI). ISAPI grew out of PSIA and keeps its
