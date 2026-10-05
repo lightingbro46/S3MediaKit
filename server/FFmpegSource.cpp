@@ -632,7 +632,7 @@ static void makeManifestPlaylist(string &file_path, string &camera_id, string &s
     });
     if (!file_ptr) {
         string err = (StrPrinter << "Failed to open the file:" << file_path);
-        return cb(SockException(Err_other, err, ApiErrCode::CODE_EXTRACT_FAILED), duration_start, duration_end);
+        return cb(SockException(Err_other, err, ApiErrCode::CODE_OTHER_EXCEPTION), duration_start, duration_end);
     }
 
     struct FileIndexs {
@@ -707,7 +707,7 @@ static void makeManifestPlaylist(string &file_path, string &camera_id, string &s
                 return cb(SockException(Err_other, message, ApiErrCode::CODE_STORAGE_RESTORE_REQUIRED), duration_start, duration_end);
             } else {
                 const string message = "Recorded segment is unavailable for extraction: " + source.message;
-                return cb(SockException(Err_other, message, ApiErrCode::CODE_EXTRACT_FAILED), duration_start, duration_end);
+                return cb(SockException(Err_other, message, ApiErrCode::CODE_OTHER_EXCEPTION), duration_start, duration_end);
             }
 #endif
             manifest_lines.push_back(concatFileLine(resolved_path));
@@ -715,7 +715,7 @@ static void makeManifestPlaylist(string &file_path, string &camera_id, string &s
     }
     for (const auto &line : manifest_lines) {
         if (fwrite(line.c_str(), line.size(), 1, file_ptr.get()) != 1) {
-            return cb(SockException(Err_other, "Failed to write extraction manifest", ApiErrCode::CODE_EXTRACT_FAILED), duration_start, duration_end);
+            return cb(SockException(Err_other, "Failed to write extraction manifest", ApiErrCode::CODE_OTHER_EXCEPTION), duration_start, duration_end);
         }
     }
     // If there is no data in the time period, the index file will not be generated, and the callback will be executed directly
@@ -1390,7 +1390,7 @@ void FFmpegExtractor::makeExtract(const string &key, const string &root_path, co
     if (already_started) {
         if (cb) {
             cb(SockException(Err_other, "Extraction task has already been started",
-                             ApiErrCode::CODE_EXTRACT_FAILED));
+                             ApiErrCode::CODE_OTHER_EXCEPTION));
         }
         return;
     }
@@ -1467,7 +1467,7 @@ void FFmpegExtractor::prepareExtractSource() {
     }
     if (cancelled) {
         // cancel() already closed the task; still answer the start callback once.
-        notifyStartOnce(SockException(Err_other, "Extraction task was cancelled", ApiErrCode::CODE_EXTRACT_FAILED));
+        notifyStartOnce(SockException(Err_other, "Extraction task was cancelled", ApiErrCode::CODE_OTHER_EXCEPTION));
         return;
     }
     vector<TimeBlock> blocks;
@@ -1523,7 +1523,7 @@ void FFmpegExtractor::startRestore() {
     if (restore_timeout_sec > 0 &&
         _restore_ticker.elapsedTime() >= static_cast<uint64_t>(restore_timeout_sec * 1000)) {
         const SockException ex(Err_timeout, "Cold-storage restore timed out",
-                               ApiErrCode::CODE_EXTRACT_FAILED);
+                               ApiErrCode::CODE_OTHER_EXCEPTION);
         completeOnce(false, ex.what(), ex.getCustomCode());
         notifyStartOnce(ex);
         return;
@@ -1559,7 +1559,7 @@ void FFmpegExtractor::startRestore() {
     }
     if (snapshot.playback_status == "FAILED" || snapshot.playback_status == "CANCELLED") {
         const SockException ex(Err_other, "Cold-storage restore is " + snapshot.playback_status,
-                               ApiErrCode::CODE_EXTRACT_FAILED);
+                               ApiErrCode::CODE_OTHER_EXCEPTION);
         completeOnce(false, ex.what(), ex.getCustomCode());
         notifyStartOnce(ex);
         return;
@@ -1587,7 +1587,7 @@ bool FFmpegExtractor::pollRestore() {
     if (restore_timeout_sec > 0 &&
         _restore_ticker.elapsedTime() >= static_cast<uint64_t>(restore_timeout_sec * 1000)) {
         const SockException ex(Err_timeout, "Cold-storage restore timed out",
-                               ApiErrCode::CODE_EXTRACT_FAILED);
+                               ApiErrCode::CODE_OTHER_EXCEPTION);
         completeOnce(false, ex.what(), ex.getCustomCode());
         notifyStartOnce(ex);
         return false;
@@ -1609,7 +1609,7 @@ bool FFmpegExtractor::pollRestore() {
     }
     if (snapshot.playback_status == "FAILED" || snapshot.playback_status == "CANCELLED") {
         const SockException ex(Err_other, "Cold-storage restore is " + snapshot.playback_status,
-                               ApiErrCode::CODE_EXTRACT_FAILED);
+                               ApiErrCode::CODE_OTHER_EXCEPTION);
         completeOnce(false, ex.what(), ex.getCustomCode());
         notifyStartOnce(ex);
         return false;
@@ -1747,7 +1747,7 @@ void FFmpegExtractor::startFfmpeg() {
     const Broadcast::ViewOverlayPolicy policy = resolveViewOverlayPolicy(_tuple, _options.jwt_token);
     if (policy.isUnavailable()) {
         const SockException ex(Err_other, "Unable to resolve required watermark/privacy mask policy",
-                               ApiErrCode::CODE_EXTRACT_FAILED);
+                               ApiErrCode::CODE_OTHER_EXCEPTION);
         WarnL << "Extract video: " << ex.what() << " for " << _tuple.app;
         completeOnce(false, ex.what(), ex.getCustomCode());
         notifyStartOnce(ex);
@@ -1762,7 +1762,7 @@ void FFmpegExtractor::startFfmpeg() {
         const string err_msg = "Unable to render required watermark/privacy mask/source stamp overlay";
         WarnL << "Extract video: " << err_msg << " for " << _tuple.app;
         completeOnce(false, err_msg);
-        notifyStartOnce(SockException(Err_other, err_msg, ApiErrCode::CODE_EXTRACT_FAILED));
+        notifyStartOnce(SockException(Err_other, err_msg, ApiErrCode::CODE_OTHER_EXCEPTION));
         return;
     }
 
@@ -1881,7 +1881,7 @@ void FFmpegExtractor::runFfmpeg(const string &cmd) {
         if (success) {
             strongSelf->notifyStartOnce(SockException());
         } else {
-            strongSelf->notifyStartOnce(SockException(Err_other, err_msg, ApiErrCode::CODE_EXTRACT_FAILED));
+            strongSelf->notifyStartOnce(SockException(Err_other, err_msg, ApiErrCode::CODE_OTHER_EXCEPTION));
         }
         return 0;
     });

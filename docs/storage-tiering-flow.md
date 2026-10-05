@@ -337,8 +337,9 @@ Storage error dùng nhóm `914xxx`; các mã quan trọng trong luồng này:
 | `914016` | 404 | Không tìm thấy segment |
 | `914017` | 404 | Segment hết hạn |
 | `914018` | 404 | Restore job không tồn tại |
-| `914019` | 500 | Tạo restore job thất bại |
-| `914020..914022` | 404/500 | Tiering job not found/update/cancel failed |
+| `914019` | 500 | Không tạo được restore job khi extract/thumbnail cần dữ liệu COLD |
+| `914020` | 404 | Tiering job not found |
+| `-1` | 500 | Tạo restore job, retry/cancel tiering job thất bại không rõ nguyên nhân |
 
 Danh sách đầy đủ nằm trong [api-storage-tiering.md](api-storage-tiering.md).
 

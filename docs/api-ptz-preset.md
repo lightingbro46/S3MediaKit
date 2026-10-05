@@ -39,8 +39,7 @@ Tất cả request phải đính kèm JWT token trong header hoặc query param.
 | `905007` | 403 | Camera chỉ hỗ trợ HTTP Basic, server đang tắt |
 | `905008` | 403 | Giờ camera lệch server, kèm `data.clockOffsetSec` |
 | `907001` | 404 | User preset không tìm thấy |
-| `907011` | 500 | PTZ goto preset thất bại (ONVIF preset) |
-| `907012` | 500 | PTZ goto preset thất bại (user-defined preset) |
+| `-1` | 500 | PTZ goto preset thất bại, không xác định được nguyên nhân (chi tiết ở `msg`) |
 | `907013` | 500 | Device không hỗ trợ PTZ Preset |
 
 ---
@@ -258,7 +257,7 @@ sequenceDiagram
 
 1. **Ownership**: API `goto_preset` cần camera đang trong trạng thái "sở hữu" bởi user hiện tại. Nếu camera đang bị người khác điều khiển → lỗi `905003`. `set_preset` và `remove_preset` kiểm tra quyền user với camera, sau đó thao tác trên owner poller của camera.
 
-2. **isUserPreset phải chính xác**: Khi gọi `goto_preset`, truyền `isUserPreset` đúng với giá trị `isUserDefined` trong danh sách preset. Sai giá trị có thể dẫn đến lỗi `907011` hoặc `907012`.
+2. **isUserPreset phải chính xác**: Khi gọi `goto_preset`, truyền `isUserPreset` đúng với giá trị `isUserDefined` trong danh sách preset. Sai giá trị có thể dẫn đến lỗi `907001` hoặc `-1`.
 
 3. **Reload sau thay đổi**: Sau khi `set_preset` hoặc `remove_preset` thành công, FE nên gọi lại `get_presets` để đồng bộ danh sách.
 

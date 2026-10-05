@@ -71,20 +71,16 @@ Khi endpoint truyền nhiều permission vào `CHECK_USER_PERMISSION`, `checkPer
 | `914007` | 404 | Policy không hợp lệ |
 | `914008` | 404 | Thứ tự tier không hợp lệ |
 | `914009` | 404 | Cần restore trước khi playback |
-| `914010..914015` | 500 | CRUD pool/policy thất bại |
 | `914016` | 404 | Không tìm thấy segment |
 | `914017` | 404 | Segment đã hết hạn |
 | `914018` | 404 | Restore job không tồn tại |
-| `914019` | 500 | Tạo restore job thất bại |
+| `914019` | 500 | Không tạo được restore job khi extract/thumbnail cần dữ liệu COLD |
 | `914020` | 404 | Tiering job không tồn tại |
-| `914021` | 500 | Update/retry tiering job thất bại |
-| `914022` | 500 | Cancel tiering job thất bại |
 | `914023` | 404 | Alert không tồn tại |
 | `914024` | 404 | Protected range không tồn tại |
-| `914025` | 500 | Tạo protected range thất bại |
-| `914026..914028` | 500 | Clone/assign/unassign policy thất bại |
 | `914029` | 400 | Không được xóa default HOT pool |
 | `914030` | 400 | Không được xóa system default policy |
+| `-1` | 500 | Thao tác thất bại không xác định được nguyên nhân (CRUD/clone/assign pool/policy, restore job, retry/cancel tiering job, protected range, cấu hình mã hoá), chi tiết ở `msg` |
 
 ### 1.5 Enum và capability
 

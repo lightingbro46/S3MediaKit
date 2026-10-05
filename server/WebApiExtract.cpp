@@ -141,7 +141,8 @@ void registerExtractionApis() {
             auto status = current->status();
             if (status.finished && !status.success) {
                 auto err_detail = "Extract video failed: " + status.err_msg;
-                RETURN_API_RESPONSE(ApiErrCode::CODE_EXTRACT_FAILED, err_detail.data());
+                // The code of the step that failed (no data, restore...) when it set one.
+                RETURN_API_RESPONSE(status.error_code ? status.error_code : ApiErrCode::CODE_OTHER_EXCEPTION, err_detail.data());
                 return;
             }
 
@@ -292,7 +293,7 @@ void registerExtractionApis() {
                     throw ApiResponseException(ApiErrCode::CODE_EXTRACT_JOB_CONFLICT, "fileId already exists with a different payload");
                 }
                 if (result.result == ExtractJobRepository::CreateResult::FAILED) {
-                    throw ApiResponseException(ApiErrCode::CODE_EXTRACT_JOB_CREATE_FAILED, "Failed to persist extract job");
+                    throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION, "Failed to persist extract job");
                 }
 
                 val["data"]["fileId"] = result.job.file_id;

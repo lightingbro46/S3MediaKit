@@ -878,7 +878,7 @@ TEST_F(CameraControllerRuleTest, FailedDirectSetIsRetriedInsteadOfReported) {
     RuleResultRecorder recorder;
     _fake->setProfiles({ruleProfile(false)}, kRuleToken);
 
-    EXPECT_EQ(ApiErrCode::CODE_ONVIF_SET_CONFIG_FAILED, applyRule());
+    EXPECT_EQ(ApiErrCode::CODE_OTHER_EXCEPTION, applyRule());
     EXPECT_TRUE(recorder.results().empty());
     EXPECT_TRUE(pending());
 

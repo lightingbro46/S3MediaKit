@@ -116,7 +116,7 @@ void GenericIPSpeakerImp::playAudioFile(const std::string& speakerId, const std:
         if (ok) {
             cb(SockException(Err_success, "Trigger play [" + speakerId + "]: OK", ApiErrCode::CODE_SUCCESS));
         } else {
-            cb(SockException(Err_other, "Trigger play [" + speakerId + "]: FAIL (error: " + data + ")", ApiErrCode::CODE_PLAY_AUDIO_FAILED));
+            cb(SockException(Err_other, "Trigger play [" + speakerId + "]: FAIL (error: " + data + ")", ApiErrCode::CODE_OTHER_EXCEPTION));
         }
     };
 
@@ -138,7 +138,7 @@ void GenericIPSpeakerImp::playAudioFile(const std::string& speakerId, const std:
                 }
                 // The vendor API rejecting the account or unreachable reports that.
                 cb(SockException(Err_other, "Trigger play [" + speakerId + "]: FAIL (error: " + data + ")",
-                                 deviceFailureCode(controller->lastVendorFailure(), ApiErrCode::CODE_PLAY_AUDIO_FAILED)));
+                                 deviceFailureCode(controller->lastVendorFailure(), ApiErrCode::CODE_OTHER_EXCEPTION)));
             });
     };
 
@@ -152,7 +152,7 @@ void GenericIPSpeakerImp::playAudioFile(const std::string& speakerId, const std:
     };
 
     if (_option.audioPlaybackMode == SpeakerOption::kAudioPlaybackModeOnvifBackchannel && !supportsBackchannel) {
-        cb(SockException(Err_other, "Device does not support backchannel playback mode", ApiErrCode::CODE_PLAY_AUDIO_FAILED));
+        cb(SockException(Err_other, "Device does not support backchannel playback mode", ApiErrCode::CODE_FEATURE_NOT_SUPPORTED));
         return;
     }
 
@@ -162,7 +162,7 @@ void GenericIPSpeakerImp::playAudioFile(const std::string& speakerId, const std:
         [mode](const ModeHandlerPair& entry) { return entry.first == mode; });
 
     if (it == kModeHandlers.end()) {
-        cb(SockException(Err_other, "Playback mode is not supported", ApiErrCode::CODE_PLAY_AUDIO_FAILED));
+        cb(SockException(Err_other, "Playback mode is not supported", ApiErrCode::CODE_FEATURE_NOT_SUPPORTED));
         return;
     }
 
@@ -207,13 +207,13 @@ void GenericIPSpeakerImp::setAudioVolume(int volume, const std::function<void(co
 
     auto audioVolumeInfo = strong_statistic->getAudioVolumeInfo();
     if (!audioVolumeInfo.supportsControl()) {
-        cb(SockException(Err_other, "The device is not support audio volume configuration", ApiErrCode::CODE_SET_AUDIO_VOLUME_FAILED));
+        cb(SockException(Err_other, "The device is not support audio volume configuration", ApiErrCode::CODE_FEATURE_NOT_SUPPORTED));
         return;
     }
 
     int cVolume = volume;
     if (cVolume == audioVolumeInfo.configuredAudioVolume) {
-        cb(SockException(Err_other, "The requested volume is the same as the current volume", ApiErrCode::CODE_SET_AUDIO_VOLUME_FAILED));
+        cb(SockException(Err_other, "The requested volume is the same as the current volume", ApiErrCode::CODE_ONVIF_SET_CONFIG_NOT_CHANGE));
         return;
     }
 
@@ -225,7 +225,7 @@ void GenericIPSpeakerImp::setAudioVolume(int volume, const std::function<void(co
             cb(SockException(Err_success, "Set audio volume OK", ApiErrCode::CODE_SUCCESS));
         } else {
             cb(SockException(Err_other, "Set audio volume FAIL (error: " + data + ")",
-                             deviceFailureCode(controller->lastVendorFailure(), ApiErrCode::CODE_SET_AUDIO_VOLUME_FAILED)));
+                             deviceFailureCode(controller->lastVendorFailure(), ApiErrCode::CODE_OTHER_EXCEPTION)));
         }
     });
 }

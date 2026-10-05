@@ -253,7 +253,7 @@ void registerControlApis() {
 
         addSubnetScan(option, [invoker, val, headerOut](const SockException &ex, const string &key) mutable {
             if (ex) {
-                RETURN_API_RESPONSE(ApiErrCode::CODE_SUBNETSCAN_FAILED, ex.what());
+                RETURN_API_RESPONSE(ex.getCustomCode() ? ex.getCustomCode() : ApiErrCode::CODE_OTHER_EXCEPTION, ex.what());
             } else {
                 val["data"]["key"] = key;
                 invoker(201, headerOut, val.toStyledString());

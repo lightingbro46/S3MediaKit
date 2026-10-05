@@ -338,7 +338,7 @@ Không đặt timeout nghiệp vụ dựa trên ước lượng thời gian rest
 | `902009` | 404 | Time window không hợp lệ |
 | `905001` | 404 | Camera không tồn tại |
 | `914018` | 404 | Job không tồn tại; cho phép gọi create lại nếu vẫn cần xem |
-| `914019` | 500 | Không tạo được job hoặc không có segment phù hợp để enqueue |
+| `-1` | 500 | Không tạo được job hoặc không có segment phù hợp để enqueue (trước 2026-10-05 là `914019`) |
 
 Với lỗi mạng hoặc HTTP 5xx khi poll detail, giữ nguyên progress gần nhất và retry có backoff. Với business status `FAILED`, dừng poll và chờ thao tác chủ động của người dùng.
 

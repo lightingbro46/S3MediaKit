@@ -151,7 +151,7 @@ void registerBookmarkApis() {
 
                 Broadcast::OnResInvoker on_response = [val, invoker, headerOut](const string &err, const int&, const Json::Value &res) mutable {
                     if (!err.empty()) {
-                        RETURN_API_RESPONSE(ApiErrCode::CODE_BOOKMARK_CREATE_FAILED, err);
+                        RETURN_API_RESPONSE(ApiErrCode::CODE_OTHER_EXCEPTION, err);
                         return;
                     }
                     invoker(200, headerOut, res.toStyledString());
@@ -276,7 +276,7 @@ void registerBookmarkApis() {
 
                 Broadcast::OnResInvoker on_response = [val, invoker, headerOut](const string &err, const int&, const Json::Value &res) mutable {
                     if (!err.empty()) {
-                        RETURN_API_RESPONSE(ApiErrCode::CODE_BOOKMARK_UPDATE_FAILED, err);
+                        RETURN_API_RESPONSE(ApiErrCode::CODE_OTHER_EXCEPTION, err);
                         return;
                     }
                     invoker(200, headerOut, res.toStyledString());
@@ -371,7 +371,7 @@ void registerBookmarkApis() {
                 string fwd_token = allArgs["_jwt_token"];
                 Broadcast::OnResInvoker on_response = [val, invoker, headerOut](const string &err, const int&, const Json::Value &res) mutable {
                     if (!err.empty()) {
-                        RETURN_API_RESPONSE(ApiErrCode::CODE_BOOKMARK_DELETE_FAILED, err);
+                        RETURN_API_RESPONSE(ApiErrCode::CODE_OTHER_EXCEPTION, err);
                         return;
                     }
                     invoker(200, headerOut, res.toStyledString());

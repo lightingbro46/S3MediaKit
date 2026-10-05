@@ -51,7 +51,7 @@ Phản hồi thành công dùng HTTP `202 Accepted`:
 
 Response tạo job chỉ có `fileId`, `accepted` và `status` (`QUEUED`, `RUNNING`, `SUCCESS` hoặc `FAILED`). `stage` và `progressPercent` chỉ có trong API liệt kê job.
 
-`fileId` là khóa idempotency. Gửi lại đúng toàn bộ nội dung sẽ nhận `202` kèm trạng thái hiện tại của job đã có. Dùng cùng `fileId` với nội dung khác sẽ nhận HTTP `409 Conflict` (`909004`). Lỗi lưu job trả `909005`. URL có chữ ký chỉ được lưu trong lúc job còn cần upload và không được ghi vào log.
+`fileId` là khóa idempotency. Gửi lại đúng toàn bộ nội dung sẽ nhận `202` kèm trạng thái hiện tại của job đã có. Dùng cùng `fileId` với nội dung khác sẽ nhận HTTP `409 Conflict` (`909004`). Lỗi lưu job trả `-1`. URL có chữ ký chỉ được lưu trong lúc job còn cần upload và không được ghi vào log.
 
 Restore là một stage nội bộ của tiến trình trích xuất. API liệt kê job giữ `status=RUNNING`,
 trả `stage=RESTORING` và ánh xạ tiến độ restore vào khoảng 0-30%. FFmpeg dùng khoảng

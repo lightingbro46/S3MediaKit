@@ -578,7 +578,7 @@ static void onvifImageControl(const DeviceControl::Ptr &ptr, IMAGE_CONTROL_DIREC
             float focusSpeed = (direct == IMAGE_CONTROL_DIRECT::FocusIn ? 1.0f : -1.0f)
                              * (speed > 0 ? speed / 100.0f : 0.5f);
             if (!ptr->Imaging_FocusMove(focusSpeed)) {
-                return cb(SockException(Err_other, "Imaging focus move failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_IMAGING_FOCUS_CONTROL_FAILED)));
+                return cb(SockException(Err_other, "Imaging focus move failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_OTHER_EXCEPTION)));
             }
             // Auto-stop after 1 second
             delayed(1000, [ptr, cb]() {
@@ -601,7 +601,7 @@ static void onvifImageControl(const DeviceControl::Ptr &ptr, IMAGE_CONTROL_DIREC
             }
             std::string auxCmd = (direct == IMAGE_CONTROL_DIRECT::IrisIn) ? "tt:Iris|open" : "tt:Iris|close";
             if (!ptr->PTZ_AuxiliaryCommand(auxCmd)) {
-                return cb(SockException(Err_other, "Iris auxiliary command failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_IMAGING_IRIS_CONTROL_FAILED)));
+                return cb(SockException(Err_other, "Iris auxiliary command failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_OTHER_EXCEPTION)));
             }
             return cb(SockException(Err_success, "Iris command success", ApiErrCode::CODE_SUCCESS));
         }
@@ -616,7 +616,7 @@ static void onvifRelayControl(const DeviceControl::Ptr &ptr, RELAY_OUTPUT_CONTRO
     }
     auto relayProfiles = ptr->getRelayOutputProfiles();
     if (relayProfiles.empty()) {
-        return cb(SockException(Err_other, "No relay output tokens available", ApiErrCode::CODE_RELAY_OUTPUT_FAILED));
+        return cb(SockException(Err_other, "No relay output tokens available", ApiErrCode::CODE_DEVICE_NO_SUPPORT_RELAY_OUTPUT));
     }
     int idx = 0;
     for (size_t i = 0; i < relayProfiles.size(); ++i) {
@@ -627,7 +627,7 @@ static void onvifRelayControl(const DeviceControl::Ptr &ptr, RELAY_OUTPUT_CONTRO
     }
     bool active = (direct == RELAY_OUTPUT_CONTROL::RelayOn);
     if (!ptr->Relay_SetOutputState(relayProfiles[idx].token, active)) {
-        return cb(SockException(Err_other, "Relay output control failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_RELAY_OUTPUT_FAILED)));
+        return cb(SockException(Err_other, "Relay output control failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_OTHER_EXCEPTION)));
     }
     return cb(SockException(Err_success, "Relay output control success", ApiErrCode::CODE_SUCCESS));
 }
@@ -647,7 +647,7 @@ static void onvifPTZMove(const DeviceControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT
     if (direct == PTZ_DIRECT::Home) {
         // If Home command and preset is enabled, go to home preset if exist, otherwise go to home position
         if (!ptr->PTZ_GotoHomePosition(step, step, step)) {
-            cb(SockException(Err_other, "Device execute ptz goto home position failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_PTZ_GOTO_HOME_FAILED)));
+            cb(SockException(Err_other, "Device execute ptz goto home position failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_OTHER_EXCEPTION)));
             return;
         }
         return cb(SockException(Err_success, "Device execute ptz go to home success", ApiErrCode::CODE_SUCCESS));
@@ -660,7 +660,7 @@ static void onvifPTZMove(const DeviceControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT
             auto err_msg = status == PtzMoveStatus::MOVING ? "Device is running ptz control" : ("Device ptz status unknown: " + ptr->lastError());
             // UNKNOWN is a failed GetStatus: report its network/credential cause when there is one.
             auto code = status == PtzMoveStatus::MOVING ? ApiErrCode::CODE_DEVICE_IS_RUNNING_PTZ
-                                                         : failureCode(ptr, ApiErrCode::CODE_DEVICE_IS_RUNNING_PTZ);
+                                                         : failureCode(ptr, ApiErrCode::CODE_OTHER_EXCEPTION);
             cb(SockException(Err_other, err_msg, code));
             return;
         }
@@ -679,7 +679,7 @@ static void onvifPTZMove(const DeviceControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT
             default: break;
         }
         if (!ptr->PTZ_AbsoluteMove(pan, tilt, zoom, step, step, step)) {
-            cb(SockException(Err_other, "Device execute ptz absolute move failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_PTZ_ABSOLUTED_CONTROL_FAILED)));
+            cb(SockException(Err_other, "Device execute ptz absolute move failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_OTHER_EXCEPTION)));
             return;
         }
         // Execute success
@@ -703,7 +703,7 @@ static void onvifPTZMove(const DeviceControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT
             default: break;
         }
         if (!ptr->PTZ_RelativeMove(pan, tilt, zoom , step, step, step)) {
-            cb(SockException(Err_other, "Device execute ptz relative move failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_PTZ_RELATIVE_CONTROL_FAILED)));
+            cb(SockException(Err_other, "Device execute ptz relative move failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_OTHER_EXCEPTION)));
             return;
         }
         // Execute success
@@ -729,7 +729,7 @@ static void onvifPTZMove(const DeviceControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT
 
         int timeout_sec = 1;
         if (!ptr->PTZ_ContinuousMove(pan, tilt, zoom, timeout_sec)) {
-            cb(SockException(Err_other, "Device execute ptz continuous move failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_PTZ_CONTINUOUS_CONTROL_FAILED)));
+            cb(SockException(Err_other, "Device execute ptz continuous move failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_OTHER_EXCEPTION)));
             return;
         }
 
@@ -737,7 +737,7 @@ static void onvifPTZMove(const DeviceControl::Ptr &ptr, int ptz_mode, PTZ_DIRECT
         // then would cut that command short (the camera also stops by itself at the timeout).
         delayed(timeout_sec * 1000, [ptr, cb]() {
             if (!ptr->PTZ_Stop(true, true)) {
-                cb(SockException(Err_other, "Device execute stop ptz continuous move failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_PTZ_CONTINUOUS_CONTROL_FAILED)));
+                cb(SockException(Err_other, "Device execute stop ptz continuous move failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_OTHER_EXCEPTION)));
                 return;
             }
             // Execute success
@@ -907,7 +907,7 @@ bool CameraController::addUserPTZPreset(const std::string &presetToken, const st
         // the call succeeded and the coordinates are valid.
         auto status = device_ctr->PTZ_GetStatus(p, t, z);
         SockException result = (status == PtzMoveStatus::UNKNOWN)
-            ? SockException(Err_other, "Execute ptz get status failed: " + device_ctr->lastError(), failureCode(device_ctr, ApiErrCode::CODE_PTZ_GET_STATUS_FAILED))
+            ? SockException(Err_other, "Execute ptz get status failed: " + device_ctr->lastError(), failureCode(device_ctr, ApiErrCode::CODE_OTHER_EXCEPTION))
             : SockException(Err_success, "User preset added successfully", ApiErrCode::CODE_SUCCESS);
         poller->async([weak_self, token, name, p, t, z, result, cb]() mutable {
             auto self = weak_self.lock();
@@ -963,7 +963,7 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
             float pan = preset.absPan, tilt = preset.absTilt, zoom = preset.absZoom;
             postPriorityDeviceTask([device_ctr, pan, tilt, zoom, cb]() mutable {
                 if (!device_ctr->PTZ_AbsoluteMove(pan, tilt, zoom)) {
-                    cb(SockException(Err_other, "Device execute ptz goto user preset failed: " + device_ctr->lastError(), failureCode(device_ctr, ApiErrCode::CODE_PTZ_GOTO_USER_PRESET_FAILED)));
+                    cb(SockException(Err_other, "Device execute ptz goto user preset failed: " + device_ctr->lastError(), failureCode(device_ctr, ApiErrCode::CODE_OTHER_EXCEPTION)));
                 } else {
                     cb(SockException(Err_success, "Device execute ptz goto user preset success", ApiErrCode::CODE_SUCCESS));
                 }
@@ -979,7 +979,7 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
             string token = presetToken;
             postPriorityDeviceTask([device_ctr, token, cb]() {
                 if (!device_ctr->PTZ_GotoPreset(token, 0.5, 0.5, 0.5)) {
-                    cb(SockException(Err_other, "Device execute ptz goto preset failed: " + device_ctr->lastError(), failureCode(device_ctr, ApiErrCode::CODE_PTZ_GOTO_PRESET_FAILED)));
+                    cb(SockException(Err_other, "Device execute ptz goto preset failed: " + device_ctr->lastError(), failureCode(device_ctr, ApiErrCode::CODE_OTHER_EXCEPTION)));
                 } else {
                     cb(SockException(Err_success, "Device execute ptz goto preset success", ApiErrCode::CODE_SUCCESS));
                 }
@@ -995,7 +995,7 @@ void CameraController::PTZGotoPreset(const std::string &presetToken, bool isUser
 static void onvifGetMediaProfile(const DeviceControl::Ptr &ptr, const string &profileToken, const std::function<void(const toolkit::SockException &ex, VideoEncoderConfig &config)> &cb) {
     VideoEncoderConfig config;
     if (!ptr->getVideoEncoderConfigByToken(profileToken, config)) {
-        cb(SockException(Err_other, "Device execute get media profile failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_ONVIF_GET_CONFIG_FAILED)), config);
+        cb(SockException(Err_other, "Device execute get media profile failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_OTHER_EXCEPTION)), config);
         return;
     }
     cb(SockException(Err_success, "Device execute get media profile success", ApiErrCode::CODE_SUCCESS), config);
@@ -1039,7 +1039,7 @@ void CameraController::getSDCardInfoAsync(const std::function<void(const toolkit
 
 static void onvifSetMediaProfile(const DeviceControl::Ptr &ptr, const string &profileToken, const VideoEncoderConfig &config, const function<void(const SockException &ex)> &cb, const function<void()> &on_success) { 
     if (!ptr->setVideoEncoderConfigByToken(profileToken, config)) {
-        cb(SockException(Err_other, "Device execute set media profile failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_ONVIF_SET_CONFIG_FAILED)));
+        cb(SockException(Err_other, "Device execute set media profile failed: " + ptr->lastError(), failureCode(ptr, ApiErrCode::CODE_OTHER_EXCEPTION)));
         return;
     }
         

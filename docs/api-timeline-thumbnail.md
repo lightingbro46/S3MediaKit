@@ -41,7 +41,7 @@ Tất cả API đều yêu cầu:
 | `902009` | 404 | Khoảng thời gian không hợp lệ |
 | `905001` | 404 | Camera không tìm thấy |
 | `909001` | 404 | Extract key không tìm thấy |
-| `909002` | 500 | Extract video thất bại |
+| `-1` | 500 | Extract video thất bại, không xác định được nguyên nhân (chi tiết ở `msg`) |
 | `909003` | 500 | Khoảng thời gian extract không có dữ liệu |
 | `914004` | 503 | Storage pool chứa recording đang offline |
 | `914019` | 500 | Không tạo được restore job cho dữ liệu COLD |
@@ -306,7 +306,7 @@ gọi lại API create.
 | `905001` | Camera không tìm thấy |
 | `902003` | Extension file không hợp lệ (chỉ chấp nhận .mp4, .mkv, .avi) |
 | `909003` | Khoảng thời gian không có dữ liệu recording |
-| `909002` | Tạo extract thất bại |
+| `-1` | Tạo extract thất bại, không xác định được nguyên nhân |
 
 ---
 
@@ -341,7 +341,8 @@ API không trả `status`/`stage`. Khi tác vụ thất bại, API trả lỗi t
 | `code` | HTTP | Mô tả |
 |--------|------|-------|
 | `909001` | 404 | Key không tìm thấy (sai key, đã xoá hoặc đã hết thời gian giữ) |
-| `909002` | 500 | Extract thất bại; `msg` có dạng `Extract video failed: <chi tiết>`. FE dừng polling |
+| `909003`, `914009`, `914019` | | Extract thất bại vì nguyên nhân đã biết (không có dữ liệu, cần restore, không tạo được restore job). FE dừng polling |
+| `-1` | 500 | Extract thất bại không rõ nguyên nhân; `msg` có dạng `Extract video failed: <chi tiết>`. FE dừng polling |
 
 ---
 

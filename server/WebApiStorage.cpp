@@ -279,7 +279,7 @@ void storagePoolCreate(const ArgsJson &allArgs, Json::Value &val) {
 
     auto id = TierStorageManager::Instance().createPool(pool);
     if (id.empty()) {
-        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_CREATE_FAILED, "Failed to create storage pool");
+        throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION, "Failed to create storage pool");
     }
     val["data"]["id"] = id;
 
@@ -296,7 +296,7 @@ void storagePoolCreate(const ArgsJson &allArgs, Json::Value &val) {
         bool is_default = false;
         TierStorageManager::Instance().deletePool(id, ref, is_default);
         enc_mgr.unregisterMountPath(id);
-        throw ApiResponseException(ApiErrCode::CODE_CONFIG_ENCRYPTION_PASSWORD_FALIED,
+        throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION,
                                    "Failed to initialize encryption config, pool creation rolled back");
     }
 
@@ -385,14 +385,14 @@ void storagePoolUpdate(const ArgsJson &allArgs, Json::Value &val) {
     }
 
     if (!TierStorageManager::Instance().updatePool(base)) {
-        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_UPDATE_FAILED, "Failed to update storage pool");
+        throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION, "Failed to update storage pool");
     }
     val["data"]["id"] = pool_id;
 
     registerEncryptionMountPath(base);
     if (mode_changed && !configured) {
         if (!enc_mgr.initialConfigTier(pool_id, encrypt_mode, encrypt_password, encrypt_old_video)) {
-            throw ApiResponseException(ApiErrCode::CODE_CONFIG_ENCRYPTION_PASSWORD_FALIED,
+            throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION,
                                        "Failed to initialize encryption config");
         }
         if (encrypt_old_video) {
@@ -408,7 +408,7 @@ void storagePoolUpdate(const ArgsJson &allArgs, Json::Value &val) {
             // run per tier, so the option must not trigger a second one.
             if (!enc_mgr.updateEncryptOldVideoOption(pool_id, encrypt_old_video,
                                                      /*trigger_reencrypt=*/!mode_changed, &err)) {
-                throw ApiResponseException(ApiErrCode::CODE_CHANGE_ENCRYPTION_MODE_FAILED,
+                throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION,
                                            err.empty() ? "Failed to update encryptOldVideo" : err);
             }
         }
@@ -416,7 +416,7 @@ void storagePoolUpdate(const ArgsJson &allArgs, Json::Value &val) {
             std::string err;
             if (!enc_mgr.updateEncryptionMode(pool_id, encrypt_mode, encrypt_password,
                                               /*trigger_reencrypt=*/true, &err)) {
-                throw ApiResponseException(ApiErrCode::CODE_CHANGE_ENCRYPTION_MODE_FAILED,
+                throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION,
                                            err.empty() ? "Failed to change encryptMode" : err);
             }
         }
@@ -469,7 +469,7 @@ void storagePoolDelete(const ArgsMap &allArgs, Json::Value &val) {
                                        "Storage pool is referenced by " + std::to_string(ref_count) +
                                        " policies or segment ranges");
         }
-        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_DELETE_FAILED, "Failed to delete storage pool");
+        throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION, "Failed to delete storage pool");
     }
 
     if (enc_mgr.tierExists(pool_id) && !enc_mgr.removeTierConfig(pool_id)) {
@@ -517,7 +517,7 @@ void storagePoolEncryptChangePassword(const ArgsMap &allArgs, Json::Value &val) 
     // footage is rewritten by the pass the manager schedules for the encrypted scope.
     if (!enc_mgr.updateEncryptionSalts(pool_id, old_password, new_password,
                                        /*trigger_reencrypt=*/false, &err)) {
-        throw ApiResponseException(ApiErrCode::CODE_CHANGE_ENCRYPTION_PASSWORD_FALIED,
+        throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION,
                                    err.empty() ? "Failed to change encryption password" : err);
     }
 
@@ -636,7 +636,7 @@ void storagePolicyCreate(const ArgsJson &allArgs, Json::Value &val) {
 
     auto id = TierStorageManager::Instance().createPolicy(policy);
     if (id.empty()) {
-        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_CREATE_FAILED, "Failed to create storage policy");
+        throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION, "Failed to create storage policy");
     }
     val["data"]["id"] = id;
 }
@@ -656,7 +656,7 @@ void storagePolicyUpdate(const ArgsJson &allArgs, Json::Value &val) {
     }
 
     if (!TierStorageManager::Instance().updatePolicy(policy)) {
-        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_UPDATE_FAILED, "Failed to update storage policy");
+        throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION, "Failed to update storage policy");
     }
     val["data"]["id"] = policy_id;
 }
@@ -681,7 +681,7 @@ void storagePolicyDelete(const ArgsMap &allArgs, Json::Value &val) {
             throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_IN_USE,
                                        "Policy is applied to " + std::to_string(camera_count) + " cameras");
         }
-        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_DELETE_FAILED,
+        throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION,
                                    "Policy not found or could not be deleted");
     }
 }
@@ -704,7 +704,7 @@ void storagePolicyAssignCamera(const ArgsMap &allArgs, Json::Value &val) {
     }
 
     if (!TierStorageManager::Instance().assignPolicyToCamera(camera_id, policy_id, reason)) {
-        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_ASSIGN_CAMERA_FAILED,
+        throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION,
                                    "Assign policy to camera failed");
     }
 }
@@ -745,7 +745,7 @@ void storagePolicyRemoveCamera(const ArgsMap &allArgs, Json::Value &val) {
         throw ApiResponseException(ApiErrCode::CODE_DEVICE_NOT_FOUND, "Camera not found");
     }
     if (!TierStorageManager::Instance().removeCameraOverride(camera_id)) {
-        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_UNASSIGN_CAMERA_FAILED,
+        throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION,
                                    "Failed to unassign storage policy from camera");
     }
 }
@@ -1255,7 +1255,7 @@ void registerStorageApis() {
 
             auto new_id = TierStorageManager::Instance().clonePolicy(policy_id, new_name);
             if (new_id.empty()) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_POLICY_CLONE_FAILED, "Clone storage policy failed");
+                throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION, "Clone storage policy failed");
             }
 
             val["data"]["id"] = new_id;
@@ -1648,14 +1648,14 @@ void registerStorageApis() {
                     camera_id, stream_id, start_time, end_time,
                     reason.empty() ? "MANUAL" : reason);
                 if (!restore.handled) {
-                    throw ApiResponseException(ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED,
+                    throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION,
                                                "Failed to create restore job");
                 }
 
                 RestoreJobSnapshot snapshot;
                 if (!TierStorageManager::Instance().getRestoreJobSnapshot(
                         restore.job_id, snapshot)) {
-                    throw ApiResponseException(ApiErrCode::CODE_STORAGE_RESTORE_JOB_CREATION_FAILED,
+                    throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION,
                                                "Restore job was created but its status is unavailable");
                 }
                 Json::Value data = TierStorageBase::restoreJobSnapshotToJson(snapshot);
@@ -1759,7 +1759,7 @@ void registerStorageApis() {
                 throw ApiResponseException(ApiErrCode::CODE_STORAGE_TIERING_JOB_NOT_FOUND, "Tiering job not found");
             }
             if (!TierStorageManager::Instance().retryTieringJob(job_id)) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_TIERING_JOB_UPDATE_FAILED, "Failed to retry tiering job");
+                throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION, "Failed to retry tiering job");
             }   
         }, nullptr, apiWorkSerial("storage.mutation"));
     });
@@ -1773,7 +1773,7 @@ void registerStorageApis() {
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
             string job_id = allArgs["job_id"];
             if (!TierStorageManager::Instance().cancelTieringJob(job_id)) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_TIERING_JOB_CANCEL_FAILED, "Failed to cancel tiering job");
+                throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION, "Failed to cancel tiering job");
             }
         }, nullptr, apiWorkSerial("storage.mutation"));
     });
@@ -1933,7 +1933,7 @@ void registerStorageApis() {
 
             ProtectedVideoImp imp;
             if (!imp.add(video)) {
-                throw ApiResponseException(ApiErrCode::CODE_STORAGE_SEGMENT_PROTECTED_CREATE_FAILED, "Failed to create protected video");
+                throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION, "Failed to create protected video");
             }
 
             Json::Value data;

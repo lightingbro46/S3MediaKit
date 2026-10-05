@@ -137,7 +137,7 @@ TEST(ExtractStartTest, CancelBeforePreparationStopsIt) {
     ASSERT_EQ(std::future_status::ready, result_future.wait_for(std::chrono::seconds(10)));
     auto ex = result_future.get();
     EXPECT_TRUE(ex);
-    EXPECT_EQ(ApiErrCode::CODE_EXTRACT_FAILED, ex.getCustomCode());
+    EXPECT_EQ(ApiErrCode::CODE_OTHER_EXCEPTION, ex.getCustomCode());
     // The preparation did not run: no "no data" completion was recorded.
     EXPECT_FALSE(extractor->status().finished);
     std::this_thread::sleep_for(std::chrono::milliseconds(100));

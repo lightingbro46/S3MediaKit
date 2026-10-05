@@ -33,9 +33,7 @@ Tất cả API bookmark đều yêu cầu:
 | `904002` | 504 | Restore hoặc FFmpeg chưa hoàn tất trong timeout của request |
 | `905001` | 404 | Camera không tìm thấy |
 | `908001` | 404 | Bookmark không tìm thấy |
-| `908003` | 500 | Tạo bookmark thất bại |
-| `908004` | 500 | Cập nhật bookmark thất bại |
-| `908005` | 500 | Xóa bookmark thất bại |
+| `-1` | 500 | Chuyển tiếp tạo/cập nhật/xóa bookmark tới node sở hữu thất bại (chi tiết ở `msg`) |
 
 ---
 

@@ -71,9 +71,9 @@ không nhầm với token người dùng hết hạn (`901001`).
 ## Quy tắc trả mã
 
 1. **Thao tác gửi tới camera thất bại** (camera đang kết nối): nếu nguyên nhân là mạng hoặc xác thực thì trả
-   `905004`–`905008`. Nguyên nhân khác (camera trả SOAP fault, thao tác không hỗ trợ…) giữ mã riêng của thao tác như
-   trước: `907004` PTZ absolute, `907005` continuous, `907006` relative, `907009` home, `907010` get status,
-   `907011`/`907012` goto preset, `912005` focus, `912007` iris, `912009` relay, `912002`/`912003` set/get config.
+   `905004`–`905008`. Không xác định được nguyên nhân (camera trả SOAP fault…) thì trả `-1` (`CODE_OTHER_EXCEPTION`),
+   chi tiết ở `msg`. Từ 2026-10-05 không còn trả các mã chung theo thao tác `907004`–`907006`, `907009`–`907012`,
+   `912002`/`912003`, `912005`, `912007`, `912009`. Camera không có relay output nào trả `912008`.
 2. **Camera chưa kết nối được** (trước đây luôn là `905002 Device offline`): nếu lần kết nối ONVIF gần nhất thất bại
    vì mạng hoặc xác thực thì trả `905004`–`905008`, `msg` có dạng `Device controller is not ready: <nguyên nhân>`.
    Không biết nguyên nhân (camera chưa từng kết nối, đang dừng, lỗi khác) thì vẫn `905002`.
@@ -86,7 +86,8 @@ không nhầm với token người dùng hết hạn (`901001`).
 - `setAudioVolume` khi loa chưa kết nối được: `905004`–`905008` theo nguyên nhân lần kết nối/lượt dò gần nhất, như
   quy tắc 2 ở trên (trước đây luôn `905002`). `905008` có `data` giờ thiết bị như camera.
 - `setAudioVolume` qua API hãng (Bosch) thất bại vì API hãng trả 401/403 → `905004`; không kết nối được → `905005`;
-  kết nối rồi không trả lời → `905006`; lỗi khác giữ `915003` như trước (mã của thao tác đặt âm lượng).
+  kết nối rồi không trả lời → `905006`; lỗi khác trả `-1`. Loa không hỗ trợ chỉnh âm lượng trả `902005`, âm lượng
+  yêu cầu trùng âm lượng hiện tại trả `912001` (trước 2026-10-05 các trường hợp này đều là `915003`).
 - `/device/speaker/playAudioFile` **không** trả các mã này: API trả 200 ngay cho cả danh sách loa, kết quả từng loa
   chỉ ghi log. Lỗi của backchannel (RTSP/ISAPI two-way audio) cũng chỉ ghi log.
 - Loa được đồng bộ giờ như camera: khi kết nối, mỗi `onvif.clockSyncIntervalSec`, và ngay khi kết nối thất bại vì
