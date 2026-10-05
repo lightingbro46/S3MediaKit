@@ -1028,10 +1028,13 @@ extern const std::string kControlAutoOrder;
 extern const std::string kControlReprobeFailures;
 // Seconds between connect attempts after a speaker rejected the credentials (instead of 60)
 extern const std::string kControlAuthRetrySec;
+// Write the speaker config (vms_resource + vms_kvpair) to the cluster ESC database. 0 keeps it in
+// info.txt only; turning it back on publishes the pending config on the next change or save.
+extern const std::string kSyncConfigToDb;
 } // namespace Speaker
 
-////////////Camera control configuration///////////
-namespace CameraControl {
+////////////Camera configuration///////////
+namespace Camera {
 // Protocols a camera with controlProtocol AUTO tries, in order, until one answers: "onvif,isapi,psia"
 extern const std::string kAutoOrder;
 // Connect failures of the "device does not speak this protocol" kind, in a row, after which a
@@ -1040,7 +1043,11 @@ extern const std::string kReprobeFailures;
 // Seconds between connect attempts after a camera rejected the credentials (instead of 60). Many
 // devices (Hikvision) lock the client IP after a few failed logins; /device/reconnect skips the wait.
 extern const std::string kAuthRetrySec;
-} // namespace CameraControl
+// Write the camera config (vms_resource + vms_kvpair) to the cluster ESC database. 0 keeps it in
+// info.txt only; ownership (vms_resource_assignment) and online status are still written.
+// Turning it back on publishes the pending config on the next change or save.
+extern const std::string kSyncConfigToDb;
+} // namespace Camera
 
 } // namespace mediakit
 

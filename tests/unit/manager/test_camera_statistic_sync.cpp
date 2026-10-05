@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include "Camera/CameraStatistic.h"
+#include "Speaker/SpeakerStatistic.h"
 #include "Common/config.h"
 #include "Local/StorageTier.h"
 #include "Extension/Resource.h"
@@ -32,6 +33,25 @@ bool waitFor(const std::function<bool()> &pred, int timeout_ms = 3000) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     return pred();
+}
+
+// Sets a sync_config_to_db key for the scope, restores it to 1 (the default) afterwards.
+class SyncConfigGuard {
+public:
+    SyncConfigGuard(const std::string &key, int value) : _key(key) { set(value); }
+    ~SyncConfigGuard() { set(1); }
+
+private:
+    void set(int value) {
+        mINI::Instance()[_key] = value;
+        NOTICE_EMIT(BroadcastReloadConfigArgs, mediakit::Broadcast::kBroadcastReloadConfig);
+    }
+
+    std::string _key;
+};
+
+bool escHasResource(const std::string &guid) {
+    return !std::make_shared<VmsResourceImp>()->findByGuid(guid).empty();
 }
 
 std::string kvValue(const std::string &guid, const std::string &name) {
@@ -444,4 +464,102 @@ TEST_F(CameraStatisticSyncTest, ReduceQualityOptionPersistsAndSyncs) {
     CameraStatistic from_esc;
     ASSERT_TRUE(CameraStatisticImp::syncFromEsc(guid, from_esc));
     EXPECT_TRUE(from_esc.option.enableReduceQualityOnView);
+}
+
+// camera.sync_config_to_db=0 keeps the config out of ESC (ownership is still written); turning it
+// back on publishes the next change.
+TEST_F(CameraStatisticSyncTest, ConfigSyncOffSkipsEscConfig) {
+    const std::string guid = "cam-stat-sync-off";
+    CameraStatisticImp::Ptr stats;
+    {
+        SyncConfigGuard guard(mediakit::Camera::kSyncConfigToDb, 0);
+        stats = makeCamera(guid);
+        stats->setCameraOption(activeOption(3600));
+        ASSERT_TRUE(waitFor([&] {
+            return !std::make_shared<VmsResourceAssignmentImp>()->findCurrentAssignment(guid).empty();
+        }));
+        waitEscIdle();
+        EXPECT_FALSE(escHasResource(guid));
+        EXPECT_EQ("", kvValue(guid, "keepArchivedMaxFor"));
+    }
+
+    stats->setCameraOption(activeOption(7200));
+    EXPECT_TRUE(waitFor([&] { return kvValue(guid, "keepArchivedMaxFor") == "7200"; }))
+        << "keepArchivedMaxFor=" << kvValue(guid, "keepArchivedMaxFor");
+}
+
+namespace {
+
+class SpeakerStatisticSyncTest : public CameraStatisticSyncTest {
+protected:
+    SpeakerStatisticImp::Ptr makeSpeaker(const std::string &device_id, const std::string &media_server, bool sync_mode = true) {
+        auto stats = std::make_shared<SpeakerStatisticImp>(_dir + "/" + device_id);
+        DeviceTuple tuple;
+        tuple.vhost = DEFAULT_VHOST;
+        tuple.device_id = device_id;
+        tuple.name = device_id;
+        stats->setDeviceTuple(tuple);
+
+        SpeakerOption option;
+        option.name = "speaker";
+        option.ip = "127.0.0.1";
+        option.port = 80;
+        option.preferedMediaServer = media_server;
+        option.audioPlaybackMode = SpeakerOption::kAudioPlaybackModeOnvifBackchannel;
+        stats->setSpeakerOption(option);
+        stats->setSyncMode(sync_mode);
+        return stats;
+    }
+};
+
+} // namespace
+
+TEST_F(SpeakerStatisticSyncTest, ConfigIsSyncedAndRemoved) {
+    const std::string guid = "spk-stat-config";
+    auto stats = makeSpeaker(guid, ResourceManager::Instance().getSelfNodeId());
+    // The kv pairs land one by one: wait for the last one written.
+    ASSERT_TRUE(waitFor([&] { return kvValue(guid, "enableTimeSync") == "1"; }));
+    EXPECT_EQ("speaker", kvValue(guid, "name"));
+    EXPECT_EQ("1", kvValue(guid, "audioPlaybackMode"));
+
+    EXPECT_EQ("127.0.0.1", kvValue(guid, "ip"));
+    auto resources = std::make_shared<VmsResourceImp>()->findByGuid(guid);
+    ASSERT_EQ(1u, resources.size());
+    EXPECT_EQ(ResourceManager::Instance().getSelfNodeId(), resources[0].parent_guid);
+    EXPECT_EQ("http://127.0.0.1:80", resources[0].url);
+
+    auto option = stats->getParams().option;
+    option.name = "speaker-renamed";
+    stats->setSpeakerOption(option);
+    EXPECT_TRUE(waitFor([&] { return kvValue(guid, "name") == "speaker-renamed"; }));
+
+    stats->remove();
+    EXPECT_TRUE(waitFor([&] { return !escHasResource(guid); }));
+}
+
+// Sync mode off (speaker loaded from info.txt, or leaving this node) or speaker.sync_config_to_db=0:
+// nothing is written.
+TEST_F(SpeakerStatisticSyncTest, NoWriteWhenSyncIsOff) {
+    const std::string local_guid = "spk-stat-local";
+    auto local = makeSpeaker(local_guid, ResourceManager::Instance().getSelfNodeId(), false);
+
+    const std::string off_guid = "spk-stat-config-off";
+    {
+        SyncConfigGuard guard(mediakit::Speaker::kSyncConfigToDb, 0);
+        auto off = makeSpeaker(off_guid, ResourceManager::Instance().getSelfNodeId());
+        waitEscIdle();
+    }
+    EXPECT_FALSE(escHasResource(local_guid));
+    EXPECT_FALSE(escHasResource(off_guid));
+}
+
+// A speaker moved to another media server: the old node must not delete the new owner's record.
+TEST_F(SpeakerStatisticSyncTest, RemoveKeepsRecordOfOtherMediaServer) {
+    const std::string guid = "spk-stat-moved";
+    auto stats = makeSpeaker(guid, "other-media-server");
+    ASSERT_TRUE(waitFor([&] { return escHasResource(guid); }));
+
+    stats->remove();
+    waitEscIdle();
+    EXPECT_TRUE(escHasResource(guid));
 }

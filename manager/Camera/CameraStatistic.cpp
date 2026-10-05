@@ -1606,6 +1606,11 @@ bool CameraStatisticImp::syncToEsc(bool force) {
     if (!_sync_mode || _esc_removed || !_esc_dirty) {
         return false;
     }
+    // Off: the config stays dirty, so the next change or save() publishes it once turned back on.
+    GET_CONFIG(bool, sync_config_to_db, mediakit::Camera::kSyncConfigToDb);
+    if (!sync_config_to_db) {
+        return false;
+    }
     auto sync_time = static_cast<uint64_t>(time(nullptr));
     if (!force && sync_time - _last_sync_time < static_cast<uint64_t>(_sync_interval_sec)) {
         TraceL << "Sync to ESC retry skipped for camera " << tuple.shortUrl() << " since last sync was at " << getTimeStr("%Y-%m-%d %H:%M:%S", _last_sync_time);

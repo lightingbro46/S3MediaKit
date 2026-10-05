@@ -243,7 +243,7 @@ void CameraController::onManager() {
         return;
     }
 
-    GET_CONFIG(int, auth_retry_sec, CameraControl::kAuthRetrySec);
+    GET_CONFIG(int, auth_retry_sec, Camera::kAuthRetrySec);
     const uint64_t now = time(nullptr);
     if (_probing || !_pacer.due(now, 60, auth_retry_sec)) {
         // avoid reconnecting too frequently, and logging in with a rejected password even less often
@@ -432,7 +432,7 @@ void CameraController::publishConnected(const DeviceControl::Ptr &device_ctr, bo
 
 void CameraController::startProtocolProbe() {
     _probing = true;
-    GET_CONFIG(string, order_str, CameraControl::kAutoOrder);
+    GET_CONFIG(string, order_str, Camera::kAutoOrder);
     const auto order = parseProtocolOrder(order_str);
     const uint64_t generation = _ctrl_generation.load();
     const string address = _address;
@@ -509,7 +509,7 @@ void CameraController::onConnectResult(const DeviceControl::Ptr &device_ctr, Con
         onProtocolConnected(device_ctr->protocol());
         return;
     }
-    GET_CONFIG(int, reprobe_failures, CameraControl::kReprobeFailures);
+    GET_CONFIG(int, reprobe_failures, Camera::kReprobeFailures);
     if (!_lock.onConnectError(err, reprobe_failures)) {
         return;
     }
@@ -555,7 +555,7 @@ void CameraController::onAuthResult(ConnectError err) {
     const bool was_rejected = _pacer.authFailed();
     _pacer.onResult(err);
     if (_pacer.authFailed() && !was_rejected) {
-        GET_CONFIG(int, auth_retry_sec, CameraControl::kAuthRetrySec);
+        GET_CONFIG(int, auth_retry_sec, Camera::kAuthRetrySec);
         WarnL << "Device " << _tuple.shortUrl() << " (" << _address << ") rejected the credentials: next attempt in "
               << auth_retry_sec << " s, or at once through /media/mserver/device/reconnect";
     }

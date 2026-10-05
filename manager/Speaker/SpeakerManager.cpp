@@ -29,6 +29,10 @@ bool SpeakerManager::addSpeaker(DeviceTuple &tuple, SpeakerOption &option) {
                 auto poller = gc->getOwnerPoller(DeviceSource::NullDeviceSource());
                 poller->async([gc, option]() {
                     gc->setSpeakerOption(option);
+                    auto stats = gc->getSpeakerStatisticImp();
+                    if (stats) {
+                        stats->setSyncMode(true); // enable sync mode to allow speaker statistic sync to ESC
+                    }
                 });
                 return true;
             }
@@ -41,8 +45,9 @@ bool SpeakerManager::addSpeaker(DeviceTuple &tuple, SpeakerOption &option) {
     auto stats_imp = StatisticRecorder::Instance().getSpeakerRecorder(tuple.device_id);
     auto imp = std::make_shared<GenericIPSpeakerImp>(tuple, stats_imp);
     auto poller = imp->getOwnerPoller(DeviceSource::NullDeviceSource());
-    poller->async([imp, option]() {
+    poller->async([imp, stats_imp, option]() {
         imp->setSpeakerOption(option);
+        stats_imp->setSyncMode(true); // enable sync mode to allow speaker statistic sync to ESC
     });
     _gcImp.emplace(tuple.shortUrl(), imp);
     return true;
@@ -78,18 +83,16 @@ bool SpeakerManager::delSpeaker(const std::string& key) {
 
     auto it = _gcImp.find(key);
     if (it != _gcImp.end()) {
+        // A speaker keeps no archive and has no failover: remove it right away. Its ESC record is
+        // deleted only if it still names this media server (a moved speaker belongs to its new node).
+        // The controller stops when GenericIPSpeakerImp is destroyed.
         auto imp = it->second;
-        auto option = imp->getSpeakerOption();
-        if (imp->isEnabled()) {
-            DebugL << "Device " << key << " is active: " << imp->isEnabled() << ". Enable failover mode";
-            option.enableActive = false;
-            imp->setSpeakerOption(option);
-        } else {
-            auto stats_imp = imp->getSpeakerStatisticImp();
-            DebugL << "Device " << key << " is not active and has no archived data. Remove device out of list";
+        auto stats_imp = imp->getSpeakerStatisticImp();
+        if (stats_imp) {
             stats_imp->remove();
-            _gcImp.erase(key);
         }
+        DebugL << "Device " << key << " is no longer configured on this media server. Remove device out of list";
+        _gcImp.erase(it);
         return true;
     }
     return false;

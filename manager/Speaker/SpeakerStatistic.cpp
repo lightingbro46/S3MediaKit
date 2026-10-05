@@ -2,6 +2,8 @@
 #include "Common/config.h"
 #include "json/json.h"
 #include "Common/StrUtil.h"
+#include "Common/BlockingExecutors.h"
+#include "Extension/Resource.h"
 
 using namespace std;
 using namespace toolkit;
@@ -248,6 +250,8 @@ string SpeakerStatisticHelper::getParamsString(const SpeakerStatistic &stats) {
 
 SpeakerStatisticImp::SpeakerStatisticImp(const std::string &src_path) {
     CHECK(!src_path.empty(), "Source path cannot be empty");
+    // Same as CameraStatisticImp: one serial queue per speaker keeps its ESC writes in order.
+    _esc_queue = std::make_shared<SerialTaskQueue>(BlockingExecutors::api(), "esc " + src_path);
     setup(src_path);
 }
 
@@ -289,12 +293,22 @@ void SpeakerStatisticImp::save() {
     }
     updated_at = time(nullptr);
     _file->save(static_cast<const SpeakerStatistic &>(*this));
+    // Retry a config sync that was not written yet (sync was off or the write failed).
+    if (_esc_dirty) {
+        syncToEsc(false);
+    }
+}
+
+void SpeakerStatisticImp::markEscConfigChanged() {
+    _esc_dirty = true;
+    syncToEsc(true);
 }
 
 void SpeakerStatisticImp::setDeviceTuple(const DeviceTuple &input_tuple) {
     std::lock_guard<std::mutex> lck(_mtx);
     tuple = input_tuple;
     save();
+    markEscConfigChanged();
 }
 
 void SpeakerStatisticImp::setSpeakerOption(const SpeakerOption &input_option) {
@@ -302,6 +316,7 @@ void SpeakerStatisticImp::setSpeakerOption(const SpeakerOption &input_option) {
     if (input_option == option) return;
     option = input_option;
     save();
+    markEscConfigChanged();
 }
 
 void SpeakerStatisticImp::addDeviceCapabilities(bool input_connect, string input_status, const DeviceCapabilities *input_caps) {
@@ -373,9 +388,194 @@ void SpeakerStatisticImp::remove() {
             DebugL << "Removed file recorder success: " << tuple.shortUrl();
             removed = true;
         }
+        // Queued behind any pending ESC writes of this speaker, so they cannot recreate it afterwards.
+        removeFromEsc();
+        _esc_removed = true;
     }
     if (_on_remove && removed) {
         _on_remove(tuple.device_id);
+    }
+}
+
+template<>
+struct ResourceAdapter<SpeakerStatistic> {
+    static VmsResource toVmsResource(const SpeakerStatistic &stats) {
+        VmsResource res;
+        res.guid = stats.tuple.device_id;
+        // parent_guid is the speaker's media server, as for a camera.
+        res.parent_guid = stats.option.preferedMediaServer;
+        res.name = stats.tuple.name;
+        if (!stats.option.ip.empty()) {
+            res.url = StrPrinter << "http://" << stats.option.ip << ":" << (stats.option.autoWebPort ? stats.option.port : stats.option.webPort);
+        }
+        res.xtype_guid = getXtypeId();
+        return res;
+    }
+
+    static std::vector<VmsKvPair> toKvPairs(const SpeakerStatistic &stats) {
+        const std::string &resource_id = stats.tuple.device_id;
+        const SpeakerOption &opt = stats.option;
+        std::vector<VmsKvPair> kvs;
+
+        auto make = [&resource_id](const std::string &key, const std::string &val) {
+            VmsKvPair kv;
+            kv.resource_guid = resource_id;
+            kv.name  = key;
+            kv.value = val;
+            return kv;
+        };
+        // The ONVIF account (onvifUsername/onvifPassword/onvifPort) is derived on connect, not synced.
+        kvs.push_back(make("name",                opt.name));
+        kvs.push_back(make("ip",                  opt.ip));
+        kvs.push_back(make("port",                std::to_string(opt.port)));
+        kvs.push_back(make("manufacturer",        opt.manufacturer));
+        kvs.push_back(make("model",               opt.model));
+        kvs.push_back(make("username",            opt.username));
+        kvs.push_back(make("password",            opt.password));
+        kvs.push_back(make("webPort",             std::to_string(opt.webPort)));
+        kvs.push_back(make("autoWebPort",         std::to_string(opt.autoWebPort)));
+        kvs.push_back(make("enableActive",        std::to_string(opt.enableActive)));
+        kvs.push_back(make("preferedMediaServer", opt.preferedMediaServer));
+        kvs.push_back(make("mediaPort",           std::to_string(opt.mediaPort)));
+        kvs.push_back(make("autoMediaPort",       std::to_string(opt.autoMediaPort)));
+        kvs.push_back(make("audioPlaybackMode",   std::to_string(opt.audioPlaybackMode)));
+        kvs.push_back(make("controlProtocol",     opt.controlProtocol));
+        kvs.push_back(make("enableTimeSync",      std::to_string(opt.enableTimeSync)));
+        return kvs;
+    }
+
+    static std::vector<LocalResource> toLocalProps(const SpeakerStatistic &stats) {
+        // No local property for speaker statistic
+        return std::vector<LocalResource>();
+    }
+
+    static SpeakerStatistic fromVmsResource(const VmsResource &res, const std::vector<VmsKvPair> &kvs, const std::vector<LocalResource> &props) {
+        SpeakerStatistic stats;
+        stats.tuple.vhost = DEFAULT_VHOST;
+        stats.tuple.device_id = res.guid;
+        stats.tuple.name = res.name;
+        stats.option.preferedMediaServer = res.parent_guid;
+
+        for (const auto &kv : kvs) {
+            try {
+                if (kv.name == "name") {
+                    stats.option.name = kv.value;
+                } else if (kv.name == "ip") {
+                    stats.option.ip = kv.value;
+                } else if (kv.name == "port") {
+                    stats.option.port = std::stoi(kv.value);
+                } else if (kv.name == "manufacturer") {
+                    stats.option.manufacturer = kv.value;
+                } else if (kv.name == "model") {
+                    stats.option.model = kv.value;
+                } else if (kv.name == "username") {
+                    stats.option.username = kv.value;
+                } else if (kv.name == "password") {
+                    stats.option.password = kv.value;
+                } else if (kv.name == "webPort") {
+                    stats.option.webPort = std::stoi(kv.value);
+                } else if (kv.name == "autoWebPort") {
+                    stats.option.autoWebPort = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "enableActive") {
+                    stats.option.enableActive = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "preferedMediaServer") {
+                    stats.option.preferedMediaServer = kv.value;
+                } else if (kv.name == "mediaPort") {
+                    stats.option.mediaPort = std::stoi(kv.value);
+                } else if (kv.name == "autoMediaPort") {
+                    stats.option.autoMediaPort = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "audioPlaybackMode") {
+                    stats.option.audioPlaybackMode = std::stoi(kv.value);
+                } else if (kv.name == "controlProtocol") {
+                    stats.option.controlProtocol = controlProtocolSetting(kv.value);
+                } else if (kv.name == "enableTimeSync") {
+                    stats.option.enableTimeSync = static_cast<bool>(std::stoi(kv.value));
+                }
+            } catch (const std::exception &e) {
+                WarnL << "Failed to parse KV pair '" << kv.name << "' = '" << kv.value << "': " << e.what();
+            }
+        }
+        return stats;
+    }
+
+    static std::string getXtypeId() {
+        auto xtypeId = ResourceTypeManager::Instance().getResourceTypeGuid(RESOURCE_TYPE_SPEAKER);
+        CHECK(!xtypeId.empty(), "XtypeId for Speaker cannot be empty");
+        return xtypeId;
+    }
+};
+
+bool SpeakerStatisticImp::syncToEsc(bool force) {
+    if (!_sync_mode || _esc_removed || !_esc_dirty) {
+        return false;
+    }
+    // Off: the config stays dirty, so the next change or save() publishes it once turned back on.
+    GET_CONFIG(bool, sync_config_to_db, mediakit::Speaker::kSyncConfigToDb);
+    if (!sync_config_to_db) {
+        return false;
+    }
+    auto sync_time = static_cast<uint64_t>(time(nullptr));
+    if (!force && sync_time - _last_sync_time < static_cast<uint64_t>(_sync_interval_sec)) {
+        TraceL << "Sync to ESC retry skipped for speaker " << tuple.shortUrl() << " since last sync was at " << getTimeStr("%Y-%m-%d %H:%M:%S", _last_sync_time);
+        return false;
+    }
+    _last_sync_time = sync_time;
+    _esc_dirty = false;
+
+    SpeakerStatistic params = static_cast<const SpeakerStatistic &>(*this);
+    std::weak_ptr<SpeakerStatisticImp> weak_self = shared_from_this();
+    _esc_queue->post([weak_self, params]() {
+        try {
+            ResourceManager::Instance().addResource<SpeakerStatistic>(params, true);
+            TraceL << "Sync to ESC for speaker " << params.tuple.shortUrl();
+        } catch (const std::exception &e) {
+            ErrorL << "Failed to sync speaker resource to ESC for speaker " << params.tuple.shortUrl() << ": " << e.what();
+            auto self = weak_self.lock();
+            if (self) {
+                std::lock_guard<std::mutex> lck(self->_mtx);
+                self->_esc_dirty = true; // retried by the next save()
+            }
+        }
+    });
+    return true;
+}
+
+void SpeakerStatisticImp::removeFromEsc() {
+    GET_CONFIG(bool, sync_config_to_db, mediakit::Speaker::kSyncConfigToDb);
+    if (!sync_config_to_db || _esc_removed) {
+        return;
+    }
+    auto device_id = tuple.device_id;
+    auto device_url = tuple.shortUrl();
+    _esc_queue->post([device_id, device_url]() {
+        try {
+            auto &resources = ResourceManager::Instance();
+            SpeakerStatistic stats;
+            if (!resources.getResource<SpeakerStatistic>(device_id, stats)) {
+                return;
+            }
+            // The speaker was moved, not deleted: the record belongs to the media server that runs it now.
+            auto owner = stats.option.preferedMediaServer;
+            if (!owner.empty() && owner != resources.getSelfNodeId()) {
+                DebugL << "Speaker " << device_url << " belongs to media server " << owner << ". Keep its ESC resource";
+                return;
+            }
+            resources.removeResource(device_id);
+            TraceL << "Removed speaker resource from ESC for speaker " << device_url;
+        } catch (const std::exception &e) {
+            ErrorL << "Failed to remove speaker resource from ESC for speaker " << device_url << ": " << e.what();
+        }
+    });
+}
+
+void SpeakerStatisticImp::setSyncMode(bool enable) {
+    std::lock_guard<std::mutex> lck(_mtx);
+    const bool was_enabled = _sync_mode;
+    _sync_mode = enable;
+    DebugL << "Set sync mode for speaker " << tuple.shortUrl() << " to " << (_sync_mode ? "enabled" : "disabled");
+    if (enable && !was_enabled) {
+        // The option may be unchanged since startup (loaded from info.txt), so publish it now.
+        markEscConfigChanged();
     }
 }
 

@@ -767,6 +767,7 @@ const string kOnvifUsername = SPEAKER_FIELD "onvifUsername";
 const string kControlAutoOrder = SPEAKER_FIELD "control_auto_order";
 const string kControlReprobeFailures = SPEAKER_FIELD "control_reprobe_failures";
 const string kControlAuthRetrySec = SPEAKER_FIELD "control_auth_retry_sec";
+const string kSyncConfigToDb = SPEAKER_FIELD "sync_config_to_db";
 
 static onceToken token([]() {
     mINI::Instance()[kSpeakerSavePath] = "./www";
@@ -778,15 +779,17 @@ static onceToken token([]() {
     mINI::Instance()[kControlAutoOrder] = "onvif,isapi,psia";
     mINI::Instance()[kControlReprobeFailures] = 5;
     mINI::Instance()[kControlAuthRetrySec] = 300;
+    mINI::Instance()[kSyncConfigToDb] = 1;
 });
 } // namespace Speaker
 
-// //////////Camera control configuration///////////
-namespace CameraControl {
-#define CAMERA_CONTROL_FIELD "camera."
-const string kAutoOrder = CAMERA_CONTROL_FIELD "control_auto_order";
-const string kReprobeFailures = CAMERA_CONTROL_FIELD "control_reprobe_failures";
-const string kAuthRetrySec = CAMERA_CONTROL_FIELD "control_auth_retry_sec";
+// //////////Camera configuration///////////
+namespace Camera {
+#define CAMERA_FIELD "camera."
+const string kAutoOrder = CAMERA_FIELD "control_auto_order";
+const string kReprobeFailures = CAMERA_FIELD "control_reprobe_failures";
+const string kAuthRetrySec = CAMERA_FIELD "control_auth_retry_sec";
+const string kSyncConfigToDb = CAMERA_FIELD "sync_config_to_db";
 
 static onceToken token([]() {
     // ONVIF first: every camera that worked before keeps working the same way. ISAPI before PSIA:
@@ -796,8 +799,10 @@ static onceToken token([]() {
     mINI::Instance()[kReprobeFailures] = 5;
     // A wrong password costs one failed login per 5 minutes instead of one per minute.
     mINI::Instance()[kAuthRetrySec] = 300;
+    // Sync camera configuration to database, 1: enable, 0: disable
+    mINI::Instance()[kSyncConfigToDb] = 1;
 });
-} // namespace CameraControl
+} // namespace Camera
 
 } // namespace mediakit
 

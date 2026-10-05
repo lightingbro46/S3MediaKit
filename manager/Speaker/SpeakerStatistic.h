@@ -3,6 +3,7 @@
 
 #include <mutex>
 #include "Local/FileRecorder.h"
+#include "Common/SerialTaskQueue.h"
 #include "GenericIPSpeaker.h"
 #include "SpeakerController.h"
 
@@ -38,7 +39,7 @@ struct SpeakerStatistic {
     }
 };
 
-class SpeakerStatisticImp : private SpeakerStatistic {
+class SpeakerStatisticImp : private SpeakerStatistic, public std::enable_shared_from_this<SpeakerStatisticImp> {
 public:
     using Ptr = std::shared_ptr<SpeakerStatisticImp>;
 
@@ -67,6 +68,10 @@ public:
 
     void remove();
 
+    // Enables/disables writes of the speaker config to the cluster ESC database (speaker.sync_config_to_db
+    // must also be on). Enabling publishes the current config (it may be unchanged since startup).
+    void setSyncMode(bool enable);
+
 private:
     void setup(const std::string &src_path);
 
@@ -76,10 +81,26 @@ private:
 
     void saveOnvifCredentials();
 
+    // Called by config setters (tuple / option): pushes the ESC resource now, bypassing the throttle.
+    void markEscConfigChanged();
+
+    // Queue an ESC upsert of the current config if it is pending. force=false applies the
+    // retry throttle. Caller must hold _mtx.
+    bool syncToEsc(bool force);
+
+    // Queue ESC removal after all pending ESC tasks of this speaker. Caller must hold _mtx.
+    void removeFromEsc();
+
 private:
     std::mutex _mtx;
     FileRecorder<SpeakerStatistic, SpeakerStatisticHelper>::Ptr _file;
     std::function<void(const std::string&)> _on_remove;
+    int _sync_interval_sec = 30;
+    bool _sync_mode = false;
+    uint64_t _last_sync_time = 0;
+    bool _esc_dirty = false;    // config not yet written to ESC (never synced or last write failed)
+    bool _esc_removed = false;  // remove() was called; no more ESC writes
+    SerialTaskQueue::Ptr _esc_queue;
 };
 
 } // namespace managerkit
