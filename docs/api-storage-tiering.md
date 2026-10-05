@@ -260,6 +260,7 @@ Khi thất bại, `data` có:
 ```
 
 Pool mặc định hoặc pool còn bị policy/range tham chiếu không thể xóa.
+Pool không tồn tại trả `914001` (HTTP 404), không có `data`.
 
 ### 2.6 Test connection
 
@@ -635,7 +636,7 @@ Detail gồm `job_id`, `type=RESTORE`, status/progress, camera/tier, time window
 - `GET/POST /media/mserver/storage/tieringJob/list` — permission `150301`; optional `camera_id`, `status`, `source_tier`, `target_tier`, `from_time`, `to_time`, `page`, `size`.
 - `GET/POST /media/mserver/storage/tieringJob/detail` — permission `150301`; required `job_id`.
 - `POST /media/mserver/storage/tieringJob/retry` — permission `150302`; required `job_id`; đặt job về `PENDING`, bytes moved về `0`.
-- `POST /media/mserver/storage/tieringJob/cancel` — permission `150302`; required `job_id`; chỉ cancel job chưa `DONE`/`FAILED`/`CANCELLED`.
+- `POST /media/mserver/storage/tieringJob/cancel` — permission `150302`; required `job_id`; chỉ cancel được job đang `PENDING`. Job không tồn tại trả `914020` (HTTP 404); job ở trạng thái khác (`RUNNING`, `DONE`, `FAILED`, `CANCELLED`) trả `-1` (HTTP 500).
 
 Item list/detail gồm `job_id`, status/progress, camera/stream/range, source/target tier/pool, bytes, timestamps và context lúc tạo job: `job_trigger`, `policy_id`, `policy_updated_at`. `job_trigger` nhận `LEGACY`, `RETENTION`, `PRESSURE` hoặc `DELETE_POLICY_EXTERNAL`; `segment_count`/`processed_segment_count` hiện luôn `0`. Detail thêm `error_code`, `error_message`, `retryable`. Job tự hủy vì policy camera không còn cho phép thao tác trả `status=CANCELLED`, `error_code=TIERING_JOB_POLICY_CHANGED`, `retryable=false`; lỗi thực thi khác tiếp tục dùng `TIERING_JOB_FAILED`.
 

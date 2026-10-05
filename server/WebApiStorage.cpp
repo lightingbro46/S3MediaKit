@@ -431,6 +431,10 @@ void storagePoolDelete(const ArgsMap &allArgs, Json::Value &val) {
     string pool_id = allArgs["id"];
     auto &enc_mgr = TierEncryptionManager::Instance();
 
+    if (TierStorageManager::Instance().getPool(pool_id).empty()) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_NOT_FOUND, "Storage pool not found");
+    }
+
     if (enc_mgr.tierExists(pool_id)) {
         if (enc_mgr.isAnyJobRunning() && enc_mgr.getRunningJobTierId() == pool_id) {
             throw ApiResponseException(ApiErrCode::CODE_STORAGE_ENCRYPTION_REENCRYPT_JOB_RUNNING,
@@ -1772,6 +1776,9 @@ void registerStorageApis() {
         // Mutations run on the API worker, one at a time: they update the DB and the shared pool/policy caches and registrations.
         dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
             string job_id = allArgs["job_id"];
+            if (TierStorageManager::Instance().getTieringJob(job_id).empty()) {
+                throw ApiResponseException(ApiErrCode::CODE_STORAGE_TIERING_JOB_NOT_FOUND, "Tiering job not found");
+            }
             if (!TierStorageManager::Instance().cancelTieringJob(job_id)) {
                 throw ApiResponseException(ApiErrCode::CODE_OTHER_EXCEPTION, "Failed to cancel tiering job");
             }
