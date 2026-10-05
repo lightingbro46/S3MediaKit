@@ -1371,6 +1371,7 @@ public:
     std::vector<OnvifRelayOutputProfile> getRelayOutputProfiles() const override { return {}; }
     bool enableRelayOutput() override { return false; }
     bool Relay_SetOutputState(const std::string &, bool) override { return false; }
+    bool setSynchronizationPoint(const std::string &) override { return false; }
 
 private:
     ControlProtocol _protocol;

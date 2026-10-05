@@ -2495,6 +2495,27 @@ bool OnvifControl::PTZ_AuxiliaryCommand(const std::string &auxiliaryData) {
     return true;
 }
 
+bool OnvifControl::setSynchronizationPoint(const std::string& token) {
+    std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
+    if (_proxyMedia2 == nullptr) {
+        WarnL << "Unknown proxyMedia2";
+        return false;
+    }
+
+    _ns1__SetSynchronizationPoint *SetSynchronizationPoint = soap_new__ns1__SetSynchronizationPoint(_m_soap);
+    SetSynchronizationPoint->ProfileToken = token;
+    _ns1__SetSynchronizationPointResponse SetSynchronizationPointResponse;
+    if (!setCredentials()) {
+        return false;
+    }
+
+    if (callWithAuth([&] { return _proxyMedia2->SetSynchronizationPoint(SetSynchronizationPoint, SetSynchronizationPointResponse); })) {
+        reportError();
+        return false;
+    }
+    return true;
+}
+
 bool OnvifControl::Relay_SetOutputState(const std::string &relayToken, bool active) {
     std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_proxyDevice == nullptr) {

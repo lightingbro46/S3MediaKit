@@ -417,6 +417,9 @@ public:
     virtual bool refreshMediaProfiles() = 0;
     virtual bool getVideoEncoderConfigByToken(const std::string &token, VideoEncoderConfig &config) = 0;
     virtual bool setVideoEncoderConfigByToken(const std::string &token, const VideoEncoderConfig &config) = 0;
+    // Asks the encoder of profile `token` for a key frame now (ONVIF SetSynchronizationPoint,
+    // PSIA/ISAPI requestKeyFrame).
+    virtual bool setSynchronizationPoint(const std::string &token) = 0;
 
     virtual OnvifPTZProfile getPTZProfile() = 0;
     virtual bool enablePTZ() = 0;

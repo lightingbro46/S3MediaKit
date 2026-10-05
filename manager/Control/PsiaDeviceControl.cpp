@@ -1051,6 +1051,10 @@ bool PsiaControl::setVideoEncoderConfigByToken(const std::string &token, const V
     return put(path, updated);
 }
 
+bool PsiaControl::setSynchronizationPoint(const std::string &token) {
+    return put(std::string(_dialect.channels) + "/" + token + "/requestKeyFrame", "");
+}
+
 void PsiaControl::setCameraTimeManual() {
     std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     std::string xml, updated;

@@ -158,6 +158,9 @@ public:
     bool refreshMediaProfiles() override;
     bool getVideoEncoderConfigByToken(const std::string &token, VideoEncoderConfig &config) override;
     bool setVideoEncoderConfigByToken(const std::string &token, const VideoEncoderConfig &config) override;
+    // PUT /PSIA/Streaming/channels/<token>/requestKeyFrame; IsapiControl inherits it as
+    // PUT /ISAPI/Streaming/channels/<token>/requestKeyFrame (the dialect's channel path).
+    bool setSynchronizationPoint(const std::string &token) override;
 
     OnvifPTZProfile getPTZProfile() override;
     bool enablePTZ() override;

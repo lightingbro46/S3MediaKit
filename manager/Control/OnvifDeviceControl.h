@@ -276,6 +276,11 @@ public:
     bool getVideoEncoderConfigByToken(const std::string& token, VideoEncoderConfig& vConfig) override;
 
     /**
+    * @brief Media2 SetSynchronizationPoint: the camera sends a key frame on profile `token` now.
+    */
+    bool setSynchronizationPoint(const std::string& token) override;
+
+    /**
     * Set the camera time to match the current system time. Virtual so the maintenance cycle can be
     * driven by a fake device in unit tests.
     */
