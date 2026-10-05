@@ -576,6 +576,12 @@ void SpeakerStatisticImp::setSyncMode(bool enable) {
     if (enable && !was_enabled) {
         // The option may be unchanged since startup (loaded from info.txt), so publish it now.
         markEscConfigChanged();
+    } else if (enable) {
+        // Called again on every server config reload: refresh ESC at most every _sync_interval_sec.
+        // A no-op when ESC already matches; restores the record when the node that ran the speaker
+        // before deleted it from its stale view of a move (its delete can replicate after our write).
+        _esc_dirty = true;
+        syncToEsc(false);
     }
 }
 

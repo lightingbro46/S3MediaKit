@@ -50,6 +50,23 @@ nếu thời gian chờ ngắn hơn khoảng đó thì node-b gỡ camera, xoá 
 trên node-b trả 403 dù file ghi vẫn còn. `FO_WAIT_SEC` (mặc định 90)
 là thời gian chờ mỗi bước. Mã thoát là số check FAIL.
 
+## Kịch bản đồng bộ cấu hình loa
+```bash
+tests/integration/sync_cluster/run_cluster.sh /tmp/s3mk_speaker speaker
+```
+Loa `spk-sync-1` trỏ tới `127.0.0.1:9` (không kết nối được, chỉ kiểm phần cấu hình). Kiểm tra nằm trong
+`check_speaker.py`, mỗi check chờ tối đa `SP_WAIT_SEC` (mặc định 60 s); check "không được xảy ra" theo dõi thêm
+`SP_SETTLE_SEC` (mặc định 20 s). Mã thoát là số check FAIL.
+
+| Bước | Diễn biến | Kiểm tra |
+|---|---|---|
+| sp1 | Loa chạy ở node-a | SP-01..03: `vms_resource` loại `Speaker` (parent `node-a`, url) và kvpair có trên cả 2 DB; không đồng bộ tài khoản ONVIF |
+| sp2 | Đổi tên loa | SP-10: tên mới sang cả 2 DB |
+| sp3 | Chuyển loa sang node-b | SP-20..21: cả 2 DB trỏ về `node-b` và giữ nguyên. node-a có thể xoá bản ghi vì DB của nó chưa nhận bản ghi node-b vừa ghi; node-b ghi lại ở lần nạp config kế tiếp (tối đa mỗi 30 s) |
+| sp4 | Restart cả 2 node | SP-30..31: như sp3 |
+| sp5 | node-b restart với `camera.sync_config_to_db=0`, `speaker.sync_config_to_db=0`; thêm camera `cam-sync-off`, loa `spk-sync-off`, đổi tên `spk-sync-1` | SP-40..43: assignment của camera vẫn ghi; không có `vms_resource`/kvpair của camera và loa mới; tên `spk-sync-1` trên DB không đổi |
+| sp6 | node-b bật lại đồng bộ, xoá loa khỏi cả 2 node | SP-50: `vms_resource` và kvpair của loa bị xoá trên cả 2 DB |
+
 ## Kịch bản
 | Phase | Nội dung |
 |---|---|
@@ -70,8 +87,9 @@ Nếu có dòng `CRASH: <node>`, log của node đó có stack trace (`## signal
 `log_count` khác nhau giữa hai node là bình thường: node nhận dữ liệu qua snapshot thì không có bản sao `transaction_log`.
 
 ## File
-- `setup_nodes.py` — tạo thư mục, `config.ini` và `api-config.json` cho từng node; tham số `phase2`..`phase4`, `fo1`..`fo3` đổi cấu hình camera.
+- `setup_nodes.py` — tạo thư mục, `config.ini` và `api-config.json` cho từng node; tham số `phase2`..`phase4`, `fo1`..`fo3`, `sp1`..`sp6` đổi cấu hình camera/loa, `syncoff:<node>`/`syncon:<node>` đặt `*.sync_config_to_db` của node đang dừng.
 - `check_failover.py` — các check của kịch bản failover.
+- `check_speaker.py` — các check của kịch bản đồng bộ cấu hình loa.
 - `mock_api.py` — trả HTTP 200 cho mọi hook.
 - `compare_db.py` — so sánh các bảng đồng bộ giữa hai node.
 - `run_cluster.sh` — chạy trọn kịch bản.

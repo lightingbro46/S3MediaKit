@@ -69,7 +69,8 @@ public:
     void remove();
 
     // Enables/disables writes of the speaker config to the cluster ESC database (speaker.sync_config_to_db
-    // must also be on). Enabling publishes the current config (it may be unchanged since startup).
+    // must also be on). Enabling publishes the current config (it may be unchanged since startup);
+    // enabling again (every server config reload) refreshes it at most every 30 s.
     void setSyncMode(bool enable);
 
 private:

@@ -10,6 +10,8 @@
 #   run_cluster.sh [work_dir] workerapis # one node: check APIs that run on the API worker pool
 #   run_cluster.sh [work_dir] failover   # recording camera: failover to node-b while node-a is
 #                                        # offline, move back, cross-node timeline, retention
+#   run_cluster.sh [work_dir] speaker    # speaker config sync: add, change, move, restart,
+#                                        # sync_config_to_db=0, delete
 #
 # Env: MEDIASERVER_DIR (default: <repo>/release/linux/Debug), WAIT_SEC (default: 60)
 #      failover: FO_WAIT_SEC (default: 90), FO_KEEP_HOURS (default: 1),
@@ -166,6 +168,37 @@ if [ "${2:-}" = "failover" ]; then
     check retention
     report fo4_retention
     echo "failover scenario: $fail check(s) failed"
+    exit "$fail"
+fi
+
+if [ "${2:-}" = "speaker" ]; then
+    fail=0
+    check() { python3 "$HERE/check_speaker.py" "$WORK" "$@" || fail=$((fail + $?)); }
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" sp1
+    for n in $NODES; do start_node "$n" init; done
+
+    echo "sp1: speaker on node-a"; check sp1; report sp1
+    echo "sp2: speaker renamed on node-a"
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" sp2; check sp2; report sp2
+    echo "sp3: speaker moved node-a -> node-b"
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" sp3; check sp3; report sp3
+    echo "sp4: restart both nodes"
+    stop_nodes
+    for n in $NODES; do start_node "$n" before_restart; done
+    check sp4; report sp4
+    echo "sp5: node-b with camera/speaker sync_config_to_db=0"
+    stop_nodes node-b
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" syncoff:node-b
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" sp5
+    start_node node-b before_syncoff
+    check sp5; report sp5
+    echo "sp6: speaker deleted from the cluster (node-b back to sync on)"
+    stop_nodes node-b
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" syncon:node-b
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" sp6
+    start_node node-b before_syncon
+    check sp6; report sp6
+    echo "speaker scenario: $fail check(s) failed"
     exit "$fail"
 fi
 

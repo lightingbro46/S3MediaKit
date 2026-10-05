@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Create two isolated MediaServer node directories (node-a, node-b) for a local sync test.
 
-Usage: setup_nodes.py <repo_root> <cluster_dir> [phase2..phase4 | fo1..fo3]
+Usage: setup_nodes.py <repo_root> <cluster_dir> [phase2..phase4 | fo1..fo3 | sp1..sp6 | syncoff:<node> | syncon:<node>]
 """
 import json
 import os
@@ -99,21 +99,73 @@ def failover_camera(keep_max_hours):
     }
 
 
-def api_config(devices):
+SPEAKER = "spk-sync-1"
+SPEAKER_OFF = "spk-sync-off"
+CAMERA_OFF = "cam-sync-off"
+
+
+def speaker(speaker_id, media_server, name=None):
+    # Unreachable device (discard port): the controller fails fast, the config is all that is synced.
+    return {
+        "id": speaker_id, "name": name or speaker_id, "ip": "127.0.0.1", "httpPort": 9,
+        "manufacturer": "test", "model": "test", "username": "", "password": "",
+        "enabled": True, "priMediaServerId": media_server,
+        "speakerAdvanceConfig": {"audioPlaybackMode": "BACKCHANNEL"},
+    }
+
+
+def api_config(devices, speakers=()):
     return {
         "media_server": {"serverGroupId": 0, "maxConfigCameras": 16, "maxStream": 64,
                          "maxStreamPerCamera": 8, "projectId": "sync-test",
                          "unlimitedStream": True, "unlimitedStreamPerCamera": True},
         "list_media_server": [server_entry(n, p) for n, p in NODES.items()],
         "devices": devices,
+        "speakers": list(speakers),
     }
 
 
-def write_api_config(node_id, devices):
+def write_api_config(node_id, devices, speakers=()):
     path = os.path.join(CLUSTER, node_id, "api-config.json")
     tmp = path + ".tmp"
-    json.dump(api_config(devices), open(tmp, "w"), indent=2)
+    json.dump(api_config(devices, speakers), open(tmp, "w"), indent=2)
     os.replace(tmp, path)
+
+
+def set_sync_config(node_id, value):
+    """camera.sync_config_to_db / speaker.sync_config_to_db of a stopped node."""
+    path = os.path.join(CLUSTER, node_id, "config.ini")
+    patch_ini(path, path, {"camera": {"sync_config_to_db": value}, "speaker": {"sync_config_to_db": value}})
+
+
+def speaker_phase(name):
+    """Speaker config sync scenario (run_cluster.sh <dir> speaker), checked by check_speaker.py."""
+    if name == "sp1":
+        # Speaker on node-a: its config reaches both ESC databases.
+        write_api_config("node-a", [], [speaker(SPEAKER, "node-a")])
+        write_api_config("node-b", [])
+    elif name == "sp2":
+        # Config change on the owner.
+        write_api_config("node-a", [], [speaker(SPEAKER, "node-a", "spk-renamed")])
+    elif name == "sp3":
+        # Move to node-b: node-a drops it but must not delete node-b's record.
+        write_api_config("node-a", [])
+        write_api_config("node-b", [], [speaker(SPEAKER, "node-b", "spk-renamed")])
+    elif name == "sp5":
+        # node-b restarted with sync_config_to_db=0: nothing new reaches ESC.
+        write_api_config("node-b", [camera_off()], [speaker(SPEAKER, "node-b", "spk-local-only"),
+                                                    speaker(SPEAKER_OFF, "node-b")])
+    elif name == "sp6":
+        # Deleted from the cluster (node-b restarted with sync on again).
+        write_api_config("node-a", [])
+        write_api_config("node-b", [])
+
+
+def camera_off():
+    cam = camera(True)
+    cam.update({"id": CAMERA_OFF, "name": CAMERA_OFF, "priMediaServerId": "node-b",
+                "primaryStreamId": CAMERA_OFF + "-main"})
+    return cam
 
 
 def main():
@@ -201,7 +253,12 @@ def phase(n):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 3 and sys.argv[3].startswith("fo"):
+    if len(sys.argv) > 3 and sys.argv[3].startswith("sync"):
+        mode, node = sys.argv[3].split(":", 1)
+        set_sync_config(node, 0 if mode == "syncoff" else 1)
+    elif len(sys.argv) > 3 and sys.argv[3].startswith("sp"):
+        speaker_phase(sys.argv[3])
+    elif len(sys.argv) > 3 and sys.argv[3].startswith("fo"):
         failover_phase(sys.argv[3])
     elif len(sys.argv) > 3 and sys.argv[3].startswith("phase"):
         phase(int(sys.argv[3][5:]))
