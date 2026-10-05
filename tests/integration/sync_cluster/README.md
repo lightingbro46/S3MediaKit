@@ -19,7 +19,7 @@ Kiểm tra các API chạy trên API worker pool (`docs/features/worker.md`, bư
 ```bash
 tests/integration/sync_cluster/run_cluster.sh /tmp/s3mk_worker_apis workerapis
 ```
-`check_worker_apis.py` gọi discovery ONVIF **và** discovery RTSP tới một IP bị drop gói (`192.0.2.1`, RFC 5737 TEST-NET-1; ONVIF mất ~20s, ffprobe ~10s) rồi đo độ trễ của `/media/mserver/healthcheck` trong suốt thời gian đó — cả hai dạng address đều phải chạy trên `api worker`, không chiếm poller nào. Ngoài ra kiểm tra `subnetScan` và `register` (lưu certificate, gọi lại không đổi gì). Node test chạy với `manager.enableAuthorize=0`.
+`check_worker_apis.py` gọi discovery ONVIF **và** discovery RTSP tới một IP bị drop gói (`192.0.2.1`, RFC 5737 TEST-NET-1; ONVIF mất ~20s, ffprobe ~10s) rồi đo độ trễ của `/media/mserver/healthcheck` trong suốt thời gian đó — cả hai dạng address đều phải chạy trên `api worker`, không chiếm poller nào. Ngoài ra kiểm tra `subnetScan` và `register` (lưu certificate, gọi lại không đổi gì). Node test chạy với `auth.enableAuthorize=0`.
 
 Không đổi `BLACKHOLE_IP` sang dải `10.x`: dưới WSL đó là NAT gateway của host và trả "connection refused" ngay, làm mọi check theo thời gian trở nên flaky.
 
@@ -44,7 +44,7 @@ Cần thêm `ffmpeg`/`ffprobe` và cổng 18554 trống. Script dựng clip H.26
 chỉ chạy khi đặt `FO_RETENTION_WAIT=1` (FO-35..37: không file nào bị xoá sớm, hết hạn thì node-b xoá
 file và timeline node-a không còn trả dữ liệu đó). Hạn chót là file mới nhất + `FO_KEEP_HOURS` +
 `FO_RETENTION_GRACE_SEC` (mặc định 5400 s, vì mốc cắt được làm tròn xuống theo
-`storage.tieringSplitGranularitySeconds` và retention chạy theo chu kỳ). Kịch bản này chạy với `manager.failoverActiveDelaySec=1800` (mặc định production) thay vì 5 s
+`storage.tieringSplitGranularitySeconds` và retention chạy theo chu kỳ). Kịch bản này chạy với `cluster.failoverActiveDelaySec=1800` (mặc định production) thay vì 5 s
 của phase4: node-b bỏ camera trước khi node-a ghi assignment mới (lệch một chu kỳ reload cấu hình),
 nếu thời gian chờ ngắn hơn khoảng đó thì node-b gỡ camera, xoá `info.txt` và replay dữ liệu failover
 trên node-b trả 403 dù file ghi vẫn còn. `FO_WAIT_SEC` (mặc định 90)

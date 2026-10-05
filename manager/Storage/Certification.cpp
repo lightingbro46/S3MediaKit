@@ -9,15 +9,6 @@ using namespace mediakit;
 
 namespace managerkit {
 
-namespace Manager {
-#define MANAGER_FIELD "manager."
-const std::string kCertSavePath = MANAGER_FIELD"certSavePath";
-
-static onceToken token([]() {
-    mINI::Instance()[kCertSavePath] = "./certs";
-});
-} // namespace Manager
-
 CertificateImp::CertificateImp(const std::string &path) : _save_path(path) {
     if (_save_path.empty()) {
         GET_CONFIG(string, cert_save_path, Manager::kCertSavePath)

@@ -9,9 +9,9 @@ gửi qua webhook, đồng thời lưu vào SQLite của MediaServer để tra c
 Cả hai endpoint dành cho giao tiếp service-to-service, không dùng JWT và không kiểm tra quyền
 người dùng hay quyền trên camera:
 
-- khi `manager.enableAuthorize=1`, request phải có `X-Secret-Key` khớp `manager.apiSecret`. Nên gửi
+- khi `auth.enableAuthorize=1`, request phải có `X-Secret-Key` khớp `manager.apiSecret`. Nên gửi
   ở header, nhưng MediaServer cũng nhận nếu nằm ở query string hoặc body;
-- khi `manager.enableAuthorize=0`, bỏ qua kiểm tra;
+- khi `auth.enableAuthorize=0`, bỏ qua kiểm tra;
 - nếu `manager.apiSecret` rỗng thì chỉ cần có header, không so giá trị. Vì vậy môi trường triển
   khai phải cấu hình secret khác rỗng;
 - thiếu hoặc sai secret → HTTP 401, `code=901001`.

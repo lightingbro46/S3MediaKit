@@ -3,26 +3,6 @@
 
 std::string g_ini_file;
 
-namespace managerkit {
-namespace Manager {
-
-const std::string kMediaServerDomain = "manager.mediaServerDomain";
-const std::string kMediaServerProjectId = "manager.mediaServerProjectId";
-const std::string kMaxAllowedDevices = "manager.maxAllowedDevices";
-const std::string kMaxAvailableDevices = "manager.maxAvailableDevices";
-const std::string kEnableAuthorize = "manager.enableAuthorize";
-const std::string kServerLocationId = "manager.serverLocationId";
-const std::string kEnableFailover = "manager.enableFailover";
-const std::string kFailoverActiveDelaySec = "manager.failoverActiveDelaySec";
-const std::string kJwtPublicKey = "manager.jwtPublicKey";
-const std::string kSessionExpiryDays = "manager.sessionExpiryDays";
-const std::string kMaxStreamTimeoutSec = "manager.maxStreamTimeoutSec";
-const std::string kBypassAuthRealm = "manager.bypassAuthRealm";
-const std::string kApiSecret = "manager.apiSecret";
-
-} // namespace Manager
-} // namespace managerkit
-
 void addStreamProxy(const mediakit::MediaTuple &,
                     const mediakit::ProtocolOption &,
                     const std::function<void(const std::string &, const mediakit::PlayerProxy::Ptr &)> &cb) {

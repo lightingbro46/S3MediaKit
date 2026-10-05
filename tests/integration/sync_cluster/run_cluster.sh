@@ -107,7 +107,7 @@ fi
 [ -x "$BIN_DIR/MediaServer" ] || { echo "MediaServer not found in $BIN_DIR"; exit 1; }
 stop_all
 mkdir -p "$WORK"
-# failover: production default of manager.failoverActiveDelaySec (phase4 needs a short one).
+# failover: production default of cluster.failoverActiveDelaySec (phase4 needs a short one).
 [ "${2:-}" = "failover" ] && export FAILOVER_ACTIVE_DELAY_SEC=1800
 python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" || exit 1
 

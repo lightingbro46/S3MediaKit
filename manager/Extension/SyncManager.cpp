@@ -1234,7 +1234,7 @@ void SyncManager::maybePruneLog() {
         }
         self_id = _self_node_id;
     }
-    GET_CONFIG(int, self_group_id, "manager.serverLocationId");
+    GET_CONFIG(int, self_group_id, Cluster::kServerLocationId);
     GET_CONFIG(int, offline_ttl_days, Database::kPeerOfflineTtlDays);
     vector<string> known;
     for (const auto &id : ClusterManager::Instance().getMediaServerIds()) {

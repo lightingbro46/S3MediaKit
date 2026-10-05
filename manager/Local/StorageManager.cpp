@@ -14,7 +14,6 @@
 #include "Camera/GenericRtspCameraImp.h"
 #include "Server/GlobalMonitor.h"
 #include "StorageManager.h"
-#include "server/Manager.h"
 #include "Storage/UserSession.h"
 #include "Storage/Bookmark.h"
 #include "Extension/Resource.h"
@@ -710,7 +709,7 @@ void StorageManager::getBackUpStorageUsage(size_t &used_bytes, size_t &total_byt
 }
 
 void StorageManager::removeExpiredUserSession() {
-    GET_CONFIG(int, sessionExpiryDays, Manager::kSessionExpiryDays);
+    GET_CONFIG(int, sessionExpiryDays, Auth::kSessionExpiryDays);
     int64_t time_threshold = std::time(nullptr) - (sessionExpiryDays * 24 * 3600);
     DebugL << " Remove expire user session before: " << getTimeStr("%Y-%m-%d %H:%M:%S", time_threshold);
     auto imp = make_shared<UserSessionImp>();

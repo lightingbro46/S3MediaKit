@@ -1,5 +1,4 @@
 #include "UserSessionCache.h"
-#include "server/Manager.h"
 #include "Common/config.h"
 #include "Storage/UserSession.h"
 #include "Util/base64.h"
@@ -20,7 +19,7 @@ bool UserSessionHelper::verifyJwtToken(const string &jwt_token) {
         auto decoded = jwt::decode<traits>(token);
 
         // step 2. get encoded-base64 public key and decode 
-        GET_CONFIG(string, public_key, Manager::kJwtPublicKey)
+        GET_CONFIG(string, public_key, Auth::kJwtPublicKey)
         if (public_key.empty()) {
             WarnL << "Public key empty. Ignore verify jwt token.";
             return false;

@@ -235,7 +235,7 @@ void ClusterManager::healthCheck(const std::string &id, const std::string &origi
                     server_group_id = self->_map_server_info[id].serverGroupId;
                 }
             }
-            GET_CONFIG(int, self_server_group_id, "manager.serverLocationId");
+            GET_CONFIG(int, self_server_group_id, Cluster::kServerLocationId);
             if (server_group_id == self_server_group_id) {
                 // If the server group ID matches, add the peer to SyncManager for syncing data
 #ifdef ENABLE_SYNC_CHANGES

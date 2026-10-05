@@ -150,10 +150,11 @@ def main():
             # failoverActiveDelaySec: how long an inactive camera is kept after its release (default 1800s).
             # The failover scenario keeps the production default: a node that just dropped a camera
             # must still hold it when the primary node takes it back one config reload later.
-            "manager": {"serverLocationId": 0, "apiSecret": "", "certSavePath": d + "/www/certs",
-                        "failoverActiveDelaySec": int(os.environ.get("FAILOVER_ACTIVE_DELAY_SEC", "5")),
-                        # device/config APIs are exercised without JWT (check_worker_apis.py)
-                        "enableAuthorize": 0},
+            "manager": {"apiSecret": "", "certSavePath": d + "/www/certs"},
+            "cluster": {"serverLocationId": 0,
+                        "failoverActiveDelaySec": int(os.environ.get("FAILOVER_ACTIVE_DELAY_SEC", "5"))},
+            # device/config APIs are exercised without JWT (check_worker_apis.py)
+            "auth": {"enableAuthorize": 0},
             # check_worker_apis.py blocks every API worker on purpose (pool/testConnection against
             # a blackhole address) to measure the pollers and the storage.read cap. It needs a
             # known pool size, instead of the default max(2, nproc/2) which differs per machine.

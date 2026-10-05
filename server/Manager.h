@@ -8,41 +8,6 @@
 #include "Speaker/SpeakerManager.h"
 #include "Speaker/AudioFileManager.h"
 
-namespace managerkit {
-
-namespace Manager {
-// Media server domain that management system regist for 
-extern const std::string kMediaServerDomain;
-// Media server project id that management system regist for 
-extern const std::string kMediaServerProjectId;
-// Maximum number of devices that service operation normally
-extern const std::string kMaxAllowedDevices;
-// Maximum number of devices that service determined by the system CPU
-extern const std::string kMaxAvailableDevices;
-// Enable user authorization when user want to access device data
-extern const std::string kEnableAuthorize;
-// Server location id, servers with the same one are considered to be in the same cluster
-extern const std::string kServerLocationId;
-// Enable failover mode to receive cameras from other server in same cluster
-extern const std::string kEnableFailover;
-// Delay seconds to active failover mode after detecting camera offline, which may caused by network issue or media server issue, default is 300 seconds (5 minutes)
-extern const std::string kFailoverActiveDelaySec;
-// Seconds to collect camera online/offline changes before reporting them in one API call, 0 reports each change at once
-extern const std::string kDeviceStatusReportDelaySec;
-// Store public key to validate jwt token
-extern const std::string kJwtPublicKey;
-// User session expiration time (6 months)
-extern const std::string kSessionExpiryDays;
-// Maximum stream timeout seconds when connecting to device
-extern const std::string kMaxStreamTimeoutSec;
-// Bypass authentication realm, directly allow access
-extern const std::string kBypassAuthRealm;
-// API secret used to decrypt management system payloads
-extern const std::string kApiSecret;
-} // namespace Manager
-
-} // namespace managerkit
-
 extern std::string g_ini_file;
 
 void installManagerHook();

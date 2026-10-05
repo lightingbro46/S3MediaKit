@@ -28,7 +28,7 @@ public:
 
     bool isReady();
 
-    // Collect an online/offline change, reported with the others after manager.deviceStatusReportDelaySec
+    // Collect an online/offline change, reported with the others after camera.deviceStatusReportDelaySec
     void notifyStatusChanged(const DeviceSource::Ptr &src);
 
 private:

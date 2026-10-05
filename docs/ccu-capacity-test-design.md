@@ -76,7 +76,7 @@ không đo.
   lõi) như production. Cấu hình còn lại theo **default trong code**, chỉ ghi đè cổng/đường dẫn
   (`conf/config.ini` không phải cấu hình production). Default liên quan: HLS bật và không theo yêu
   cầu, fMP4 bật, RTMP/TS tắt (`src/Common/config.cpp:216-238`).
-- Bật `manager.enableAuthorize=1` và cấp JWT như `e2e_real` (`jwt_private.pem`), vì kiểm token +
+- Bật `auth.enableAuthorize=1` và cấp JWT như `e2e_real` (`jwt_private.pem`), vì kiểm token +
   ghi phiên người dùng là chi phí thật của mỗi lần mở luồng
   ([server/WebHook.cpp:1176](../server/WebHook.cpp#L1176)). Chạy thêm một lượt `enableAuthorize=0` để
   tách riêng chi phí xác thực.

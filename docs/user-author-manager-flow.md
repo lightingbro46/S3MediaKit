@@ -44,7 +44,7 @@ flowchart TD
 
 Timer của manager chạy mỗi 60 giây trên một poller của `EventPollerPool`. Mỗi tick:
 
-1. Nếu `manager.enableAuthorize` đã bị tắt khi đang chạy: xoá `_map_token_resource` và
+1. Nếu `auth.enableAuthorize` đã bị tắt khi đang chạy: xoá `_map_token_resource` và
    `_map_token_sessions` **mà không đóng session**.
 2. `cleanExpiredTokenCache()`: JWT đã tới `exp` → `revokeToken()` đóng mọi phiên của token.
 3. `cleanExpiredAuthorCache()`: quyền theo device đã hết hạn → `revokeTokenDevice()`. **Bỏ qua**

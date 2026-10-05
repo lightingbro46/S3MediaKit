@@ -4,7 +4,7 @@
 Covers the API-blocking backlog pass and the six steps of the retired docs/features/worker.md.
 (Both planning documents have been removed; this file is now the record of what they required.)
 
-Runs against one node started by setup_nodes.py (manager.enableAuthorize=0) and the mock API.
+Runs against one node started by setup_nodes.py (auth.enableAuthorize=0) and the mock API.
 
 Usage: check_worker_apis.py [base_url] [media_server_id]
 """

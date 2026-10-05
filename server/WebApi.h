@@ -228,7 +228,7 @@ bool checkArgs(Args &args, const Key &key, const KeyTypes &...keys) {
     } catch (...) {}
 
 #define CHECK_AUTH_TOKEN()                                                                                                                                     \
-    GET_CONFIG(bool, _enable_authorize, Manager::kEnableAuthorize);                                                                                            \
+    GET_CONFIG(bool, _enable_authorize, Auth::kEnableAuthorize);                                                                                            \
     bool enable_authorize = _enable_authorize;                                                                                                                 \
     UserSessionCache::Ptr token_cache;                                                                                                                         \
     if (enable_authorize) {                                                                                                                                    \
@@ -352,7 +352,7 @@ bool checkPermissionCode(managerkit::UserSessionCache::Ptr &session, const std::
     }
 
 #define CHECK_API_KEY()                                                                                                                                     \
-    GET_CONFIG(bool, _enable_authorize, Manager::kEnableAuthorize);                                                                                            \
+    GET_CONFIG(bool, _enable_authorize, Auth::kEnableAuthorize);                                                                                            \
     bool enable_authorize = _enable_authorize;                                                                                                                 \
     if (enable_authorize) {                                                                                                                                    \
         do {                                                                                                                                                   \

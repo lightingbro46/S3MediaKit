@@ -6,7 +6,7 @@
 song với nhau, nên cả lượt mất khoảng một thời hạn rule cộng vài chu kỳ đồng bộ profile.
 
     --part rule : áp rule, hết hạn, gia hạn, rút mạng lúc hết hạn, onvifSetVideoConfigs bị hoãn
-    --part auth : node đã restart với manager.enableAuthorize=1 -> kiểm X-Secret-Key
+    --part auth : node đã restart với auth.enableAuthorize=1 -> kiểm X-Secret-Key
 
 Dùng: check_video_rule.py <work_dir> --part rule|auth [--duration 120]
 Thoát 0 khi mọi mục đạt; in từng mục PASS/FAIL và ghi <work>/video_rule_<part>.json.

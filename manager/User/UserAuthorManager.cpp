@@ -4,7 +4,6 @@
 #include "Network/Session.h"
 #include "Util/logger.h"
 #include "Util/NoticeCenter.h"
-#include "server/Manager.h"
 #include <algorithm>
 
 using namespace std;
@@ -37,7 +36,7 @@ UserAuthorManager::~UserAuthorManager() {
 void UserAuthorManager::onManager() {
     {
         lock_guard<recursive_mutex> lck(_mtx);
-        GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);
+        GET_CONFIG(bool, enable_authorize, Auth::kEnableAuthorize);
         if (!enable_authorize) {
             // Authorization was turned off at runtime: forget per-device grants without closing
             // the sessions that were opened under them.

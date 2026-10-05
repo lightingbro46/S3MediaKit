@@ -116,7 +116,7 @@ NODES=2 PHASE_SEC=120 CYCLES=4 \
     tests/integration/stress_vms/run_stress.sh /tmp/s3mk_soak mid soak
 ```
 
-Lưu ý khi đọc: harness đặt `manager.failoverActiveDelaySec=15` (mặc định của server là
+Lưu ý khi đọc: harness đặt `cluster.failoverActiveDelaySec=15` (mặc định của server là
 **1800**), nên camera bị chuyển đi được nhả sau ~15 s. Nếu đo trên cấu hình mặc định thì
 node vừa nhả camera vẫn giữ chúng trong danh sách tới 30 phút — fd chưa về mức nền trong
 khoảng đó **không** phải rò.
@@ -224,7 +224,7 @@ mỗi mục trên một camera riêng, chạy song song (`check_video_rule.py`):
 | `cam-0002` | rút mạng (fault `offline`) quanh lúc hết hạn → cắm lại thì baseline được đẩy lại |
 | `cam-0003` | `onvifSetVideoConfigs` khi rule chạy → `deferred=true`, camera giữ rule; hết hạn → về cấu hình người dùng |
 
-Sau đó node restart với `manager.enableAuthorize=1` (phase `videorule_auth`) để kiểm thiếu/sai
+Sau đó node restart với `auth.enableAuthorize=1` (phase `videorule_auth`) để kiểm thiếu/sai
 `X-Secret-Key` → 401 và kết quả vẫn tra cứu được sau restart. Cả lượt mất ~10 phút:
 
 ```bash

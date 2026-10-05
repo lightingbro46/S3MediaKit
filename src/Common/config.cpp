@@ -790,6 +790,8 @@ const string kAutoOrder = CAMERA_FIELD "control_auto_order";
 const string kReprobeFailures = CAMERA_FIELD "control_reprobe_failures";
 const string kAuthRetrySec = CAMERA_FIELD "control_auth_retry_sec";
 const string kSyncConfigToDb = CAMERA_FIELD "sync_config_to_db";
+const string kMaxStreamTimeoutSec = CAMERA_FIELD "maxStreamTimeoutSec";
+const string kDeviceStatusReportDelaySec = CAMERA_FIELD "deviceStatusReportDelaySec";
 
 static onceToken token([]() {
     // ONVIF first: every camera that worked before keeps working the same way. ISAPI before PSIA:
@@ -801,8 +803,61 @@ static onceToken token([]() {
     mINI::Instance()[kAuthRetrySec] = 300;
     // Sync camera configuration to database, 1: enable, 0: disable
     mINI::Instance()[kSyncConfigToDb] = 1;
+    mINI::Instance()[kMaxStreamTimeoutSec] = 10.0;
+    mINI::Instance()[kDeviceStatusReportDelaySec] = 30;
 });
 } // namespace Camera
+
+namespace Manager {
+#define MANAGER_FIELD "manager."
+const string kMediaServerDomain = MANAGER_FIELD "mediaServerDomain";
+const string kMediaServerProjectId = MANAGER_FIELD "mediaServerProjectId";
+const string kMaxAllowedDevices = MANAGER_FIELD "maxAllowedDevices";
+const string kApiSecret = MANAGER_FIELD "apiSecret";
+const string kCertSavePath = MANAGER_FIELD "certSavePath";
+
+static onceToken token([]() {
+    mINI::Instance()[kMediaServerDomain] = "";
+    mINI::Instance()[kMediaServerProjectId] = "";
+    mINI::Instance()[kMaxAllowedDevices] = 0;
+    mINI::Instance()[kApiSecret] = "";
+    mINI::Instance()[kCertSavePath] = "./certs";
+});
+} // namespace Manager
+
+namespace Auth {
+#define AUTH_FIELD "auth."
+const string kEnableAuthorize = AUTH_FIELD "enableAuthorize";
+const string kJwtPublicKey = AUTH_FIELD "jwtPublicKey";
+const string kSessionExpiryDays = AUTH_FIELD "sessionExpiryDays";
+const string kBypassAuthRealm = AUTH_FIELD "bypassAuthRealm";
+
+static onceToken token([]() {
+    mINI::Instance()[kEnableAuthorize] = true;
+    mINI::Instance()[kJwtPublicKey] = "";
+    mINI::Instance()[kSessionExpiryDays] = 7;
+    mINI::Instance()[kBypassAuthRealm] = "";
+});
+} // namespace Auth
+
+namespace Cluster {
+#define CLUSTER_FIELD "cluster."
+const string kOriginUrl = CLUSTER_FIELD "origin_url";
+const string kTimeoutSec = CLUSTER_FIELD "timeout_sec";
+const string kRetryCount = CLUSTER_FIELD "retry_count";
+const string kServerLocationId = CLUSTER_FIELD "serverLocationId";
+const string kEnableFailover = CLUSTER_FIELD "enableFailover";
+const string kFailoverActiveDelaySec = CLUSTER_FIELD "failoverActiveDelaySec";
+
+static onceToken token([]() {
+    mINI::Instance()[kOriginUrl] = "";
+    mINI::Instance()[kTimeoutSec] = 15;
+    mINI::Instance()[kRetryCount] = 3;
+    mINI::Instance()[kServerLocationId] = 1;
+    mINI::Instance()[kEnableFailover] = false;
+    mINI::Instance()[kFailoverActiveDelaySec] = 1800;
+});
+} // namespace Cluster
 
 } // namespace mediakit
 

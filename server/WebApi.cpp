@@ -265,7 +265,7 @@ static ApiArgsType getAllArgs(const Parser &parser) {
 }
 
 bool checkUserAuthor(const string &resource_id, const string &jwt_token) {
-    GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);
+    GET_CONFIG(bool, enable_authorize, Auth::kEnableAuthorize);
     // If authorization is not enabled, directly pass
     if (!enable_authorize) {
         return true;

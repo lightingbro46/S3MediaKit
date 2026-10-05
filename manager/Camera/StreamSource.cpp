@@ -1,7 +1,7 @@
 #include "StreamSource.h"
 #include "Extension/Track.h"
 #include "server/WebApi.h"
-#include "server/Manager.h"
+#include "Common/config.h"
 #include "Common/StrUtil.h"
 #include "StreamSink.h"
 
@@ -40,7 +40,7 @@ StreamSource::StreamSource(int type, const StreamOption &option, const toolkit::
     }
 
     if (!_option.timeout_sec) {
-        GET_CONFIG(float, timeoutSec, Manager::kMaxStreamTimeoutSec);
+        GET_CONFIG(float, timeoutSec, Camera::kMaxStreamTimeoutSec);
         _option.timeout_sec = timeoutSec;
     }
 }

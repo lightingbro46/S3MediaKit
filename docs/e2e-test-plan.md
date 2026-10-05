@@ -95,7 +95,7 @@ và URL RTSP trực tiếp nên không cần ONVIF để có luồng.
   chỉ nhận `SOLID|BLUR|PIXELATE`; sai thì `403 Privacy mask configuration is invalid`.
 - **Cấu hình mẫu chặn media khi bật xác thực:** `conf/config.ini` để `hook.on_play=` rỗng,
   ghi đè giá trị mặc định `/api/camera/check-camera-of-user`. Bật
-  `manager.enableAuthorize=1` với file này thì mọi phiên media trả "Unauthorized" mà không
+  `auth.enableAuthorize=1` với file này thì mọi phiên media trả "Unauthorized" mà không
   gọi hook nào (đã tái hiện khi chạy thử harness). Môi trường thật phải đặt `on_play`.
 - **Hook bỏ qua `code` trong body:** `parse_http_response` (`server/WebHook.cpp`) để phần
   kiểm `code` trong `#if 0`; service API chỉ từ chối được bằng HTTP status khác 2xx.
@@ -140,9 +140,9 @@ Ghi `git rev-parse HEAD` + `git status --short` vào báo cáo.
 |---|---|---|
 | `protocol.mp4_max_second` / `record.fileSecond` | 60 | nhiều segment trong thời gian ngắn |
 | `protocol.enable_rtmp/enable_ts/enable_hls_fmp4` | 1 | kiểm mọi giao thức live |
-| `manager.enableAuthorize` | 1 | bật xác thực JWT thật |
+| `auth.enableAuthorize` | 1 | bật xác thực JWT thật |
 | `hook.on_play` | `/api/camera/check-camera-of-user` | file mẫu để rỗng, xem 1.3 |
-| `manager.jwtPublicKey` | khoá RSA sinh trong `<work>` | harness tự ký JWT RS256 |
+| `auth.jwtPublicKey` | khoá RSA sinh trong `<work>` | harness tự ký JWT RS256 |
 | `storage.tiering_split_granularity_seconds` | 60 | move tier trong vài phút thay vì 1 giờ |
 | `storage.restore_ttl_seconds` | 600 | kiểm hết hạn cache restore trong 1 buổi |
 | `storage.pool_health_check_interval_seconds` | 10 | phát hiện MinIO rớt nhanh |

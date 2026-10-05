@@ -50,7 +50,7 @@ Khi camera quay lại một node đã từng chạy nó (hoặc node khởi đ�
 
 Service API loại camera khỏi danh sách phân phối của mọi node.
 
-- Node đang chạy camera: release assignment, tắt camera, rồi sau `manager.failoverActiveDelaySec` giây (mặc định 1800) xoá camera khỏi danh sách local.
+- Node đang chạy camera: release assignment, tắt camera, rồi sau `cluster.failoverActiveDelaySec` giây (mặc định 1800) xoá camera khỏi danh sách local.
 - Node chỉ xoá resource/config/status của camera trên ESC (`vms_resource`, `vms_kvpair`, `vms_resource_status`) khi **không có node khác đang giữ assignment active**. Nếu còn node khác đang chạy camera (tức camera đã được chuyển đi, không phải bị xoá), ESC được giữ nguyên.
 - Các lệnh xoá để lại tombstone (xem [Giải quyết xung đột](#giải-quyết-xung-đột-last-writer-wins)), nên cấu hình cũ gửi đến sau không làm camera sống lại. Các dòng `vms_resource_assignment` không bị xoá.
 

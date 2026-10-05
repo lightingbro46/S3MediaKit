@@ -11,7 +11,7 @@ Usage: check_failover.py <cluster_dir> <step>
 
 Timestamps of the steps are kept in <cluster_dir>/failover_state.json. Every check prints one
 `PASS|FAIL|INFO <id> <text>` line; the exit status is the number of FAIL lines.
-Needs ffmpeg/ffprobe; nodes run with manager.enableAuthorize=0, so no JWT is involved.
+Needs ffmpeg/ffprobe; nodes run with auth.enableAuthorize=0, so no JWT is involved.
 """
 import glob
 import json

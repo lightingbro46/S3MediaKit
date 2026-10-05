@@ -16,7 +16,7 @@ using namespace mediakit;
 
 namespace {
 
-const char kReportDelayKey[] = "manager.deviceStatusReportDelaySec";
+const char kReportDelayKey[] = "camera.deviceStatusReportDelaySec";
 
 class TestDeviceSource : public DeviceSource {
 public:

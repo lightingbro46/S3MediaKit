@@ -285,11 +285,11 @@ def node_overrides(node_id, d, ports, args):
                      "keep_migration_sql_files": 1,
                      "enable_sync_db": 1 if args.nodes > 1 else 0,
                      "pull_interval_sec": 5, "gossip_fanout": 3},
-        "manager": {"serverLocationId": 0, "apiSecret": "",
+        "manager": {"apiSecret": "",
                     "certSavePath": d + "/www/certs",
-                    "maxAllowedDevices": max(1024, args.cameras * 2),
-                    "failoverActiveDelaySec": 15,
-                    "enableAuthorize": 0},
+                    "maxAllowedDevices": max(1024, args.cameras * 2)},
+        "cluster": {"serverLocationId": 0, "failoverActiveDelaySec": 15},
+        "auth": {"enableAuthorize": 0},
         # Pool blocking cố định để so sánh được giữa các lần chạy; ONVIF chạy trên device().
         "blocking": {"apiThreads": args.api_threads,
                      "deviceThreads": args.device_threads,
@@ -474,7 +474,7 @@ def phase(repo, work, name, args):
         # Bật xác thực để kiểm X-Secret-Key của API video config rule. Node phải restart.
         for node_id in node_ids:
             cfg = os.path.join(work, node_id, "config.ini")
-            patch_ini(cfg, cfg, {"manager": {"enableAuthorize": 1, "apiSecret": VIDEO_RULE_SECRET}})
+            patch_ini(cfg, cfg, {"auth": {"enableAuthorize": 1}, "manager": {"apiSecret": VIDEO_RULE_SECRET}})
     elif name == "purge":
         for node_id in node_ids:
             write_json(os.path.join(work, node_id, "api-config.json"),

@@ -35,45 +35,6 @@ using namespace toolkit;
 using namespace mediakit;
 using namespace managerkit;
 
-namespace managerkit {
-
-namespace Manager {
-#define MANAGER_FIELD "manager."
-const string kMediaServerDomain = MANAGER_FIELD"mediaServerDomain";
-const string kMediaServerProjectId = MANAGER_FIELD"mediaServerProjectId";
-const string kMaxAllowedDevices = MANAGER_FIELD"maxAllowedDevices";
-const string kMaxAvailableDevices = MANAGER_FIELD"maxAvailableDevices";
-const string kServerLocationId = MANAGER_FIELD"serverLocationId";
-const string kEnableFailover = MANAGER_FIELD"enableFailover";
-const string kEnableAuthorize = MANAGER_FIELD"enableAuthorize";
-const string kFailoverActiveDelaySec = MANAGER_FIELD"failoverActiveDelaySec";
-const string kDeviceStatusReportDelaySec = MANAGER_FIELD"deviceStatusReportDelaySec";
-const string kJwtPublicKey = MANAGER_FIELD"jwtPublicKey";
-const string kSessionExpiryDays = MANAGER_FIELD"sessionExpiryDays";
-const string kMaxStreamTimeoutSec = MANAGER_FIELD"maxStreamTimeoutSec";
-const string kBypassAuthRealm = MANAGER_FIELD"bypassAuthRealm";
-const string kApiSecret = MANAGER_FIELD"apiSecret";
-
-static onceToken token([]() {
-    mINI::Instance()[kMediaServerDomain] = "";
-    mINI::Instance()[kMediaServerProjectId] = "";
-    mINI::Instance()[kMaxAllowedDevices] = 0;
-    mINI::Instance()[kMaxAvailableDevices] = 256;
-    mINI::Instance()[kServerLocationId] = 1;
-    mINI::Instance()[kEnableFailover] = false;
-    mINI::Instance()[kFailoverActiveDelaySec] = 1800;
-    mINI::Instance()[kDeviceStatusReportDelaySec] = 30;
-    mINI::Instance()[kEnableAuthorize] = true;
-    mINI::Instance()[kJwtPublicKey] = "";
-    mINI::Instance()[kSessionExpiryDays] = 7;
-    mINI::Instance()[kMaxStreamTimeoutSec] = 10.0;
-    mINI::Instance()[kBypassAuthRealm] = "";
-    mINI::Instance()[kApiSecret] = "";
-});
-} // namespace Manager
-
-} // namespace managerkit
-
 static void enforceStoragePolicy() {
     DebugL << "Storage manager has been started monitoring";
     StorageManager::Instance().start();
@@ -997,9 +958,9 @@ static void loadServerConfigFromJson(const Json::Value &data) {
     auto &ini = mINI::Instance();
     // failover config
     bool enableFailover = data["failover"].asBool();
-    bool currentEnableFailover = ini[Manager::kEnableFailover];
+    bool currentEnableFailover = ini[Cluster::kEnableFailover];
     if (currentEnableFailover != enableFailover) {
-        ini[Manager::kEnableFailover] = enableFailover;
+        ini[Cluster::kEnableFailover] = enableFailover;
         change++;
     }
     int maxNumberCamera = data["maxConfigCameras"].asInt();
@@ -1009,9 +970,9 @@ static void loadServerConfigFromJson(const Json::Value &data) {
         change++;
     }
     int serverLocationId = data["serverGroupId"].asInt();
-    int currentServerLocationId = ini[Manager::kServerLocationId];
+    int currentServerLocationId = ini[Cluster::kServerLocationId];
     if (currentServerLocationId != serverLocationId) {
-        ini[Manager::kServerLocationId] = serverLocationId;
+        ini[Cluster::kServerLocationId] = serverLocationId;
         change++;
     }
     string mediaServerProjectId = !data["projectId"].isNull() ? data["projectId"].asString() : "";
@@ -1775,8 +1736,8 @@ void loadServerStartedConfigJson(const Json::Value &data) {
     if (data.isMember("publicKey")) {
         string publicKey = data["publicKey"].asString();
         auto base64_publicKey = encodeBase64(publicKey);
-        if (ini[Manager::kJwtPublicKey] != base64_publicKey) {
-            ini[Manager::kJwtPublicKey] = base64_publicKey;
+        if (ini[Auth::kJwtPublicKey] != base64_publicKey) {
+            ini[Auth::kJwtPublicKey] = base64_publicKey;
             change++;
         }
     }

@@ -67,7 +67,7 @@ token nên luôn bị từ chối khi `enableAuthorize=1`.
 Hành vi của `CHECK_API_KEY()` mà phía gọi cần biết (giữ nguyên, ghi vào tài liệu API ở P5):
 
 - đọc `X-Secret-Key` từ header, nhưng cũng nhận nếu nằm ở query string hoặc body;
-- `manager.enableAuthorize=0` thì bỏ qua;
+- `auth.enableAuthorize=0` thì bỏ qua;
 - `manager.apiSecret` rỗng thì chỉ cần header có mặt, không so giá trị — môi trường triển khai
   phải cấu hình secret khác rỗng;
 - thiếu hoặc sai → HTTP 401, `CODE_UNAUTHORIZED`.

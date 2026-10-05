@@ -27,11 +27,6 @@ using namespace toolkit;
 // The compatibility test only exercises persistence/JSON projection, so no
 // playback proxy is expected to be created; lightweight stubs keep the unit
 // test independent from the server executable.
-namespace managerkit {
-namespace Manager {
-const std::string kMaxStreamTimeoutSec = "manager.maxStreamTimeoutSec";
-} // namespace Manager
-} // namespace managerkit
 
 void addStreamProxy(const mediakit::MediaTuple &, const mediakit::ProtocolOption &,
                     const std::function<void(const std::string &, const mediakit::PlayerProxy::Ptr &)> &) {}

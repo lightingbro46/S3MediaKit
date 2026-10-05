@@ -175,7 +175,7 @@ bool CameraManager::delCamera(const string &key) {
                             // todo: check amount of archived data to decide whether to keep device in list, if archived data is too small, remove it out of list
                             return false;
                         }
-                        GET_CONFIG(int, failoverActiveDelaySec, "manager.failoverActiveDelaySec");
+                        GET_CONFIG(int, failoverActiveDelaySec, Cluster::kFailoverActiveDelaySec);
                         bool failover_active_delay = (time(nullptr) - out.released_at) < failoverActiveDelaySec;
                         if (failover_active_delay) {
                             DebugL << "Device " << key << " was released from cluster before and within failover active delay time. Keep device in list and wait for active status change";
@@ -232,7 +232,7 @@ void CameraManager::notifyStatusChanged(const DeviceSource::Ptr &src) {
     if (!src) {
         return;
     }
-    GET_CONFIG(int, report_delay_sec, "manager.deviceStatusReportDelaySec");
+    GET_CONFIG(int, report_delay_sec, Camera::kDeviceStatusReportDelaySec);
     if (report_delay_sec <= 0) {
         // Report each change at once
         std::weak_ptr<DeviceSource> weak_src = src;

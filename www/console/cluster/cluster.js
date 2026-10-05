@@ -298,7 +298,7 @@ function _updateSyncTable(nodes) {
     wrap.innerHTML = '<div class="cl-table-scroll"><table class="cl-table">' +
         '<thead><tr><th>Node</th><th>Địa chỉ</th><th>Trạng thái</th><th>Latency</th><th>Streams</th><th>Sessions</th><th>CPU</th><th>RAM</th><th>Cập nhật</th></tr></thead>' +
         '<tbody>' + rows + '</tbody></table></div>' +
-        '<p class="cl-note">CPU/RAM chỉ hiển thị khi node có <code>manager.enableAuthorize=0</code></p>';
+        '<p class="cl-note">CPU/RAM chỉ hiển thị khi node có <code>auth.enableAuthorize=0</code></p>';
     _updateTxnTable(nodes);
 }
 

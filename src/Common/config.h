@@ -1047,7 +1047,53 @@ extern const std::string kAuthRetrySec;
 // info.txt only; ownership (vms_resource_assignment) and online status are still written.
 // Turning it back on publishes the pending config on the next change or save.
 extern const std::string kSyncConfigToDb;
+// Maximum stream timeout seconds when connecting to device
+extern const std::string kMaxStreamTimeoutSec;
+// Seconds to collect camera online/offline changes before reporting them in one API call, 0 reports each change at once
+extern const std::string kDeviceStatusReportDelaySec;
 } // namespace Camera
+
+////////////Management system (VMS) configuration///////////
+namespace Manager {
+// Media server domain that management system regist for
+extern const std::string kMediaServerDomain;
+// Media server project id that management system regist for
+extern const std::string kMediaServerProjectId;
+// Maximum number of devices that service operation normally
+extern const std::string kMaxAllowedDevices;
+// API secret used to decrypt management system payloads
+extern const std::string kApiSecret;
+// Certification save path
+extern const std::string kCertSavePath;
+} // namespace Manager
+
+////////////User authorization configuration///////////
+namespace Auth {
+// Enable user authorization when user want to access device data
+extern const std::string kEnableAuthorize;
+// Store public key to validate jwt token
+extern const std::string kJwtPublicKey;
+// User session expiration time in days
+extern const std::string kSessionExpiryDays;
+// Bypass authentication realm, directly allow access
+extern const std::string kBypassAuthRealm;
+} // namespace Auth
+
+////////////Cluster configuration///////////
+namespace Cluster {
+// Origin urls to pull a stream from when it is not found locally
+extern const std::string kOriginUrl;
+// Timeout seconds of a stream pulled from an origin
+extern const std::string kTimeoutSec;
+// Retry count of a stream pulled from an origin
+extern const std::string kRetryCount;
+// Server location id, servers with the same one are considered to be in the same cluster
+extern const std::string kServerLocationId;
+// Enable failover mode to receive cameras from other server in same cluster
+extern const std::string kEnableFailover;
+// Seconds a camera released by this server stays in the local list before it is removed
+extern const std::string kFailoverActiveDelaySec;
+} // namespace Cluster
 
 } // namespace mediakit
 

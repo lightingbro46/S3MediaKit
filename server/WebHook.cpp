@@ -143,20 +143,6 @@ static onceToken token([]() {
 });
 } // namespace Hook
 
-namespace Cluster {
-#define CLUSTER_FIELD "cluster."
-const string kOriginUrl = CLUSTER_FIELD "origin_url";
-const string kTimeoutSec = CLUSTER_FIELD "timeout_sec";
-const string kRetryCount = CLUSTER_FIELD "retry_count";
-
-static onceToken token([]() {
-    mINI::Instance()[kOriginUrl] = "";
-    mINI::Instance()[kTimeoutSec] = 15;
-    mINI::Instance()[kRetryCount] = 3;
-});
-
-} // namespace Cluster
-
 static void parse_http_response(const SockException &ex, const Parser &res, const function<void(const Value &, const string &, bool)> &fun) {
     bool should_retry = true;
     if (ex) {
@@ -1172,7 +1158,7 @@ void installWebHook() {
         });
     });
 
-    GET_CONFIG_FUNC(set<string>, bypass_realms, Manager::kBypassAuthRealm, [](const string &str) {
+    GET_CONFIG_FUNC(set<string>, bypass_realms, Auth::kBypassAuthRealm, [](const string &str) {
         set<string> ret;
         for (auto &item : split(str, ",")) {
             trim(item);
@@ -1241,7 +1227,7 @@ void installWebHook() {
             invoker(resource_limit ? "ResourceUnavailable" : (stream_limit ? "MaxRequest" : ""));
         };
 
-        GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);
+        GET_CONFIG(bool, enable_authorize, Auth::kEnableAuthorize);
         if (!enable_authorize) {
             // Do not check authorize token, directly allow access, session do not record in database
             isStreamLimit();
@@ -1346,7 +1332,7 @@ void installWebHook() {
     });
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastDeviceAccess, [](BroadcastDeviceAccessArgs) {
-        GET_CONFIG(bool, enable_authorize, Manager::kEnableAuthorize);                                                                                             
+        GET_CONFIG(bool, enable_authorize, Auth::kEnableAuthorize);                                                                                             
         if (!enable_authorize) {
             // Do not check authorize token, directly allow access, session do not record in database
             invoker("");
