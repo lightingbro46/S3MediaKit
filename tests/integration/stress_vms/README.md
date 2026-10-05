@@ -214,8 +214,9 @@ STORAGE_ARGS="--limit-percent 5 --remove-percent 10" \
 
 ## Kịch bản `videorule` — chạy thật video config rule không cần camera
 
-Checklist "Kiểm tra cuối" của [docs/video-config-rule-fix-plan.md](../../../docs/video-config-rule-fix-plan.md),
-mỗi mục trên một camera riêng, chạy song song (`check_video_rule.py`):
+Checklist kiểm tra cuối của video config rule
+([docs/api-video-config-rule.md](../../../docs/api-video-config-rule.md)), mỗi mục trên một camera riêng, chạy
+song song (`check_video_rule.py`):
 
 | Camera | Mục |
 |---|---|

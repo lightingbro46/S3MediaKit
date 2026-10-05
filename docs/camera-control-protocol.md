@@ -9,8 +9,7 @@ PSIA ở đây là chuẩn REST/XML dưới đường dẫn `/PSIA/...`, xác th
 Basic). ISAPI là REST/XML của Hikvision dưới `/ISAPI/...`, phát triển từ PSIA: cùng tài liệu XML, cùng cách xác
 thực, khác đường dẫn.
 
-Thiết kế và tiến độ: [psia-device-control-plan.md](./psia-device-control-plan.md),
-[isapi-speaker-control-plan.md](./isapi-speaker-control-plan.md).
+Phần còn phải kiểm trên camera/loa thật: [pending-real-device-checks.md](./pending-real-device-checks.md).
 
 ## Cấu hình theo camera
 
@@ -49,8 +48,7 @@ Nhiều thiết bị (Hikvision) khoá IP của client sau vài lần đăng nh�
 đăng nhập mỗi 5 phút. Kết nối được, lỗi khác (mất mạng, 404) hoặc đổi tài khoản/địa chỉ trong cấu hình thì quay về
 60 giây ngay. Log `rejected the credentials: next attempt in N s` ghi một lần khi bắt đầu bị từ chối.
 
-Camera ONVIF từ chối chữ ký WS-Security vì giờ camera lệch (`DeviceFailure::ClockSkew`, xem
-[onvif-clock-skew-plan.md](onvif-clock-skew-plan.md)) không tính là `AUTH_FAILED` mà là `OTHER`: chu kỳ đó đặt giờ
+Camera ONVIF từ chối chữ ký WS-Security vì giờ camera lệch (`DeviceFailure::ClockSkew`) không tính là `AUTH_FAILED` mà là `OTHER`: chu kỳ đó đặt giờ
 camera (khi bật `onvif.clockSyncEnable` và `enableTimeSync` của camera), thử lại sau 60 giây, và lượt dò AUTO dừng ở
 ONVIF thay vì chuyển sang ISAPI/PSIA.
 

@@ -2,7 +2,7 @@
 """Chạy thật checklist của video config rule trên MediaServer + onvif_mock.py.
 
 Được run_stress.sh gọi trong kịch bản `videorule` (1 node). Mỗi mục của checklist
-(docs/video-config-rule-fix-plan.md §"Kiểm tra cuối") chạy trên một camera riêng, song
+(tests/integration/stress_vms/README.md, kịch bản `videorule`) chạy trên một camera riêng, song
 song với nhau, nên cả lượt mất khoảng một thời hạn rule cộng vài chu kỳ đồng bộ profile.
 
     --part rule : áp rule, hết hạn, gia hạn, rút mạng lúc hết hạn, onvifSetVideoConfigs bị hoãn

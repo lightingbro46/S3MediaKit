@@ -81,7 +81,7 @@ không nhầm với token người dùng hết hạn (`901001`).
 
 ## Loa
 
-Áp dụng từ 2026-10-04 (plan [speaker-device-errors-clock-plan.md](speaker-device-errors-clock-plan.md)).
+Áp dụng từ 2026-10-04.
 
 - `setAudioVolume` khi loa chưa kết nối được: `905004`–`905008` theo nguyên nhân lần kết nối/lượt dò gần nhất, như
   quy tắc 2 ở trên (trước đây luôn `905002`). `905008` có `data` giờ thiết bị như camera.

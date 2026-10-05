@@ -1,6 +1,6 @@
 # Camera RTSP MJPEG
 
-Áp dụng từ nhánh `feature/mjpeg-ingest-transcode`. Plan và quá trình làm: [mjpeg-ingest-transcode-plan.md](./mjpeg-ingest-transcode-plan.md).
+Áp dụng từ nhánh `feature/mjpeg-ingest-transcode`. Phần chưa chạy thật: [pending-real-device-checks.md](./pending-real-device-checks.md).
 
 ## Cách hoạt động
 
