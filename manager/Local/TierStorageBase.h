@@ -55,6 +55,7 @@ public:
     static Json::Value tieringJobToJson(const TieringJob &job,
                                         const std::string &camera_name,
                                         bool detail = false);
+    static Json::Value qualityReductionOptionsToJson();
     static Json::Value alertToJson(const StorageAlert &alert,
                                    const StoragePoolMap &pool_map);
     static Json::Value expiredSegmentToJson(const SegmentTierRange &range,

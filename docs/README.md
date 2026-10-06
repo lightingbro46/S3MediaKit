@@ -527,3 +527,9 @@ Nếu gặp vấn đề trong quá trình build, vui lòng:
 ---
 
 **Chúc bạn build thành công!** 🎉
+
+Thiết kế và triển khai giảm chất lượng khi move tier:
+
+- [Requirement/plan](tier-storage-quality-reduction-plan.md)
+- [Architecture](tier-storage-quality-reduction-architecture.md)
+- [Implementation phases](tier-storage-quality-reduction-implementation-plan.md)

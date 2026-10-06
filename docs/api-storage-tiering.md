@@ -778,3 +778,32 @@ Có thể dùng `restoreJob/create` làm trigger chủ động và poll detail/l
 - Không có WebSocket/SSE `/ws/storage/events`; FE phải polling nếu cần realtime.
 - `playback/resolve` không trả `playback_url`.
 - HTTP static-file miss không có hook trả `202`; restore được kích hoạt trong resolver `TimeBlock` của replay MP4.
+
+## 14. Giảm chất lượng khi chuyển tier
+
+FE bật tính năng bằng `advanced_rules.enable_tier_quality_reduction=true` và cấu hình profile tại
+`tiers[].quality_reduction`. HOT không được phép bật profile; WARM/COLD hỗ trợ:
+
+```json
+{
+  "enabled": true,
+  "video_codec": "H265",
+  "max_width": 1280,
+  "max_height": 720,
+  "max_fps": 15,
+  "max_video_bitrate_kbps": 1200
+}
+```
+
+`max_width` và `max_height` phải cùng bằng 0 hoặc cùng dương. Profile bật phải có ít nhất một cap
+dương. Server không upscale, không tăng FPS/bitrate và giữ nguyên audio bằng stream-copy.
+
+`/media/mserver/storage/pool/options` trả thêm `qualityReduction`. Job list/detail trả `operation`
+(`COPY_MOVE`/`TRANSCODE_MOVE`), `input_bytes`, `output_bytes`, `saved_bytes`, `saving_percent`, số
+segment transcode/preserve và `encoder_summary_json`. Operator phải bật
+`storage.tier_transcode_enabled=1`; khi kill switch tắt, job transcode đang chờ không bị đổi thành
+copy.
+
+`qualityReduction.state` nhận `DISABLED`, `PROBING`, `AVAILABLE` hoặc `UNAVAILABLE`; mảng
+`codecs` chỉ chứa codec đã vượt qua smoke-test encoder. FE chỉ nên cho bật profile khi state là
+`AVAILABLE` và codec được chọn có trong mảng này. Response không trả binary path hay argv.

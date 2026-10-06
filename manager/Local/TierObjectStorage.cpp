@@ -563,11 +563,17 @@ bool TierObjectStorage::segmentExists(const std::string &pool_id,
 
 TierObjectPresence TierObjectStorage::headSegment(const std::string &pool_id,
                                                   const std::string &s3_key) {
+    return headSegmentInfo(pool_id, s3_key).presence;
+}
+
+TierObjectHeadInfo TierObjectStorage::headSegmentInfo(const std::string &pool_id,
+                                                      const std::string &s3_key) {
+    TierObjectHeadInfo info;
     PoolEntry entry;
     {
         std::lock_guard<std::mutex> lk(_mtx);
         auto it = _pool_map.find(pool_id);
-        if (it == _pool_map.end()) return TierObjectPresence::UNKNOWN;
+        if (it == _pool_map.end()) return info;
         entry = it->second;
     }
 
@@ -575,14 +581,19 @@ TierObjectPresence TierObjectStorage::headSegment(const std::string &pool_id,
     req.SetBucket(entry.bucket.c_str());
     req.SetKey(s3_key.c_str());
     auto out = entry.client->HeadObject(req);
-    if (out.IsSuccess())
-        return TierObjectPresence::PRESENT;
-    if (out.GetError().GetResponseCode() == Aws::Http::HttpResponseCode::NOT_FOUND)
-        return TierObjectPresence::ABSENT;
+    if (out.IsSuccess()) {
+        info.presence = TierObjectPresence::PRESENT;
+        info.content_length = out.GetResult().GetContentLength();
+        return info;
+    }
+    if (out.GetError().GetResponseCode() == Aws::Http::HttpResponseCode::NOT_FOUND) {
+        info.presence = TierObjectPresence::ABSENT;
+        return info;
+    }
     WarnL << "TierObjectStorage::headSegment: pool " << pool_id << " key " << s3_key << ": "
            << static_cast<int>(out.GetError().GetResponseCode()) << " "
            << out.GetError().GetMessage();
-    return TierObjectPresence::UNKNOWN;
+    return info;
 }
 
 // Pages through ListObjectsV2; `on_page` consumes each page's result.
@@ -848,6 +859,9 @@ bool TierObjectStorage::deleteSegmentsBatch(const std::string &,
 bool TierObjectStorage::segmentExists(const std::string &, const std::string &) { return false; }
 TierObjectPresence TierObjectStorage::headSegment(const std::string &, const std::string &) {
     return TierObjectPresence::UNKNOWN;
+}
+TierObjectHeadInfo TierObjectStorage::headSegmentInfo(const std::string &, const std::string &) {
+    return TierObjectHeadInfo();
 }
 bool TierObjectStorage::listObjects(const std::string &, const std::string &,
                                     std::map<std::string, TierObjectInfo> &out,

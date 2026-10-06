@@ -685,6 +685,33 @@ size_t StorageManager::removeCameraTimeBlocks(const std::string &camera_id,
     return rebuilder.removeTimeBlocks(blocks);
 }
 
+size_t StorageManager::patchCameraTimeBlockSizes(
+        const std::string &camera_id,
+        const std::vector<TimeBlockSizePatch> &patches) {
+    if (camera_id.empty() || patches.empty())
+        return 0;
+    GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath)
+    GET_CONFIG(string, app_name, Record::kAppName)
+    const string record_path = File::absolutePath(app_name, mp4_save_path);
+    const string camera_path = record_path + "/" + camera_id;
+    if (!File::is_dir(camera_path))
+        return 0;
+    MultiTimeRebuilder rebuilder(camera_path);
+    return rebuilder.patchTimeBlocks(patches);
+}
+
+size_t StorageManager::verifyCameraTimeBlockSizes(
+        const std::string &camera_id,
+        const std::vector<TimeBlockSizePatch> &patches) {
+    if (camera_id.empty() || patches.empty()) return 0;
+    GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath)
+    GET_CONFIG(string, app_name, Record::kAppName)
+    const string camera_path = File::absolutePath(app_name, mp4_save_path) + "/" + camera_id;
+    if (!File::is_dir(camera_path)) return 0;
+    MultiTimeRebuilder rebuilder(camera_path);
+    return rebuilder.verifyTimeBlocks(patches);
+}
+
 string StorageManager::getMainStorageMountPoint() {
     GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath);
     GET_CONFIG(string, app_name, Record::kAppName);

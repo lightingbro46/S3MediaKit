@@ -442,3 +442,11 @@ lúc khởi động rồi ghi vào `config.ini` (file dump theo CRLF nên phải
 > `BLACKHOLE_IP` phải là `192.0.2.1` (RFC 5737 TEST-NET-1). Không dùng dải `10.x`: dưới WSL đó
 > là NAT gateway của host và trả "connection refused" ngay, làm mọi check theo thời gian trở
 > nên flaky.
+
+## Tier transfer và transcoding
+
+Job `TRANSCODE_MOVE` chạy chung `BlockingExecutors::tierTransfer()` với job copy: ffprobe/ffmpeg
+được chờ ngay trên thread `tier xfer N` của job đó. Probe encoder lúc khởi động cũng chạy ở đây.
+
+`storage.tier_transcode_max_concurrent` là admission limit riêng cho encode. Khi shutdown, manager
+hủy process group đang chạy rồi đợi transfer callback hoàn tất mà không giữ pool/cache lock.

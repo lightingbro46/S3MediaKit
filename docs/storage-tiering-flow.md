@@ -1414,3 +1414,21 @@ Kết quả mong đợi:
 - Server từ chối pool object ngay lập tức với HTTP 400, `code=902001`:
   `"MINIO pool requires object storage, which this build does not include (ENABLE_AWS_SDK=OFF)"`,
   cả ở `pool/create` lẫn `pool/testConnection`; `pool/options` báo `MINIO=false` cho mọi tier.
+
+## Quality-reduction move
+
+Khi master switch của policy, profile tier đích và operational switch cùng bật, dispatcher tạo
+`TRANSCODE_MOVE` với snapshot JSON bất biến. Range giao với protected/evidence được tách theo
+segment: piece protected dùng `COPY_MOVE`, piece còn lại dùng `TRANSCODE_MOVE`.
+
+Mỗi segment đi qua `PENDING -> TRANSFORMING -> STORED -> COMMITTED`. ffprobe đọc metadata JSON;
+ffmpeg nhận argv trực tiếp (không qua shell), thử encoder theo NVENC, QSV rồi software. Output
+được validate trước khi ghi atomically vào filesystem target hoặc upload tới object key cũ. Range
+chỉ đổi tier sau khi mọi output đã lưu; source chỉ xóa sau commit. Lỗi transform/store/finalize giữ
+source và không fallback copy bản gốc. Sau restart, `TRANSFORMING` trở về `PENDING`.
+Target `STORED` chỉ được reuse khi fingerprint profile và kích thước target khớp journal
+(filesystem `stat` hoặc S3 HeadObject). Sau atomic finalize, child `COMMITTED` giữ vai trò backlog
+xóa source; maintenance retry cho tới khi source không còn rồi chuyển child thành `CLEANED`.
+
+Kích thước output được ghi vào range và outbox `tier_timefile_size_updates`; TimeFile được rebuild
+theo exact camera/stream/start/path identity để cập nhật `file_size` mà giữ nguyên các field khác.

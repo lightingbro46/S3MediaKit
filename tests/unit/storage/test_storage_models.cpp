@@ -11,6 +11,7 @@
 #include "Storage/StoragePool.h"
 #include "Storage/StorageTierExtra.h"
 #include "Storage/TieringJob.h"
+#include "Storage/TierQualityJob.h"
 #endif
 
 using namespace managerkit;
@@ -113,6 +114,7 @@ TEST(StorageModelsTest, SerializesTieringAndMetricsModels) {
     EXPECT_EQ("PRESSURE", job.toJson()["job_trigger"].asString());
     EXPECT_EQ("policy", job.toJson()["policy_id"].asString());
     EXPECT_EQ(123, job.toJson()["policy_updated_at"].asInt64());
+    EXPECT_EQ("COPY_MOVE", job.toJson()["operation"].asString());
     EXPECT_EQ(TieringJobTrigger::PRESSURE,
               tieringJobTriggerFromString(job.toJson()["job_trigger"].asString()));
     EXPECT_EQ(TieringJobTrigger::LEGACY, tieringJobTriggerFromString("UNKNOWN"));
@@ -170,6 +172,7 @@ TEST(StorageModelsTest, SerializesTieringAndMetricsModels) {
 #if defined(ENABLE_TIER_STORAGE)
 TEST(StorageModelsTest, RoundTripsEveryPolicyAdvancedRule) {
     PolicyAdvancedRules rules;
+    rules.enable_tier_quality_reduction = true;
     rules.enable_early_move_when_pool_high = false;
     rules.prefer_move_no_event_video_first = false;
     rules.prefer_keep_event_video_longer = false;
@@ -178,12 +181,15 @@ TEST(StorageModelsTest, RoundTripsEveryPolicyAdvancedRule) {
     rules.min_segment_age_minutes_before_move = 7;
 
     const PolicyAdvancedRules parsed = PolicyAdvancedRules::fromJson(rules.toJson());
+    EXPECT_TRUE(parsed.enable_tier_quality_reduction);
     EXPECT_FALSE(parsed.enable_early_move_when_pool_high);
     EXPECT_FALSE(parsed.prefer_move_no_event_video_first);
     EXPECT_FALSE(parsed.prefer_keep_event_video_longer);
     EXPECT_FALSE(parsed.skip_move_if_pool_offline);
     EXPECT_FALSE(parsed.alert_when_pool_critical);
     EXPECT_EQ(7, parsed.min_segment_age_minutes_before_move);
+    EXPECT_FALSE(PolicyAdvancedRules::fromJson(Json::Value(Json::objectValue))
+                     .enable_tier_quality_reduction);
 }
 #endif
 
@@ -191,6 +197,12 @@ TEST(StorageModelsTest, ExposesAllStorageSchemas) {
     expectEntitySchema<BookmarkIndex>("bookmark_index");
 #if defined(ENABLE_TIER_STORAGE)
     expectEntitySchema<TieringJob>("tiering_jobs");
+    expectEntitySchema<TieringJobSegment>("tiering_job_segments");
+    expectEntitySchema<TierTimefileSizeUpdate>("tier_timefile_size_updates");
+    const std::vector<std::string> quality_segment_key = {
+        "job_id", "stream_id", "segment_path"};
+    EXPECT_EQ(quality_segment_key,
+              EntityTraits<TieringJobSegment>::getPrimaryKey());
     expectEntitySchema<SegmentTierRange>("segment_tier_ranges");
     expectEntitySchema<PoolMetrics>("pool_metrics");
     expectEntitySchema<RestoreJob>("restore_jobs");

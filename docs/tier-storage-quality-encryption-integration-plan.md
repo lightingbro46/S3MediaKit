@@ -23,7 +23,7 @@ Kết quả cuối cùng:
 
 - `feature/merge-record-encryption` đã được merge vào `develop` và migration
   `19_record_encryption.sql` đã là một phần của baseline.
-- Nhánh quality reduction đã có migration `18_tier_quality_reduction.sql`, durable
+- Nhánh quality reduction đã có migration `22_tier_quality_reduction.sql`, durable
   `tiering_job_segments`, TimeFile outbox và `BlockingExecutors::tiering()`.
 - Trước khi bắt đầu Phase 1 phải rebase/merge nhánh implementation từ `develop`, giải
   quyết conflict nhưng chưa thay đổi semantics ở các file giao nhau:

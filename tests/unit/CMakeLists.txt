@@ -295,6 +295,21 @@ add_test(NAME unit.extract_start_all COMMAND unit_extract_start)
 set_tests_properties(unit.extract_start_all PROPERTIES LABELS unit TIMEOUT 30)
 
 if(ENABLE_TIER_STORAGE)
+  add_s3_unit_test(unit_tier_transcode
+    manager/test_blocking_process_runner.cpp
+    manager/test_tier_media_transformer.cpp)
+  target_link_libraries(unit_tier_transcode PRIVATE S3MediaKit::ManagerKit)
+  add_test(NAME unit.tier_transcode_all COMMAND unit_tier_transcode)
+  set_tests_properties(unit.tier_transcode_all PROPERTIES LABELS unit TIMEOUT 30)
+
+  add_s3_unit_test(unit_tier_quality_migration
+    storage/test_tier_quality_migration.cpp)
+  target_link_libraries(unit_tier_quality_migration PRIVATE S3MediaKit::ManagerKit sqlite3)
+  target_compile_definitions(unit_tier_quality_migration PRIVATE
+    S3_TIER_QUALITY_MIGRATION="${PROJECT_SOURCE_DIR}/migration/mserver_updates/22_tier_quality_reduction.sql")
+  add_test(NAME unit.tier_quality_migration_all COMMAND unit_tier_quality_migration)
+  set_tests_properties(unit.tier_quality_migration_all PROPERTIES LABELS unit TIMEOUT 30)
+
   add_s3_unit_test(unit_storage_pool_api
     server/test_storage_pool_api.cpp
     "${PROJECT_SOURCE_DIR}/server/WebApiErrCode.cpp")

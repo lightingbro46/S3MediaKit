@@ -14,6 +14,7 @@
 #include "Storage/MigrationHistory.h"
 #include "Storage/StorageTierExtra.h"
 #include "Storage/TierBackfillTask.h"
+#include "Storage/TierQualityJob.h"
 #include "Storage/TieringJob.h"
 #include "Util/mini.h"
 
@@ -510,4 +511,78 @@ TEST(RetentionPruneTest, StatusGapsFollowRecordingCutoffElseFallbackRetention) {
     EXPECT_EQ(std::set<std::string>({"inside-retention"}), ids("gap-cam-long"));
     EXPECT_EQ(std::set<std::string>({"inside-retention", "open"}), ids("gap-cam-short"));
     EXPECT_EQ(std::set<std::string>({"recent"}), ids("gap-cam-unknown"));
+}
+
+TEST(TierTxnLockTest, QualityFinalizeWaitsAndCommitsEveryCatalogRowAtomically) {
+    Exposed<SegmentTierRangeRepository> range_repo;
+    Exposed<TieringJobRepository> job_repo;
+    const int64_t base = baseTime();
+    SegmentTierRange range = makeRange(
+        "lock-quality-range", "cam-quality", base, base + 60);
+    ASSERT_TRUE(range_repo.save(range, true));
+
+    TieringJob job;
+    job.job_id = "lock-quality-job";
+    job.camera_id = range.camera_id;
+    job.stream_id = range.stream_id;
+    job.range_id = range.range_id;
+    job.source_tier = "HOT";
+    job.target_tier = "WARM";
+    job.source_pool_id = range.pool_id;
+    job.target_pool_id = "pool-warm";
+    job.status = "RUNNING";
+    job.operation = "TRANSCODE_MOVE";
+    job.bytes_total = 100;
+    job.bytes_moved = 40;
+    job.output_bytes = 40;
+    job.transcoded_segment_count = 1;
+    job.created_at = now();
+    job.updated_at = now();
+    ASSERT_TRUE(job_repo.save(job, true));
+
+    TieringJobSegment journal;
+    journal.job_id = job.job_id;
+    journal.range_id = range.range_id;
+    journal.camera_id = range.camera_id;
+    journal.stream_id = range.stream_id;
+    journal.segment_path = "2026/01/01/segment.mp4";
+    journal.storage_key = range.camera_id + "/" + range.stream_id + "/" + journal.segment_path;
+    journal.segment_start_time = base;
+    journal.segment_end_time = base + 60;
+    journal.status = "STORED";
+    journal.source_bytes = 100;
+    journal.output_bytes = 40;
+    ASSERT_TRUE(TieringJobSegmentImp().add(journal));
+
+    TierTimefileSizeUpdate update;
+    update.job_id = job.job_id;
+    update.range_id = range.range_id;
+    update.camera_id = range.camera_id;
+    update.stream_id = range.stream_id;
+    update.segment_path = journal.segment_path;
+    update.start_time = base;
+    update.old_size = 100;
+    update.new_size = 40;
+    update.created_at = now();
+    update.updated_at = now();
+
+    WriteLockHolder writer(300);
+    const bool ok = TierQualityTransferRepository().finalizeTransfer(
+        job, range, "WARM", "pool-warm", "AVAILABLE", 1, 40, {update}, now());
+    writer.join();
+    ASSERT_TRUE(ok);
+
+    const auto stored_ranges = range_repo.findById(range);
+    ASSERT_EQ(1u, stored_ranges.size());
+    EXPECT_EQ("WARM", stored_ranges[0].tier);
+    EXPECT_EQ(40, stored_ranges[0].size_bytes);
+    const auto stored_jobs = job_repo.findById(job);
+    ASSERT_EQ(1u, stored_jobs.size());
+    EXPECT_EQ("DONE", stored_jobs[0].status);
+    const auto stored_segments = TieringJobSegmentImp().findByJob(job.job_id);
+    ASSERT_EQ(1u, stored_segments.size());
+    EXPECT_EQ("COMMITTED", stored_segments[0].status);
+    const auto pending = TierTimefileSizeUpdateImp().findPendingByRangeId(range.range_id);
+    ASSERT_EQ(1u, pending.size());
+    EXPECT_EQ(40, pending[0].new_size);
 }

@@ -327,6 +327,33 @@ bool TierFileStorageBase::uploadSegment(const std::string &pool_id,
     return copyFile(local_path, dst);
 }
 
+bool TierFileStorageBase::uploadSegmentAtomic(const std::string &pool_id,
+                                              const std::string &local_path,
+                                              const std::string &storage_key,
+                                              const std::string &job_id) {
+    const std::string destination = resolvePath(pool_id, storage_key);
+    if (destination.empty() || job_id.empty())
+        return false;
+    const std::string temporary = destination + ".part-" + job_id;
+    if (!copyFile(local_path, temporary))
+        return false;
+    if (::rename(temporary.c_str(), destination.c_str()) != 0) {
+        WarnL << storageName() << "::uploadSegmentAtomic: rename failed "
+              << temporary << " -> " << destination << ": " << strerror(errno);
+        ::unlink(temporary.c_str());
+        return false;
+    }
+    const std::string directory = parentDir(destination);
+    const int dir_fd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY);
+    if (dir_fd >= 0) {
+        if (::fsync(dir_fd) != 0)
+            WarnL << storageName() << "::uploadSegmentAtomic: directory fsync failed "
+                  << directory << ": " << strerror(errno);
+        ::close(dir_fd);
+    }
+    return true;
+}
+
 bool TierFileStorageBase::downloadSegment(const std::string &pool_id,
                                           const std::string &storage_key,
                                           const std::string &local_path) {

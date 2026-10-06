@@ -54,7 +54,7 @@ Mở rộng API capability của storage:
 
 ### 2.2. Database
 
-Tạo migration kế tiếp `18_tier_quality_reduction.sql`:
+Tạo migration kế tiếp `22_tier_quality_reduction.sql`:
 
 - Thêm vào `tiering_jobs`: `operation`, `quality_profile_json`, `output_bytes`, `transcoded_segment_count`, `preserved_segment_count`.
 - Tạo `tiering_job_segments` để lưu trạng thái bền vững của từng segment: nguồn, khoảng thời gian, kích thước đầu vào/đầu ra, operation, encoder, trạng thái và lỗi.
