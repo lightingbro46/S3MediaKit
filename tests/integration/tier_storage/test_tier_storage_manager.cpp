@@ -36,6 +36,7 @@
 #include "Local/SearchEngine.h"
 #include "Local/StatisticRecorder.h"
 #include "Local/TierEncryptionUtils.h"
+#include "Local/TierMediaTransformer.h"
 #include "Local/TierStorageManager.h"
 #include "Local/TimeFileAccessManager.h"
 #include "Local/TimeFileDirtyTracker.h"
@@ -1180,6 +1181,110 @@ int scenarioBacksOffMissingSegmentJob(const std::string &root) {
     require(ranges.size() == 1 && ranges.front().tier == tierTypeToString(HotTier) &&
                 ranges.front().status == segmentStatusToString(SegmentStatus::AVAILABLE),
             "Range changed before missing-segment retries were exhausted");
+    manager.stop();
+    return 0;
+}
+
+int scenarioRepeatedTranscodeFailures(const std::string &root) {
+    migrateDatabase(root);
+    // "true" passes the encoder smoke test; "false" makes every ffprobe fail.
+    mINI::Instance()[Storage::kTierTranscodeEnabled] = 1;
+    mINI::Instance()[Storage::kTierTranscodeFfmpegBin] = "true";
+    mINI::Instance()[Storage::kTierTranscodeFfprobeBin] = "false";
+    mINI::Instance()[Storage::kTierTranscodeH264Encoders] = "libx264";
+    mINI::Instance()[Storage::kTierTranscodeStagingPath] = root + "/staging";
+    mINI::Instance()[Storage::kTieringPressureDeleteMode] = "OLDEST";
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    require(waitUntil([]() {
+        return TierEncoderCapabilityRegistry::Instance().operational("H264");
+    }, 5000), "Encoder capability probe did not finish");
+    const auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+    const StoragePool nas = makeNasPool(root);
+    require(manager.createPool(nas) == nas.id, "NAS pool creation failed");
+    StoragePolicy policy = makeMovePolicy(hot_pools.front().id, nas.id);
+    std::vector<PolicyTierConfig> tiers = policy.parsedTiers();
+    tiers[1].quality_reduction.enabled = true;
+    tiers[1].quality_reduction.video_codec = "H264";
+    tiers[1].quality_reduction.max_fps = 10;
+    policy.tiers_json = StoragePolicy::tiersToJson(tiers);
+    PolicyAdvancedRules rules = policy.parsedAdvancedRules();
+    rules.enable_tier_quality_reduction = true;
+    policy.advanced_rules_json = rules.toJson().toStyledString();
+    require(manager.createPolicy(policy) == policy.id, "Quality policy creation failed");
+
+    const std::string camera = "camera-transcode-fails";
+    const std::string stream = "main";
+    require(manager.assignPolicyToCamera(camera, policy.id, "transcode failure test"),
+            "Policy assignment failed");
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t start = now - 180;
+    const int64_t end = now - 120;
+    const std::string key = "2026-08-20/16-00-00";
+    const std::string source = root + "/hot/record/" + camera + "/" + stream + "/" + key + ".mp4";
+    const std::string target = root + "/nas/record/" + camera + "/" + stream + "/" + key + ".mp4";
+    const std::string payload = "not-a-video";
+    writeFile(source, payload);
+    writeTimeBlock(root, camera, stream, source, start, end,
+                   static_cast<int64_t>(payload.size()));
+    require(manager.registerHotSegmentRange(camera, stream, source, start, end,
+                                            static_cast<int64_t>(payload.size())),
+            "HOT range registration failed");
+
+    // Retention retries a failed transform until it has failed three times.
+    for (size_t attempt = 1; attempt <= 3; ++attempt) {
+        manager.runTieringCycle();
+        require(waitUntil([&]() {
+            auto jobs = manager.listTieringJobs(camera);
+            if (jobs.size() != attempt)
+                return false;
+            for (const auto &job : jobs) {
+                if (job.status != "FAILED")
+                    return false;
+            }
+            return true;
+        }, 5000), "Transcode job " + std::to_string(attempt) + " did not fail");
+    }
+    for (const auto &job : manager.listTieringJobs(camera)) {
+        require(job.operation == "TRANSCODE_MOVE" && job.error_message.has_value() &&
+                    job.error_message.value().find("TIER_TRANSCODE_PROBE_FAILED") == 0,
+                "Unexpected transcode failure: " + job.error_message.value_or(""));
+    }
+    manager.runTieringCycle();
+    drainWorkThreadPool();
+    require(manager.listTieringJobs(camera).size() == 3,
+            "Retention queued the failing transform again before its backoff elapsed");
+
+    // A pool under pressure stops waiting and moves the original unchanged.
+    rules.enable_early_move_when_pool_high = true;
+    policy.advanced_rules_json = rules.toJson().toStyledString();
+    require(manager.updatePolicy(policy), "Cannot enable pressure moves");
+    StoragePool hot = hot_pools.front();
+    hot.high_watermark_percent = 0;
+    hot.critical_watermark_percent = 100;
+    drainWorkThreadPool();
+    require(manager.updatePool(hot), "Cannot lower HOT pool watermark");
+    drainWorkThreadPool();
+    manager.runTieringCycle();
+    require(waitUntil([&]() {
+        auto jobs = manager.listTieringJobs(camera);
+        return jobs.size() == 4 && std::any_of(jobs.begin(), jobs.end(), [](const TieringJob &job) {
+            return job.status == "DONE";
+        });
+    }, 5000), "Pressure did not move the range after repeated transform failures");
+    for (const auto &job : manager.listTieringJobs(camera)) {
+        if (job.status != "DONE")
+            continue;
+        require(job.operation == "COPY_MOVE" &&
+                    job.job_trigger == tieringJobTriggerToString(TieringJobTrigger::PRESSURE),
+                "Pressure move was not a plain copy: " + job.operation + " " + job.job_trigger);
+    }
+    require(File::loadFile(target) == payload, "Pressure copy changed the original segment");
+    auto ranges = SegmentTierRangeImp().queryByCamera(camera, start - 1, end + 1);
+    require(ranges.size() == 1 && ranges.front().tier == tierTypeToString(WarmTier),
+            "Range was not moved to WARM by the pressure copy");
+    drainWorkThreadPool();
     manager.stop();
     return 0;
 }
@@ -6373,6 +6478,7 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "reuse-existing-nas-target") return scenarioReusesExistingNasTarget(root);
         if (name == "backoff-missing-segment-job") return scenarioBacksOffMissingSegmentJob(root);
         if (name == "drop-missing-segment") return scenarioDropsMissingSegmentAfterMaxAttempts(root);
+        if (name == "repeated-transcode-failures") return scenarioRepeatedTranscodeFailures(root);
         if (name == "hot-to-minio") return scenarioHotToMinio(root);
         if (name == "restore-from-minio") return scenarioRestoreFromMinio(root);
         if (name == "duplicate-restore") return scenarioDuplicateRestore(root);
@@ -6556,6 +6662,11 @@ TEST(TierStorageManagerIntegrationTest, BacksOffMissingSegmentJob) {
 TEST(TierStorageManagerIntegrationTest, DropsMissingSegmentAfterMaxAttempts) {
     TempRoot root;
     EXPECT_EQ(0, runChild("drop-missing-segment", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, RepeatedTranscodeFailuresBackOffOrCopyUnderPressure) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("repeated-transcode-failures", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, RunsCycleAndMovesHotSegmentToMinio) {

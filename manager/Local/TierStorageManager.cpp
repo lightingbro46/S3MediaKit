@@ -211,6 +211,18 @@ static int countMissingSegmentFailures(const std::string &range_id) {
         range_id, kMissingSourceAndTargetError, getMissingSegmentMaxAttempts()).size());
 }
 
+// Exponential backoff after failed jobs (newest first): base, 2x base, ... capped at a day.
+static int64_t failedJobRetryAt(const std::vector<TieringJob> &failed) {
+    GET_CONFIG(int64_t, base_seconds, Storage::kTieringMissingSegmentRetryBaseSeconds);
+    const int64_t max_delay = 86400;
+    if (base_seconds <= 0)
+        base_seconds = 3600;
+    base_seconds = std::min(base_seconds, max_delay);
+    const int shift = std::min<int>(static_cast<int>(failed.size()) - 1, 16);
+    const int64_t delay = std::min(base_seconds << shift, max_delay);
+    return failed.front().updated_at + delay;
+}
+
 // Earliest time a range whose previous jobs hit missing segments may be
 // queued again. Returns false when the range has no such failures.
 static bool missingSegmentRetryAt(const std::string &range_id, int64_t &retry_at) {
@@ -219,15 +231,30 @@ static bool missingSegmentRetryAt(const std::string &range_id, int64_t &retry_at
         range_id, kMissingSourceAndTargetError, getMissingSegmentMaxAttempts());
     if (failed.empty())
         return false;
-    GET_CONFIG(int64_t, base_seconds, Storage::kTieringMissingSegmentRetryBaseSeconds);
-    const int64_t max_delay = 86400;
-    if (base_seconds <= 0)
-        base_seconds = 3600;
-    base_seconds = std::min(base_seconds, max_delay);
-    const int shift = std::min<int>(static_cast<int>(failed.size()) - 1, 16);
-    const int64_t delay = std::min(base_seconds << shift, max_delay);
-    retry_at = failed.front().updated_at + delay;
+    retry_at = failedJobRetryAt(failed);
     return true;
+}
+
+// Transform failures that repeat for the same input (bad file, unsupported media), unlike
+// TIER_TRANSCODE_CANCELLED/STAGING_FAILED. Newest first, at most kTranscodeFailureAttempts.
+static const size_t kTranscodeFailureAttempts = 3;
+
+static std::vector<TieringJob> recentTranscodeFailures(const std::string &range_id) {
+    static const char *const kErrors[] = {"TIER_TRANSCODE_PROBE_FAILED",
+                                          "TIER_TRANSCODE_ENCODER_FAILED",
+                                          "TIER_TRANSCODE_INVALID_PROFILE"};
+    std::vector<TieringJob> failed;
+    TieringJobImp job_imp;
+    for (const char *error : kErrors) {
+        auto jobs = job_imp.findRecentFailedByRange(range_id, error, kTranscodeFailureAttempts);
+        failed.insert(failed.end(), jobs.begin(), jobs.end());
+    }
+    std::sort(failed.begin(), failed.end(), [](const TieringJob &a, const TieringJob &b) {
+        return a.updated_at > b.updated_at;
+    });
+    if (failed.size() > kTranscodeFailureAttempts)
+        failed.resize(kTranscodeFailureAttempts);
+    return failed;
 }
 
 static uint64_t nextLocalDayStart(uint64_t day_start) {
@@ -3938,7 +3965,25 @@ bool TierStorageManager::queueTierMoveJob(const SegmentTierRange &range,
 
     if (quality_target && !force_copy) {
         const std::string &codec = quality_tier.quality_reduction.video_codec;
-        if (TierEncoderCapabilityRegistry::Instance().operational(codec)) {
+        const std::vector<TieringJob> failed = recentTranscodeFailures(range.range_id);
+        // Retrying the same input fails the same way: a full source pool moves the
+        // originals, a retention move backs off like missing segments.
+        const bool copy_after_failures = pressure && failed.size() >= kTranscodeFailureAttempts;
+        if (!pressure && failed.size() >= kTranscodeFailureAttempts) {
+            const int64_t transcode_retry_at = failedJobRetryAt(failed);
+            if (now < transcode_retry_at) {
+                DebugL << "Defer quality tier move after " << failed.size()
+                       << " transform failures until "
+                       << getTimeStr("%Y-%m-%d %H:%M:%S", transcode_retry_at)
+                       << " range=" << range.range_id;
+                return false;
+            }
+        }
+        if (copy_after_failures) {
+            WarnL << "Quality reduction failed " << failed.size()
+                  << " times, pressure move copies without it: range=" << range.range_id
+                  << " error=" << failed.front().error_message.value_or("");
+        } else if (TierEncoderCapabilityRegistry::Instance().operational(codec)) {
             job.operation = "TRANSCODE_MOVE";
             Json::FastWriter writer;
             job.quality_profile_json = writer.write(quality_tier.quality_reduction.toJson());

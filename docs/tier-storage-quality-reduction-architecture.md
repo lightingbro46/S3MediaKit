@@ -65,10 +65,10 @@ Các đặc điểm cần giữ:
 - Profile gồm codec H.264/H.265, max width/height, max FPS và max video bitrate.
 - Áp dụng cho retention, pressure và external move khi target pool ánh xạ tới tier có profile.
 - Không upscale hoặc tăng FPS/bitrate.
-- Audio stream-copy trong phiên bản đầu tiên.
+- Audio AAC/MP3/Opus được stream-copy; audio khác (G.711) encode sang AAC 32k vì muxer mp4 không nhận G.711.
 - Protected/evidence video move nguyên bản.
 - Không backfill dữ liệu đã move trước khi bật tính năng.
-- Transcode thất bại làm job thất bại/retry; không fallback sang copy bản gốc.
+- Transcode thất bại làm job thất bại/retry. Khi một range đã có 3 job thất bại vì `TIER_TRANSCODE_PROBE_FAILED`/`ENCODER_FAILED`/`INVALID_PROFILE`: trigger PRESSURE copy bản gốc (`COPY_MOVE`), trigger RETENTION lùi lại theo backoff của missing segment (`storage.tiering_missing_segment_retry_base_seconds`, tối đa 1 ngày).
 
 ### Technical
 
@@ -504,7 +504,7 @@ claim parent job
 |---|---|
 | ffprobe/ffmpeg không tồn tại | Capability `UNAVAILABLE`; không claim transcode job, API không cho bật policy mới. |
 | NVENC lỗi | Cleanup staging và thử QSV, sau đó software. |
-| Tất cả encoder lỗi | Segment/job `FAILED`; giữ source; không copy nguyên bản. |
+| Tất cả encoder lỗi | Segment/job `FAILED`; giữ source. Sau 3 lần lỗi trên cùng range: PRESSURE copy nguyên bản, RETENTION lùi lại theo backoff. |
 | Timeout/cancel | Kill process group, xóa staging, ghi error code retryable. |
 | Staging hết dung lượng | Fail trước upload, tạo alert khi lặp lại; source giữ nguyên. |
 | Upload/copy thất bại | Xóa target do attempt tạo, segment `FAILED`. |
