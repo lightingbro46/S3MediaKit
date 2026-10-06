@@ -20,6 +20,7 @@ struct TierMediaDescriptor {
     double fps = 0.0;
     int64_t video_bitrate_kbps = 0;
     bool has_audio = false;
+    std::string audio_codec; // ffprobe codec_name of the first audio stream
     double duration_seconds = 0.0;
 };
 
@@ -33,7 +34,8 @@ struct TierTransformDecision {
     int target_width = 0;
     int target_height = 0;
     int target_fps = 0;
-    int target_video_bitrate_kbps = 0;
+    int target_video_bitrate_kbps = 0; // encode target, never above the source bitrate
+    int max_video_bitrate_kbps = 0;    // profile cap, used only to validate the output
     std::string target_codec;
 };
 

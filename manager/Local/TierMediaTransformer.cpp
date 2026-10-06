@@ -106,8 +106,9 @@ bool FfmpegTierMediaTransformer::inspect(const std::string &path,
             descriptor.fps = parseRate(stream.get("avg_frame_rate", "0/1").asString());
             descriptor.video_bitrate_kbps =
                 std::strtoll(stream.get("bit_rate", "0").asString().c_str(), nullptr, 10) / 1000;
-        } else if (type == "audio") {
+        } else if (type == "audio" && !descriptor.has_audio) {
             descriptor.has_audio = true;
+            descriptor.audio_codec = stream.get("codec_name", "").asString();
         }
     }
     descriptor.duration_seconds = std::atof(root["format"].get("duration", "0").asString().c_str());
@@ -126,7 +127,12 @@ TierTransformDecision FfmpegTierMediaTransformer::plan(
     decision.target_height = source.height;
     decision.target_fps = profile.max_fps > 0 && source.fps > profile.max_fps
         ? profile.max_fps : 0;
-    decision.target_video_bitrate_kbps = profile.max_video_bitrate_kbps;
+    decision.max_video_bitrate_kbps = profile.max_video_bitrate_kbps;
+    // A forced transcode (fps/codec/size) must not raise the bitrate above the source.
+    decision.target_video_bitrate_kbps = profile.max_video_bitrate_kbps > 0 &&
+            source.video_bitrate_kbps > 0 &&
+            source.video_bitrate_kbps < profile.max_video_bitrate_kbps
+        ? static_cast<int>(source.video_bitrate_kbps) : profile.max_video_bitrate_kbps;
 
     if (profile.max_width > 0 && profile.max_height > 0 &&
         (source.width > profile.max_width || source.height > profile.max_height)) {
@@ -250,6 +256,10 @@ TierTransformResult FfmpegTierMediaTransformer::transform(
         return output;
     }
 
+    // The mp4 muxer only takes these as-is. G.711 is re-encoded: the mov muxer would keep it,
+    // but as one-byte samples that MP4Reader replays as ~8000 audio packets per second.
+    const bool copy_audio = !source.has_audio || source.audio_codec == "aac" ||
+        source.audio_codec == "mp3" || source.audio_codec == "opus";
     std::vector<std::string> encoders = configuredEncoders(decision.target_codec);
     for (size_t i = 0; i < encoders.size(); ++i) {
         std::vector<std::string> args = {"-hide_banner", "-loglevel", "error", "-y",
@@ -271,7 +281,20 @@ TierTransformResult FfmpegTierMediaTransformer::transform(
             args.push_back("-b:v");
             args.push_back(std::to_string(decision.target_video_bitrate_kbps) + "k");
         }
-        args.push_back("-c:a"); args.push_back("copy");
+        // No B-frames: replay through the server expects pts == dts. Keyframe every ~2 s
+        // so seeking inside a segment stays fine-grained (encoder default keyint is 250).
+        args.push_back("-bf"); args.push_back("0");
+        const double fps = decision.target_fps > 0 ? decision.target_fps : source.fps;
+        if (fps > 0) {
+            args.push_back("-g");
+            args.push_back(std::to_string(std::max(1L, std::lround(fps * 2))));
+        }
+        args.push_back("-c:a");
+        if (copy_audio) {
+            args.push_back("copy");
+        } else {
+            args.push_back("aac"); args.push_back("-b:a"); args.push_back("32k");
+        }
         args.push_back("-movflags"); args.push_back("+faststart");
         args.push_back("-f"); args.push_back("mp4");
         args.push_back(destination);
@@ -293,9 +316,22 @@ TierTransformResult FfmpegTierMediaTransformer::transform(
             std::remove(destination.c_str());
             continue;
         }
+        const int64_t source_bytes = static_cast<int64_t>(File::fileSize(request.source_path));
+        const int64_t output_bytes = static_cast<int64_t>(File::fileSize(destination));
+        if (output_bytes >= source_bytes &&
+            normalizedCodec(source.video_codec) == decision.target_codec) {
+            // Reducing quality must not grow the file; keep the original instead.
+            std::remove(destination.c_str());
+            output.success = true;
+            output.copied_without_transcode = true;
+            output.output_path = request.source_path;
+            output.output_bytes = source_bytes;
+            output.error_message.clear();
+            return output;
+        }
         output.success = true;
         output.output_path = destination;
-        output.output_bytes = static_cast<int64_t>(File::fileSize(destination));
+        output.output_bytes = output_bytes;
         output.encoder_backend = encoders[i];
         return output;
     }
@@ -319,9 +355,9 @@ bool FfmpegTierMediaTransformer::validate(const std::string &path,
     if (normalizedCodec(descriptor.video_codec) != decision.target_codec ||
         descriptor.width > decision.target_width || descriptor.height > decision.target_height ||
         (decision.target_fps > 0 && descriptor.fps > decision.target_fps + 0.1) ||
-        (decision.target_video_bitrate_kbps > 0 && descriptor.video_bitrate_kbps > 0 &&
+        (decision.max_video_bitrate_kbps > 0 && descriptor.video_bitrate_kbps > 0 &&
          descriptor.video_bitrate_kbps >
-             static_cast<int64_t>(decision.target_video_bitrate_kbps * 1.10))) {
+             static_cast<int64_t>(decision.max_video_bitrate_kbps * 1.10))) {
         error = "TIER_TRANSCODE_INVALID_OUTPUT: output exceeds requested profile";
         return false;
     }
