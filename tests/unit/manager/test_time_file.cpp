@@ -375,6 +375,35 @@ TEST(TimeQueryTest, ReadsTimelineWithoutStatisticState) {
     std::remove(TimeMakerImp::indexFile(path).c_str());
 }
 
+// A segment shorter than 1 s is stored with time_len 0. Tier storage queries a range from its
+// first segment's start, so dropping that block left the range with no segments: it was never
+// moved or expired, and its block stayed in the timefile after the MP4 was deleted.
+TEST(TimeQueryTest, ReturnsZeroLengthBlockAtQueryStart) {
+    const std::string path = "/tmp/s3mediakit-unit-time-query-zero-len.s3db";
+    writeTimeline(path, {makeBlock("main", 100, 0), makeBlock("main", 200, 0)}, true);
+
+    mediakit::MediaTuple tuple;
+    tuple.app = "camera";
+    tuple.stream = "main";
+    TimeQuery query(tuple, path);
+    std::vector<TimeBlock> blocks;
+    std::string error;
+    ASSERT_TRUE(query.queryBlocks(100, 101, blocks, error)) << error;
+    ASSERT_EQ(1u, blocks.size());
+    EXPECT_EQ(100u, blocks[0].start_time());
+
+    ASSERT_TRUE(query.queryBlocks(200, 201, blocks, error)) << error;
+    ASSERT_EQ(1u, blocks.size());
+    EXPECT_EQ(200u, blocks[0].start_time());
+
+    // Still excluded once the query starts after it.
+    ASSERT_TRUE(query.queryBlocks(101, 150, blocks, error)) << error;
+    EXPECT_TRUE(blocks.empty());
+
+    std::remove(path.c_str());
+    std::remove(TimeMakerImp::indexFile(path).c_str());
+}
+
 // V5: a device is never removed from TimeRecorderManager, so the writer of today's timefile used to
 // stay open for the life of the process — including for a camera that had stopped recording here
 // (moved to another node, or waiting for retention to clear its data). Measured on the stress

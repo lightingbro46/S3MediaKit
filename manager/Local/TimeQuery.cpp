@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "Common/config.h"
 #include "Record/Recorder.h"
 #include "TimeQuery.h"
@@ -62,7 +63,9 @@ bool TimeQuery::readBlockList(uint64_t &start_stamp, uint64_t &end_stamp, const 
                 if (_tuple.stream.empty() || _tuple.stream == block.stream()) {
                     // Set the current timestamp
                     setCurrentStamp(block.start_time());
-                    if (block.start_time() + block.time_len() > start_stamp &&
+                    // A segment shorter than 1 s is stored with time_len 0; count it as 1 s
+                    // or a query starting at its own start never returns it.
+                    if (block.start_time() + std::max<uint64_t>(1, block.time_len()) > start_stamp &&
                         block.start_time() < end_stamp) {
                         cb(block);
                     }
