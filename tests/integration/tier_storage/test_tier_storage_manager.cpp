@@ -2762,14 +2762,21 @@ int scenarioStaleTimeBlockSweep(const std::string &root) {
     // The production case: the range is DELETED but the block and its timefile stayed.
     const std::string camera = "camera-stale";
     const int64_t deleted_start = day + 3600;
-    const int64_t available_start = day + 7200;
     const int64_t unregistered_start = day + 10800;
     const int64_t encrypted_start = day + 14400;
-    for (const int64_t start : {deleted_start, available_start, unregistered_start, encrypted_start})
+    for (const int64_t start : {deleted_start, unregistered_start, encrypted_start})
         writeDailyTimeBlock(root, camera, "main", date, segment(camera, start), start, start + 60, 1);
     seedRange("stale-deleted", camera, deleted_start, SegmentStatus::DELETED);
-    seedRange("stale-available", camera, available_start, SegmentStatus::AVAILABLE);
     writeFile(segment(camera, unregistered_start), "mp4 without range");
+    // The oldest live range starts the next day: that day and later are not read, so neither its
+    // block (MP4 missing, left to reconcile) nor an orphan beside it is touched.
+    const int64_t live_day = day + 86400;
+    const std::string live_date = getTimeStr("%Y-%m-%d", live_day);
+    const int64_t available_start = live_day + 7200;
+    const int64_t live_orphan_start = live_day + 10800;
+    for (const int64_t start : {available_start, live_orphan_start})
+        writeDailyTimeBlock(root, camera, "main", live_date, segment(camera, start), start, start + 60, 1);
+    seedRange("stale-available", camera, available_start, SegmentStatus::AVAILABLE);
     writeFile(segment(camera, encrypted_start) + RecordEncryptionUtils::encryptedFileSuffix(), "encrypted");
     // Today's file is still being written: never swept.
     const int64_t today_start = today + 60;
@@ -2789,13 +2796,16 @@ int scenarioStaleTimeBlockSweep(const std::string &root) {
     require(waitUntil([&]() {
         auto starts = fileBlockStarts(camera, file, day, day + 86400);
         std::sort(starts.begin(), starts.end());
-        return starts == std::vector<int64_t>{available_start, unregistered_start, encrypted_start} &&
+        return starts == std::vector<int64_t>{unregistered_start, encrypted_start} &&
                !File::fileExist(lone_file) &&
                !File::fileExist(root + "/hot/record/" + lone + "/" + date + ".idx");
     }, 5000), "Sweep did not remove exactly the stale blocks, or left the emptied timefile");
     require(fileBlockStarts(camera, root + "/hot/record/" + camera + "/" + today_date + ".s3db",
                             today, today + 86400).size() == 1,
             "Sweep touched today's timefile");
+    require(fileBlockStarts(camera, root + "/hot/record/" + camera + "/" + live_date + ".s3db",
+                            live_day, live_day + 86400).size() == 2,
+            "Sweep read a day at or after the oldest live range");
 
     bool alerted = false;
     for (const auto &alert : StorageAlertImp().query("", -1, 0, 100))

@@ -8369,6 +8369,16 @@ void TierStorageManager::sweepStaleTimeBlocks() {
 
     const int64_t now = static_cast<int64_t>(time(nullptr));
     const uint64_t today = StampUtils::getStartOfDay(static_cast<uint64_t>(now));
+    // Only days before a camera's oldest live range are read: that is where retention leaves a
+    // block it could not enumerate, and it keeps the pass from rereading every valid timefile of
+    // the retention window. A camera with no live range at all has every past day eligible.
+    std::unordered_map<std::string, uint64_t> oldest_live_day;
+    for (const auto &oldest : SegmentTierRangeImp().findOldestStoredStartPerStream()) {
+        const uint64_t day = StampUtils::getStartOfDay(static_cast<uint64_t>(std::max<int64_t>(0, oldest.start_time)));
+        auto it = oldest_live_day.find(oldest.camera_id);
+        if (it == oldest_live_day.end() || day < it->second)
+            oldest_live_day[oldest.camera_id] = day;
+    }
     // Live owners; DELETED/MISSING ranges no longer own their blocks.
     const std::string deleted = segmentStatusToString(SegmentStatus::DELETED);
     const std::string missing = segmentStatusToString(SegmentStatus::MISSING);
@@ -8384,6 +8394,9 @@ void TierStorageManager::sweepStaleTimeBlocks() {
             break;
         const std::string &camera_id = cameras[(start_index + visited) % cameras.size()];
         const std::string camera_dir = timeline_root + "/" + camera_id;
+        auto oldest_it = oldest_live_day.find(camera_id);
+        const uint64_t before_day = oldest_it == oldest_live_day.end()
+            ? today : std::min<uint64_t>(today, oldest_it->second);
 
         std::map<uint64_t, std::string> past_files;
         File::scanDir(camera_dir, [&](const std::string &path, bool is_dir) {
@@ -8394,7 +8407,7 @@ void TierStorageManager::sweepStaleTimeBlocks() {
             if (name.empty() || name[0] == '.')
                 return true;
             const uint64_t day = StrTimeUtils::getTsFromDateStr(name.substr(0, name.size() - 5));
-            if (day == 0 || day >= today)
+            if (day == 0 || day >= before_day)
                 return true;
             // Recently written (gap fill, SD-card import): its ranges may not be registered yet.
             struct stat st{};

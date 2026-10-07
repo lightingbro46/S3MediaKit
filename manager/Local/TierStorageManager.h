@@ -744,9 +744,10 @@ private:
     void evaluateRetentionForecast(const std::vector<std::pair<std::string, StoragePolicy>> &camera_policies);
     void cleanupRestoreTempFiles();
     void cleanupOrphanTemporarySegments();
-    // Removes past-day timefile blocks that no live range owns and whose MP4 is gone, so the
-    // day's timefile can be deleted once empty. Nothing else removes such a block: range
-    // deletion only removes the blocks it enumerates, and backfill only scans forward.
+    // Removes timefile blocks that no live range owns and whose MP4 is gone, from the days before
+    // the camera's oldest live range, so the day's timefile can be deleted once empty. Nothing
+    // else removes such a block: range deletion only removes the blocks it enumerates, and
+    // backfill only scans forward.
     void sweepStaleTimeBlocks();
 
     bool syncBackfillTasks();
