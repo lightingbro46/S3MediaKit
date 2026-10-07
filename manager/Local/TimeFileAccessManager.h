@@ -25,11 +25,19 @@ public:
     // acquireRead() on this file would never run the swap that unblocks it.
     void finalizeSwapWhenReadableIdle(const std::string &file, const std::function<void()> &cb);
 
+    // One rebuild per file at a time: rebuilds share the ".<name>.s3db" temp file, and a second
+    // one started before the first swap ran would delete or overwrite it. Waits up to `wait_ms`
+    // for the running rebuild and its swap to finish; returns nullptr when it does not. The
+    // returned token releases the file, so a rebuild keeps it until its swap callback is done.
+    ReadGuard tryBeginRebuild(const std::string &file, int wait_ms);
+
 private:
     TimeFileAccessManager() = default;
 
     std::shared_ptr<struct TimeFileAccessState> getState(const std::string &file);
     void releaseRead(const std::shared_ptr<struct TimeFileAccessState> &state, const std::string &file);
+    void endRebuild(const std::shared_ptr<struct TimeFileAccessState> &state, const std::string &file);
+    void eraseIfIdle(const std::shared_ptr<struct TimeFileAccessState> &state, const std::string &file);
     void tryFinalizeSwap(const std::string &file, const std::function<void()> &cb, uint64_t attempts);
 
 private:

@@ -25,6 +25,7 @@
 #include "Local/StatisticRecorder.h"
 #include "Local/TierEncryptionManager.h"
 #include "Local/TierEncryptionUtils.h"
+#include "Local/TimeDemuxer.h"
 #include "Local/TimeQuery.h"
 #include "Local/TimeRebuilder.h"
 #include "Local/MotionBlockManager.h"
@@ -3493,11 +3494,15 @@ void TierStorageManager::runTieringCycle() {
             self->runRangeFileReconcile();
             self->runObjectRangeReconcile();
             self->processMetadataCleanupJobs();
+            // Gap fill appends past blocks after newer ones; rewrite those files in order so the
+            // ranges of the filled segments can be listed (and moved, and expired).
+            TimeRecorderManager::Instance().sortUnsortedTimeFiles();
             self->processRestoreJobs();
             self->pruneOldMetrics();
             self->cleanupRestoreTempFiles();
             TierEncryptionManager::Instance().sweepDecryptCache();
             self->cleanupOrphanTemporarySegments();
+            self->sweepStaleTimeBlocks();
             self->dispatchPendingTieringJobs();
             InfoL << "Tiering cycle done. Elapsed: " << format_duration_verbose(self->_ticker.elapsedTime());
         } catch (const std::exception &ex) {
@@ -8334,6 +8339,172 @@ void TierStorageManager::cleanupOrphanTemporarySegments() {
                << ", would_delete_files=" << would_delete_files
                << ", errors=" << errors
                << ", budget_exhausted=" << budget_exhausted;
+    }
+}
+
+void TierStorageManager::sweepStaleTimeBlocks() {
+    GET_CONFIG(bool, enabled, Storage::kTierStaleBlockSweepEnabled);
+    if (!enabled)
+        return;
+    GET_CONFIG(int64_t, work_budget_ms, Storage::kTierStaleBlockSweepWorkBudgetMs);
+    GET_CONFIG(int, max_files, Storage::kTierStaleBlockSweepMaxFilesPerCycle);
+    GET_CONFIG(int64_t, min_age_seconds, Storage::kTierReconcileMinAgeSeconds);
+    if (work_budget_ms <= 0)
+        work_budget_ms = 500;
+    if (max_files <= 0)
+        max_files = 20;
+
+    GET_CONFIG(std::string, record_path, Protocol::kMP4SavePath);
+    GET_CONFIG(std::string, app_name, Record::kAppName);
+    const std::string timeline_root = File::absolutePath(app_name, record_path);
+    std::vector<std::string> cameras;
+    File::scanDir(timeline_root, [&](const std::string &path, bool is_dir) {
+        if (is_dir)
+            cameras.push_back(path.substr(path.rfind('/') + 1));
+        return true;
+    }, false, false);
+    if (cameras.empty())
+        return;
+    std::sort(cameras.begin(), cameras.end());
+
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    const uint64_t today = StampUtils::getStartOfDay(static_cast<uint64_t>(now));
+    // Live owners; DELETED/MISSING ranges no longer own their blocks.
+    const std::string deleted = segmentStatusToString(SegmentStatus::DELETED);
+    const std::string missing = segmentStatusToString(SegmentStatus::MISSING);
+    std::unordered_map<std::string, bool> pool_readable;
+    Ticker budget;
+    int files_read = 0;
+    size_t removed_blocks = 0;
+    size_t start_index = _stale_block_next_camera_index % cameras.size();
+    size_t visited = 0;
+
+    for (; visited < cameras.size() && !_stopping; ++visited) {
+        if (files_read >= max_files || budget.elapsedTime() >= static_cast<uint64_t>(work_budget_ms))
+            break;
+        const std::string &camera_id = cameras[(start_index + visited) % cameras.size()];
+        const std::string camera_dir = timeline_root + "/" + camera_id;
+
+        std::map<uint64_t, std::string> past_files;
+        File::scanDir(camera_dir, [&](const std::string &path, bool is_dir) {
+            if (is_dir || !end_with(path, ".s3db"))
+                return true;
+            const std::string name = path.substr(path.rfind('/') + 1);
+            // ".<date>.s3db" is a rebuild in progress.
+            if (name.empty() || name[0] == '.')
+                return true;
+            const uint64_t day = StrTimeUtils::getTsFromDateStr(name.substr(0, name.size() - 5));
+            if (day == 0 || day >= today)
+                return true;
+            // Recently written (gap fill, SD-card import): its ranges may not be registered yet.
+            struct stat st{};
+            if (::stat(path.c_str(), &st) != 0 || st.st_mtime > now - min_age_seconds)
+                return true;
+            past_files.emplace(day, path);
+            return true;
+        }, false, false);
+
+        std::vector<TimeBlockIdentity> stale;
+        std::string first_stale;
+        for (const auto &file : past_files) {
+            if (files_read >= max_files || budget.elapsedTime() >= static_cast<uint64_t>(work_budget_ms))
+                break;
+            ++files_read;
+            const int64_t day_start = static_cast<int64_t>(file.first);
+            std::vector<TimeBlock> blocks;
+            try {
+                // A full scan: the owner check must not depend on block order or the index.
+                TimeDemuxer demuxer;
+                demuxer.openFile(file.second);
+                bool eof = false;
+                while (!eof) {
+                    TimeBlock block;
+                    demuxer.readBlock(block, eof);
+                    if (!eof)
+                        blocks.push_back(std::move(block));
+                }
+            } catch (const std::exception &ex) {
+                WarnL << "Skip stale block sweep of " << file.second << ": " << ex.what();
+                continue;
+            }
+            if (blocks.empty())
+                continue;
+
+            std::unordered_map<std::string, std::vector<SegmentTierRange>> owners;
+            for (auto &range : SegmentTierRangeImp().queryByCamera(camera_id, day_start - 86400,
+                                                                   day_start + 2 * 86400)) {
+                if (range.status != deleted && range.status != missing)
+                    owners[range.stream_id].push_back(std::move(range));
+            }
+
+            for (const auto &block : blocks) {
+                const int64_t block_start = static_cast<int64_t>(block.start_time());
+                bool owned = false;
+                for (const auto &range : owners[block.stream()]) {
+                    if (range.start_time <= block_start && block_start < range.end_time) {
+                        owned = true;
+                        break;
+                    }
+                }
+                if (owned || block.file_path().empty())
+                    continue;
+                const std::string full_path = decodeBase64(block.file_path());
+                std::string segment_path;
+                if (!deriveSegmentPathFromFullPath(full_path, camera_id, block.stream(), segment_path))
+                    continue;
+                StoragePool pool;
+                std::string pool_root;
+                if (!resolveHotPoolForPath(full_path, pool, pool_root))
+                    continue;
+                auto readable = pool_readable.find(pool.id);
+                if (readable == pool_readable.end())
+                    readable = pool_readable.emplace(pool.id, isFilePoolVerifiablyReadable(pool)).first;
+                if (!readable->second)
+                    continue;
+                // Gone only when neither spelling exists; any other stat error proves nothing.
+                const std::string plain = RecordEncryptionUtils::stripEncSuffix(full_path);
+                bool gone = true;
+                for (const auto &path : {plain, plain + RecordEncryptionUtils::encryptedFileSuffix()}) {
+                    struct stat st{};
+                    if (::stat(path.c_str(), &st) == 0 || errno != ENOENT) {
+                        gone = false;
+                        break;
+                    }
+                }
+                if (!gone)
+                    continue;
+                TimeBlockIdentity identity;
+                identity.camera_id = camera_id;
+                identity.stream_id = block.stream();
+                identity.start_time = block.start_time();
+                identity.segment_path = segment_path;
+                stale.push_back(identity);
+                if (first_stale.empty())
+                    first_stale = full_path;
+            }
+        }
+
+        if (stale.empty())
+            continue;
+        // Rewrites only the days holding these blocks; a day left empty loses its timefile.
+        StorageManager::Instance().removeCameraTimeBlocks(camera_id, stale);
+        removed_blocks += stale.size();
+        WarnL << "Removed " << stale.size() << " stale timefile block(s) without range or MP4, camera="
+              << camera_id << ", first=" << first_stale;
+        StorageAlert alert;
+        alert.id = StrUUID::make_guid(8, "alert");
+        alert.level = "WARNING";
+        alert.type = "TIMEFILE_STALE_BLOCK_REMOVED";
+        alert.message = StrPrinter << "Removed " << stale.size()
+                                   << " timeline block(s) with no live range and no MP4, camera="
+                                   << camera_id << ", first=" << first_stale;
+        alert.created_at = now;
+        StorageAlertImp().add(alert);
+    }
+    _stale_block_next_camera_index = (start_index + std::max<size_t>(1, visited)) % cameras.size();
+    if (removed_blocks > 0 || files_read > 0) {
+        DebugL << "sweepStaleTimeBlocks: cameras=" << visited << ", files_read=" << files_read
+               << ", removed_blocks=" << removed_blocks;
     }
 }
 

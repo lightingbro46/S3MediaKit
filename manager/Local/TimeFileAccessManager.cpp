@@ -1,5 +1,6 @@
 #include "TimeFileAccessManager.h"
 
+#include <algorithm>
 #include <chrono>
 
 #include "Poller/EventPoller.h"
@@ -22,6 +23,7 @@ struct TimeFileAccessState {
     condition_variable cv;
     size_t reader_count = 0;
     bool pending_swap = false;
+    bool rebuilding = false;
 };
 
 INSTANCE_IMP(TimeFileAccessManager)
@@ -66,15 +68,43 @@ void TimeFileAccessManager::releaseRead(const shared_ptr<TimeFileAccessState> &s
     // Drop the per-file state once nobody is reading and no swap is pending to keep the
     // states map from growing unbounded over the lifetime of the process.
     if (maybe_idle) {
-        lock_guard<mutex> lock(_mutex);
-        auto it = _states.find(file);
-        if (it != _states.end() && it->second == state) {
-            lock_guard<mutex> state_lock(state->mtx);
-            if (state->reader_count == 0 && !state->pending_swap) {
-                _states.erase(it);
-            }
+        eraseIfIdle(state, file);
+    }
+}
+
+void TimeFileAccessManager::eraseIfIdle(const shared_ptr<TimeFileAccessState> &state, const string &file) {
+    lock_guard<mutex> lock(_mutex);
+    auto it = _states.find(file);
+    if (it != _states.end() && it->second == state) {
+        lock_guard<mutex> state_lock(state->mtx);
+        if (state->reader_count == 0 && !state->pending_swap && !state->rebuilding) {
+            _states.erase(it);
         }
     }
+}
+
+TimeFileAccessManager::ReadGuard TimeFileAccessManager::tryBeginRebuild(const string &file, int wait_ms) {
+    auto state = getState(file);
+    {
+        unique_lock<mutex> lock(state->mtx);
+        if (!state->cv.wait_for(lock, chrono::milliseconds(max(0, wait_ms)),
+                                [&]() { return !state->rebuilding; })) {
+            return nullptr;
+        }
+        state->rebuilding = true;
+    }
+    return make_shared<toolkit::onceToken>(nullptr, [state, file]() {
+        TimeFileAccessManager::Instance().endRebuild(state, file);
+    });
+}
+
+void TimeFileAccessManager::endRebuild(const shared_ptr<TimeFileAccessState> &state, const string &file) {
+    {
+        lock_guard<mutex> lock(state->mtx);
+        state->rebuilding = false;
+    }
+    state->cv.notify_all();
+    eraseIfIdle(state, file);
 }
 
 void TimeFileAccessManager::beginPendingSwap(const string &file) {
@@ -143,16 +173,7 @@ void TimeFileAccessManager::tryFinalizeSwap(const string &file, const function<v
     state->cv.notify_all();
 
     // Clean up the state entry if it is now idle.
-    {
-        lock_guard<mutex> lock(_mutex);
-        auto it = _states.find(file);
-        if (it != _states.end() && it->second == state) {
-            lock_guard<mutex> state_lock(state->mtx);
-            if (state->reader_count == 0 && !state->pending_swap) {
-                _states.erase(it);
-            }
-        }
-    }
+    eraseIfIdle(state, file);
 }
 
 } // namespace managerkit

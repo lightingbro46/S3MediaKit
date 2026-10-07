@@ -932,6 +932,25 @@ Các cấu hình:
 
 Rollout nên giữ `dry_run=1` ít nhất hai maintenance cycle để kiểm tra counter `would_delete_files`, sau đó đặt `dry_run=0` để xóa thật. Có thể rollback ngay bằng `tier_tmp_cleanup_enabled=0`; cơ chế này không có schema hoặc metadata cần rollback.
 
+### Sắp xếp TimeFile và dọn block mồ côi
+
+TimeFile được ghi kiểu append. Khi gap fill hoặc import thẻ SD ghi một block có thời gian cũ hơn block đã có trong file (kể cả file của ngày hiện tại), block đó nằm ở cuối file và không có entry trong `.idx`. `TimeQuery` dừng đọc khi đã vượt cuối cửa sổ truy vấn, nên không thấy block này: playback thiếu đoạn đã bù, và `collectSegmentFilesForRange` trả rỗng làm range kẹt AVAILABLE.
+
+- `TimeRecorder::inputBlock` đánh dấu file là **chưa sắp xếp** khi block mới có phút bắt đầu nhỏ hơn block mới nhất đã ghi vào file. Khi file được mở lại, mốc so sánh lấy từ index. Dấu được lưu trong `.dirty` dưới dạng dòng `!<đường dẫn>`; bản cũ đọc dòng này sẽ bỏ qua.
+- `TimeRecorderManager::sortUnsortedTimeFiles()` ghi lại các file chưa sắp xếp theo thứ tự `start_time`. Hàm chạy trong mỗi vòng tier (sau `processMetadataCleanupJobs`) và chạy thêm sau `record.timefileSortDelayAfterGapFillMs` kể từ khi một kết nối gap fill đóng.
+- Mọi lần rebuild (`rebuildTimeLine`, `removeTimeBlocks`, sắp xếp) đều đi qua `MultiTimeRebuilder::rebuildFiles`. Sau khi swap xong, hàm này xoá dấu dirty và dấu chưa sắp xếp của file, với điều kiện file không được ghi thêm kể từ snapshot. Dấu của file đã bị xoá cũng được dọn.
+- Mỗi file chỉ có một rebuild tại một thời điểm (`TimeFileAccessManager::tryBeginRebuild`), vì các rebuild dùng chung file tạm `.<ngày>.s3db`. Rebuild tới sau chờ tối đa 2 s rồi bỏ lượt: job dọn metadata và bước sắp xếp thử lại ở vòng sau, còn block mà backfill hoặc reconcile định gỡ sẽ được `sweepStaleTimeBlocks()` gỡ khi sang ngày.
+- `sweepStaleTimeBlocks()` đọc toàn bộ TimeFile của các ngày đã qua (bỏ qua file vừa ghi trong `storage.tier_reconcile_min_age_seconds`). Một block bị gỡ khi thoả cả ba điều kiện: không có range AVAILABLE/RESTORING/EXPIRED nào bao block (range DELETED/MISSING không tính), MP4 không còn kể cả biến thể `.enc`, và pool HOT đọc được. TimeFile rỗng sau khi gỡ thì bị xoá. Mỗi lần gỡ tạo alert `TIMEFILE_STALE_BLOCK_REMOVED`.
+
+| Key | Mặc định | Ý nghĩa |
+|---|---:|---|
+| `record.timefileSortEnabled` | `1` | Bật sắp xếp lại TimeFile bị append lệch thứ tự |
+| `record.timefileSortMaxFilesPerCycle` | `50` | Số file tối đa được ghi lại trong một lượt |
+| `record.timefileSortDelayAfterGapFillMs` | `10000` | Thời gian chờ sau khi kết nối gap fill đóng, để block của segment cuối được ghi trước |
+| `storage.tier_stale_block_sweep_enabled` | `1` | Bật quét block mồ côi trong TimeFile ngày cũ |
+| `storage.tier_stale_block_sweep_work_budget_ms` | `500` | Ngân sách thời gian của một lượt quét |
+| `storage.tier_stale_block_sweep_max_files_per_cycle` | `20` | Số TimeFile ngày cũ tối đa được đọc trong một lượt |
+
 ## 9. Luồng Restore Tích Hợp Với API
 
 ### 9.1 API Resolve Và Quan Sát Job

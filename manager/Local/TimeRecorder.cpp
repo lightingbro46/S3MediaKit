@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <ctime>
 #include <vector>
@@ -113,6 +114,8 @@ TimeRecorder::FileWriter::Ptr TimeRecorder::getOrCreateWriter(const string &file
         writer->muxer = std::make_shared<TimeMuxer>();
         TraceL << "Open time file: " << file_path;
         writer->muxer->openFile(file_path);
+        // Reopening an existing day (gap fill, idle close): the index knows its newest minute.
+        writer->last_start = writer->muxer->lastIndexedStamp();
     } catch (std::exception &ex) {
         WarnL << ex.what();
         return nullptr;
@@ -187,7 +190,13 @@ bool TimeRecorder::inputBlock(const TimeBlock &block) {
     // extra, harmless rebuild.
     if (_is_dir) {
         TimeFileDirtyTracker::Instance().markDirty(_path, target);
+        // Appended after newer blocks: windowed queries stop before reaching it until the file
+        // is rewritten in order. The index stores minutes, so compare at that precision too.
+        if (StampUtils::getStartOfMinute(block.start_time()) < StampUtils::getStartOfMinute(writer->last_start)) {
+            TimeFileDirtyTracker::Instance().markUnsorted(_path, target);
+        }
     }
+    writer->last_start = std::max<uint64_t>(writer->last_start, block.start_time());
 
     // Capture blocks written after the rebuild snapshot into memory.
     if (writer->mem_muxer) {

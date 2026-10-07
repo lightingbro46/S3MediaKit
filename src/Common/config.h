@@ -994,6 +994,13 @@ extern const std::string kTierTmpCleanupDryRun;
 extern const std::string kTierTmpCleanupMaxFilesPerCycle;
 // Maximum wall-clock time spent by one temporary MP4 cleanup pass.
 extern const std::string kTierTmpCleanupWorkBudgetMs;
+// Remove timefile blocks of past days that no live range owns and whose MP4 is gone (left behind
+// when a file was deleted outside the range flow); an emptied timefile is deleted with them.
+extern const std::string kTierStaleBlockSweepEnabled;
+// Maximum wall-clock time spent by one stale timefile block sweep.
+extern const std::string kTierStaleBlockSweepWorkBudgetMs;
+// Maximum past-day timefiles read by one stale timefile block sweep.
+extern const std::string kTierStaleBlockSweepMaxFilesPerCycle;
 // Interval between lightweight storage-pool health probes. Default: 30 seconds.
 extern const std::string kPoolHealthCheckIntervalSeconds;
 // Consecutive failed probes required before an online pool becomes OFFLINE.

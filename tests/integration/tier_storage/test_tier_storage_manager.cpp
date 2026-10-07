@@ -37,6 +37,7 @@
 #include "Local/StatisticRecorder.h"
 #include "Local/TierEncryptionUtils.h"
 #include "Local/TierStorageManager.h"
+#include "Local/TimeFileAccessManager.h"
 #include "Local/TimeFileDirtyTracker.h"
 #include "Local/TimeMuxer.h"
 #include "Local/TimeQuery.h"
@@ -2560,6 +2561,246 @@ int scenarioTimefileRebuildSwap(const std::string &root) {
     require(::stat(file0.c_str(), &after) == 0 && after.st_ino == before.st_ino &&
                 after.st_mtime == before.st_mtime,
             "Removing a block rewrote a timefile of another day");
+    return 0;
+}
+
+TimeBlock gapFillBlock(const std::string &camera, const std::string &media, int64_t start) {
+    TimeBlock block;
+    block.set_app(camera);
+    block.set_stream("main");
+    block.set_start_time(static_cast<uint64_t>(start));
+    block.set_time_len(60);
+    block.set_file_size(1);
+    block.set_file_path(encodeBase64(media + getTimeStr("%Y-%m-%d-%H-%M-%S", start) + "-0.mp4"));
+    return block;
+}
+
+int scenarioTimefileUnsortedGapFill(const std::string &root) {
+    WorkThreadPool::setPoolSize(1);
+    std::thread([]() {
+        std::this_thread::sleep_for(std::chrono::seconds(15));
+        std::fprintf(stderr, "unsorted timefile scenario timed out\n");
+        std::_Exit(3);
+    }).detach();
+    migrateDatabase(root);
+
+    const std::string camera = "camera-gap-fill-sort";
+    const std::string device_path = root + "/hot/record/" + camera;
+    makeDirectory(device_path);
+    const std::string media = device_path + "/main/";
+    const int64_t past = static_cast<int64_t>(
+        StampUtils::getStartOfDay(static_cast<uint64_t>(::time(nullptr) - 2 * 86400)));
+    const int64_t today = static_cast<int64_t>(
+        StampUtils::getStartOfDay(static_cast<uint64_t>(::time(nullptr))));
+    const std::string past_file = device_path + "/" + getTimeStr("%Y-%m-%d", past) + ".s3db";
+    const std::string today_file = device_path + "/" + getTimeStr("%Y-%m-%d", today) + ".s3db";
+
+    // Live recording from 10:00 to 12:00, then gap fill appends 09:30.
+    for (const int64_t day : {past, today}) {
+        for (int64_t t = day + 10 * 3600; t <= day + 12 * 3600; t += 60)
+            require(TimeRecorderManager::Instance().addBlock(gapFillBlock(camera, media, t)),
+                    "Cannot write live block");
+        require(TimeRecorderManager::Instance().addBlock(gapFillBlock(camera, media, day + 9 * 3600 + 1800)),
+                "Cannot write gap-fill block");
+    }
+
+    // An in-order day is never marked.
+    const int64_t ordered = past - 86400;
+    const std::string ordered_file = device_path + "/" + getTimeStr("%Y-%m-%d", ordered) + ".s3db";
+    for (int64_t t = ordered + 10 * 3600; t <= ordered + 11 * 3600; t += 60)
+        require(TimeRecorderManager::Instance().addBlock(gapFillBlock(camera, media, t)),
+                "Cannot write in-order block");
+
+    auto unsortedVersion = [&](const std::string &file) -> uint64_t {
+        for (const auto &entry : TimeFileDirtyTracker::Instance().snapshot(device_path))
+            if (entry.file_path == file)
+                return entry.unsorted_version;
+        return 0;
+    };
+    auto hasEntry = [&](const std::string &file) {
+        for (const auto &entry : TimeFileDirtyTracker::Instance().snapshot(device_path))
+            if (entry.file_path == file)
+                return true;
+        return false;
+    };
+    require(unsortedVersion(past_file) != 0 && unsortedVersion(today_file) != 0,
+            "Out-of-order append did not mark the files unsorted");
+    require(unsortedVersion(ordered_file) == 0, "In-order file was marked unsorted");
+    require(File::loadFile((device_path + "/.dirty").c_str()).find("!" + past_file) != std::string::npos,
+            "Unsorted mark was not persisted");
+
+    // Before sorting, a windowed query cannot reach the appended block (the B0 reproduction).
+    const int64_t past_gap = past + 9 * 3600 + 1800;
+    require(fileBlockStarts(camera, past_file, past_gap, past_gap + 1).empty(),
+            "Expected the appended block to be invisible before sorting");
+
+    std::atomic<size_t> sorted{0};
+    WorkThreadPool::Instance().getExecutor()->async([&]() {
+        sorted = TimeRecorderManager::Instance().sortUnsortedTimeFiles(camera) + 1;
+    });
+    require(waitUntil([&]() { return sorted.load() != 0; }, 5000), "Sort did not return");
+    require(sorted.load() == 3, "Expected exactly the two unsorted files to be rewritten");
+
+    for (const auto &item : {std::make_pair(past, past_file), std::make_pair(today, today_file)}) {
+        const int64_t gap = item.first + 9 * 3600 + 1800;
+        const std::string file = item.second;
+        require(waitUntil([&]() {
+            auto starts = fileBlockStarts(camera, file, gap, gap + 1);
+            return starts.size() == 1 && starts[0] == gap && unsortedVersion(file) == 0;
+        }, 5000), "Sorted file still hides the gap-fill block or stays unsorted: " + file);
+        require(fileBlockStarts(camera, file, item.first, item.first + 86400).size() == 122,
+                "Sorting lost or duplicated blocks: " + file);
+    }
+    require(!hasEntry(past_file), "Past-day file kept its dirty mark after the sort");
+    require(File::loadFile((device_path + "/.dirty").c_str()).find('!') == std::string::npos,
+            "Unsorted marks were not removed from .dirty");
+
+    // Reopened file (writer closed): the index restores the newest minute, so a late block is
+    // still detected.
+    TimeRecorderManager::Instance().getRecorder(camera)->closeNow();
+    require(TimeRecorderManager::Instance().addBlock(gapFillBlock(camera, media, past + 8 * 3600)),
+            "Cannot write late block");
+    require(unsortedVersion(past_file) != 0, "Late block into a reopened file was not detected");
+
+    // Removing a block rewrites the file in order and clears the mark too.
+    std::atomic<bool> removed{false};
+    WorkThreadPool::Instance().getExecutor()->async([&]() {
+        TimeBlockIdentity identity;
+        identity.camera_id = camera;
+        identity.stream_id = "main";
+        identity.start_time = static_cast<uint64_t>(past + 10 * 3600);
+        MultiTimeRebuilder(device_path).removeTimeBlocks({identity});
+        removed = true;
+    });
+    require(waitUntil([&]() { return removed.load(); }, 5000), "Removal did not return");
+    const int64_t late = past + 8 * 3600;
+    require(waitUntil([&]() {
+        auto starts = fileBlockStarts(camera, past_file, late, late + 1);
+        return starts.size() == 1 && unsortedVersion(past_file) == 0;
+    }, 5000), "Block removal did not sort the file or clear its unsorted mark");
+
+    // A deleted file's marks are dropped by the next pass.
+    TimeRecorderManager::Instance().getRecorder(camera)->closeNow();
+    require(TimeRecorderManager::Instance().addBlock(gapFillBlock(camera, media, ordered + 9 * 3600)),
+            "Cannot write late block to the in-order day");
+    TimeRecorderManager::Instance().getRecorder(camera)->closeNow();
+    ::unlink(ordered_file.c_str());
+    ::unlink((device_path + "/" + getTimeStr("%Y-%m-%d", ordered) + ".idx").c_str());
+    std::atomic<bool> swept{false};
+    WorkThreadPool::Instance().getExecutor()->async([&]() {
+        TimeRecorderManager::Instance().sortUnsortedTimeFiles(camera);
+        swept = true;
+    });
+    require(waitUntil([&]() { return swept.load(); }, 5000), "Sweep did not return");
+    require(!hasEntry(ordered_file), "Marks of a deleted file were kept");
+
+    // Restart: unsorted marks come back from .dirty.
+    const std::string other = root + "/hot/record/camera-gap-fill-reload";
+    makeDirectory(other);
+    const std::string other_file = other + "/2026-01-01.s3db";
+    writeDailyTimeBlock(root, "camera-gap-fill-reload", "main", "2026-01-01", media + "x.mp4", 100, 160, 1);
+    require(File::saveFile(other_file + "\n!" + other_file + "\n", (other + "/.dirty").c_str()),
+            "Cannot write .dirty");
+    TimeFileDirtyTracker::Instance().loadFromDisk(root + "/hot/record");
+    bool reloaded = false;
+    for (const auto &entry : TimeFileDirtyTracker::Instance().snapshot(other))
+        reloaded = reloaded || (entry.file_path == other_file && entry.version && entry.unsorted_version);
+    require(reloaded, "Unsorted mark was not reloaded from .dirty");
+
+    // One rebuild per file: a second one waits, then gives up.
+    auto first = TimeFileAccessManager::Instance().tryBeginRebuild(other_file, 0);
+    require(first != nullptr, "First rebuild could not take the file");
+    require(TimeFileAccessManager::Instance().tryBeginRebuild(other_file, 50) == nullptr,
+            "Second rebuild of the same file was not refused");
+    first.reset();
+    require(TimeFileAccessManager::Instance().tryBeginRebuild(other_file, 0) != nullptr,
+            "Rebuild lock was not released");
+    return 0;
+}
+
+int scenarioStaleTimeBlockSweep(const std::string &root) {
+    migrateDatabase(root);
+    // Only the sweep may touch the fixtures: reconcile would drop the AVAILABLE range's block.
+    mINI::Instance()[Storage::kTierReconcileEnabled] = 0;
+    mINI::Instance()[Storage::kTierReconcileMinAgeSeconds] = 0;
+    mINI::Instance()[Storage::kTierStaleBlockSweepEnabled] = 1;
+    mINI::Instance()[Storage::kTierStaleBlockSweepWorkBudgetMs] = 5000;
+    mINI::Instance()[Storage::kTierStaleBlockSweepMaxFilesPerCycle] = 100;
+    TierStorageManager &manager = TierStorageManager::Instance();
+    manager.start();
+    const auto hot_pools = manager.listPools(tierTypeToString(HotTier));
+    require(!hot_pools.empty(), "Default HOT pool was not created");
+
+    const int64_t now = static_cast<int64_t>(::time(nullptr));
+    const int64_t day = static_cast<int64_t>(StampUtils::getStartOfDay(static_cast<uint64_t>(now - 3 * 86400)));
+    const int64_t today = static_cast<int64_t>(StampUtils::getStartOfDay(static_cast<uint64_t>(now)));
+    const std::string date = getTimeStr("%Y-%m-%d", day);
+    const std::string today_date = getTimeStr("%Y-%m-%d", today);
+
+    auto segment = [&](const std::string &camera, int64_t start) {
+        return root + "/hot/record/" + camera + "/main/" + getTimeStr("%Y-%m-%d", start) + "/" +
+               getTimeStr("%Y-%m-%d-%H-%M-%S", start) + "-0.mp4";
+    };
+    auto seedRange = [&](const std::string &id, const std::string &camera, int64_t start,
+                         SegmentStatus status) {
+        SegmentTierRange range;
+        range.range_id = id;
+        range.camera_id = camera;
+        range.stream_id = "main";
+        range.tier = tierTypeToString(HotTier);
+        range.pool_id = hot_pools.front().id;
+        range.status = segmentStatusToString(status);
+        range.start_time = start;
+        range.end_time = start + 60;
+        range.segment_count = 1;
+        range.size_bytes = 1;
+        range.created_at = now;
+        range.updated_at = now;
+        require(SegmentTierRangeImp().add(range), "Cannot seed range " + id);
+    };
+
+    // The production case: the range is DELETED but the block and its timefile stayed.
+    const std::string camera = "camera-stale";
+    const int64_t deleted_start = day + 3600;
+    const int64_t available_start = day + 7200;
+    const int64_t unregistered_start = day + 10800;
+    const int64_t encrypted_start = day + 14400;
+    for (const int64_t start : {deleted_start, available_start, unregistered_start, encrypted_start})
+        writeDailyTimeBlock(root, camera, "main", date, segment(camera, start), start, start + 60, 1);
+    seedRange("stale-deleted", camera, deleted_start, SegmentStatus::DELETED);
+    seedRange("stale-available", camera, available_start, SegmentStatus::AVAILABLE);
+    writeFile(segment(camera, unregistered_start), "mp4 without range");
+    writeFile(segment(camera, encrypted_start) + RecordEncryptionUtils::encryptedFileSuffix(), "encrypted");
+    // Today's file is still being written: never swept.
+    const int64_t today_start = today + 60;
+    writeDailyTimeBlock(root, camera, "main", today_date, segment(camera, today_start),
+                        today_start, today_start + 60, 1);
+
+    // Every block stale: the whole timefile goes.
+    const std::string lone = "camera-stale-lone";
+    const int64_t lone_start = day + 3600;
+    writeDailyTimeBlock(root, lone, "main", date, segment(lone, lone_start), lone_start, lone_start + 60, 1);
+    seedRange("lone-deleted", lone, lone_start, SegmentStatus::DELETED);
+
+    runTemporaryMp4CleanupPass(manager);
+
+    const std::string file = root + "/hot/record/" + camera + "/" + date + ".s3db";
+    const std::string lone_file = root + "/hot/record/" + lone + "/" + date + ".s3db";
+    require(waitUntil([&]() {
+        auto starts = fileBlockStarts(camera, file, day, day + 86400);
+        std::sort(starts.begin(), starts.end());
+        return starts == std::vector<int64_t>{available_start, unregistered_start, encrypted_start} &&
+               !File::fileExist(lone_file) &&
+               !File::fileExist(root + "/hot/record/" + lone + "/" + date + ".idx");
+    }, 5000), "Sweep did not remove exactly the stale blocks, or left the emptied timefile");
+    require(fileBlockStarts(camera, root + "/hot/record/" + camera + "/" + today_date + ".s3db",
+                            today, today + 86400).size() == 1,
+            "Sweep touched today's timefile");
+
+    bool alerted = false;
+    for (const auto &alert : StorageAlertImp().query("", -1, 0, 100))
+        alerted = alerted || alert.type == "TIMEFILE_STALE_BLOCK_REMOVED";
+    require(alerted, "Stale block removal raised no alert");
     return 0;
 }
 
@@ -6137,6 +6378,8 @@ int runScenario(const std::string &name, const std::string &root) {
         if (name == "pressure-protected-split") return scenarioDeletionSplitsAroundProtectedVideo(root, true);
         if (name == "reconcile-ghost-segments") return scenarioReconcileDropsSegmentsWithoutFiles(root);
         if (name == "timefile-rebuild-swap") return scenarioTimefileRebuildSwap(root);
+        if (name == "timefile-unsorted-gap-fill") return scenarioTimefileUnsortedGapFill(root);
+        if (name == "timefile-stale-block-sweep") return scenarioStaleTimeBlockSweep(root);
         if (name == "hourly-move-threshold") return scenarioMoveThresholdAlignedToGranularity(root);
         if (name == "backfill-skip-missing-file") return scenarioBackfillSkipsBlocksWithoutFiles(root);
         if (name == "age-protected-split") return scenarioDeletionSplitsAroundProtectedVideo(root, false);
@@ -6432,6 +6675,16 @@ TEST(TierStorageManagerIntegrationTest, BackfillSkipsBlocksWithoutFiles) {
 TEST(TierStorageManagerIntegrationTest, RebuildClearsDirtyAfterSwapAndKeepsConcurrentBlocks) {
     TempRoot root;
     EXPECT_EQ(0, runChild("timefile-rebuild-swap", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, SortsTimefileAfterOutOfOrderGapFill) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("timefile-unsorted-gap-fill", root.path));
+}
+
+TEST(TierStorageManagerIntegrationTest, SweepsStaleTimefileBlocksOfPastDays) {
+    TempRoot root;
+    EXPECT_EQ(0, runChild("timefile-stale-block-sweep", root.path));
 }
 
 TEST(TierStorageManagerIntegrationTest, AlignsMoveThresholdToSplitGranularity) {

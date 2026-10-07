@@ -81,6 +81,8 @@ private:
         std::string full_path;
         TimeMuxer::Ptr muxer;
         uint64_t last_access = 0;
+        // newest block start written to the file; a block older than this is out of order
+        uint64_t last_start = 0;
         // per-file rebuild capture state
         std::shared_ptr<TimeMuxerMemory> mem_muxer;
         TimeRecorder::Ptr mirror_recorder;

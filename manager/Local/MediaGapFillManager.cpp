@@ -18,6 +18,7 @@
 #include "server/WebApi.h"
 #include "Util/NoticeCenter.h"
 #include "Common/BlockingExecutors.h"
+#include "Local/TimeRecorderManager.h"
 
 using namespace mediakit;
 using namespace toolkit;
@@ -1286,6 +1287,7 @@ void MediaGapFillManager::onConnectionClosed(const std::string &connection_id,
                                              bool completed,
                                              uint64_t processed_up_to,
                                              const std::string &reason) {
+    std::string device_id;
     {
         std::lock_guard<std::recursive_mutex> lock(_mtx);
         auto it = _active.find(connection_id);
@@ -1315,7 +1317,11 @@ void MediaGapFillManager::onConnectionClosed(const std::string &connection_id,
                   << " reason=" << reason;
         }
         updateSessionCompletion(session_request);
+        device_id = session_request.device_id;
     }
+    // The filled segments were appended after newer blocks of their day; sort them now rather
+    // than at the next tier cycle so playback and tiering see them.
+    TimeRecorderManager::Instance().postSortTimeFiles(device_id);
     schedule();
 }
 

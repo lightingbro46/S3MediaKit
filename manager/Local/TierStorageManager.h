@@ -744,6 +744,10 @@ private:
     void evaluateRetentionForecast(const std::vector<std::pair<std::string, StoragePolicy>> &camera_policies);
     void cleanupRestoreTempFiles();
     void cleanupOrphanTemporarySegments();
+    // Removes past-day timefile blocks that no live range owns and whose MP4 is gone, so the
+    // day's timefile can be deleted once empty. Nothing else removes such a block: range
+    // deletion only removes the blocks it enumerates, and backfill only scans forward.
+    void sweepStaleTimeBlocks();
 
     bool syncBackfillTasks();
 
@@ -923,6 +927,7 @@ private:
     mutable std::mutex _quota_usage_mtx;
     std::unordered_map<std::string, std::pair<int64_t, int64_t>> _quota_usage;
     size_t _temporary_mp4_next_camera_index = 0;
+    size_t _stale_block_next_camera_index = 0;
 
     // System default policy id (fixed built-in policy)
     mutable std::mutex _default_policy_mtx;

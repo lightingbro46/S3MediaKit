@@ -16,6 +16,11 @@ using namespace mediakit;
 
 namespace managerkit {
 
+// A rebuild holds its file until the swap ran, which waits for readers; a concurrent rebuild of
+// the same file waits this long before giving up for this cycle. Kept short: playback readers can
+// hold the first swap back for a long time, and this blocks a tier or storage pool thread.
+static constexpr int kRebuildWaitMs = 2000;
+
 //////////////////////////////TimeRebuilder////////////////////////////////
 
 TimeRebuilder::TimeRebuilder(const string &src_path) : _src_path(src_path) {
@@ -137,8 +142,9 @@ void TimeRebuilder::closeTempFile() {
     auto device_path = _device_path;
     auto version_at_start = _dirty_version_at_start;
     auto on_swapped = _on_swapped;
+    auto rebuild_guard = std::move(_rebuild_guard);
     TimeFileAccessManager::Instance().beginPendingSwap(full_path);
-    TimeFileAccessManager::Instance().finalizeSwapWhenReadableIdle(full_path, [full_path_tmp, full_path, src_path, device_path, version_at_start, on_swapped]() {
+    TimeFileAccessManager::Instance().finalizeSwapWhenReadableIdle(full_path, [full_path_tmp, full_path, src_path, device_path, version_at_start, on_swapped, rebuild_guard]() {
         // Abort the destructive swap if the source file was written to while we were
         // rebuilding it (e.g. SD-card import re-opened this past-date file). Deleting
         // the source now would drop those blocks; keep it dirty for the next cycle.
@@ -166,8 +172,9 @@ void TimeRebuilder::closeTempFileAfterActiveSwap() {
     auto full_path = _full_path;
     auto src_path = _src_path;
     auto on_swapped = _on_swapped;
+    auto rebuild_guard = std::move(_rebuild_guard);
     TimeFileAccessManager::Instance().beginPendingSwap(full_path);
-    TimeFileAccessManager::Instance().finalizeSwapWhenReadableIdle(full_path, [writer, recorder, full_path_tmp, full_path, src_path, on_swapped]() {
+    TimeFileAccessManager::Instance().finalizeSwapWhenReadableIdle(full_path, [writer, recorder, full_path_tmp, full_path, src_path, on_swapped, rebuild_guard]() {
         auto swap_file = [full_path_tmp, full_path]() {
             replaceTimeFiles(full_path_tmp, full_path);
         };
@@ -214,17 +221,16 @@ static void commitArchivedChanges(CameraArchivedChanges &camera_changes) {
     }
 }
 
-size_t TimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
-    auto keep_block = [&map](const TimeBlock &block) -> bool {
+static function<bool(const TimeBlock &)> keepByThreshold(const TimeRebuilder::KeepTimeMap &map) {
+    return [&map](const TimeBlock &block) -> bool {
         string key = (StrPrinter << block.app() << "/" << block.stream()); 
         auto it = map.find(key);
         return it != map.end() && block.start_time() >= it->second;
     };
-    return rebuildTimeLineWithPredicate(keep_block);
 }
 
-size_t TimeRebuilder::removeTimeBlocks(const vector<TimeBlockIdentity> &blocks) {
-    auto keep_block = [&blocks](const TimeBlock &block) -> bool {
+static function<bool(const TimeBlock &)> keepUnlessListed(const vector<TimeBlockIdentity> &blocks) {
+    return [&blocks](const TimeBlock &block) -> bool {
         for (const auto &identity : blocks) {
             if (identity.camera_id != block.app() ||
                 identity.stream_id != block.stream() ||
@@ -241,7 +247,14 @@ size_t TimeRebuilder::removeTimeBlocks(const vector<TimeBlockIdentity> &blocks) 
         }
         return true;
     };
-    return rebuildTimeLineWithPredicate(keep_block);
+}
+
+size_t TimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
+    return rebuildTimeLineWithPredicate(keepByThreshold(map));
+}
+
+size_t TimeRebuilder::removeTimeBlocks(const vector<TimeBlockIdentity> &blocks) {
+    return rebuildTimeLineWithPredicate(keepUnlessListed(blocks));
 }
 
 size_t TimeRebuilder::rebuildTimeLineWithPredicate(const function<bool(const TimeBlock &)> &keep_predicate) {
@@ -255,6 +268,13 @@ size_t TimeRebuilder::rebuildTimeLineWithPredicate(const function<bool(const Tim
                << " " << block.start_time();
         return false;
     };
+
+    // step 0: one rebuild per file; a second one would delete this one's temp file before its swap.
+    _rebuild_guard = TimeFileAccessManager::Instance().tryBeginRebuild(_src_path, kRebuildWaitMs);
+    if (!_rebuild_guard) {
+        WarnL << "Skip time file rebuild, another rebuild of the file is still running: " << _src_path;
+        return 0;
+    }
 
     // step 1: delete old template file and create writer
     createTempFile();
@@ -394,11 +414,65 @@ static uint64_t findMinKeepTime(const string &src_path, const TimeRebuilder::Kee
     return min_keep_time;
 }
 
-size_t MultiTimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
+size_t MultiTimeRebuilder::rebuildFiles(
+        const function<bool(uint64_t, const string &, const TimeFileDirtyEntry *)> &select,
+        const function<bool(const TimeBlock &)> &keep,
+        size_t max_files) {
     size_t total_removed_bytes = 0;
+
+    // Snapshot the files that changed (or went out of order) since the last rebuild.
+    auto &tracker = TimeFileDirtyTracker::Instance();
+    unordered_map<string, TimeFileDirtyEntry> marked;
+    for (const auto &entry : tracker.snapshot(_src_path)) {
+        // A rebuild that kept nothing deleted the file; its marks are of no use any more.
+        if (!File::fileExist(entry.file_path.data())) {
+            tracker.clearRebuilt(_src_path, entry);
+            continue;
+        }
+        marked.emplace(entry.file_path, entry);
+    }
+
+    size_t started = 0;
+    for (const auto &it : _timefiles_map) {
+        const auto &stamp = it.first;
+        const auto &timefile = it.second;
+
+        auto marked_it = marked.find(timefile);
+        const TimeFileDirtyEntry *entry = marked_it == marked.end() ? nullptr : &marked_it->second;
+        if (!select(stamp, timefile, entry)) {
+            TraceL << "Skip rebuild time file: " << timefile;
+            continue;
+        }
+        if (max_files && started >= max_files) {
+            break;
+        }
+        ++started;
+
+        try {
+            TraceL << "Rebuild time file: " << timefile << (entry ? " (dirty)" : "");
+            auto rebuilder = std::make_shared<TimeRebuilder>(timefile);
+            if (entry) {
+                // Clear the marks only after the rebuilt file replaced the source, and only
+                // when nothing was written since the snapshot. Clearing earlier made the
+                // pending swap see a version change and discard itself.
+                const string device_path = _src_path;
+                const TimeFileDirtyEntry snapshot_entry = *entry;
+                rebuilder->setOnSwapped([device_path, snapshot_entry]() {
+                    TimeFileDirtyTracker::Instance().clearRebuilt(device_path, snapshot_entry);
+                });
+            }
+            total_removed_bytes += rebuilder->rebuildTimeLineWithPredicate(keep);
+        } catch (std::exception &ex) {
+            WarnL << "Failed to rebuild " << timefile << ": " << ex.what();
+        }
+    }
+    return total_removed_bytes;
+}
+
+size_t MultiTimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
     if (_timefiles_map.empty()) {
         WarnL << "No time files found under path: " << _src_path;
-        return total_removed_bytes;
+        return 0;
     }
 
     // The latest keep threshold among all streams: files starting after it hold only
@@ -406,50 +480,15 @@ size_t MultiTimeRebuilder::rebuildTimeLine(const KeepTimeMap &map) {
     auto latest_keep_time = findMinKeepTime(_src_path, map);
     TraceL << "Rebuild time files older than: " << getTimeStr("%Y-%m-%d %H:%M:%S", latest_keep_time);
 
-    // Snapshot the set of files that changed since the last rebuild.
-    auto dirty_entries = TimeFileDirtyTracker::Instance().snapshot(_src_path);
-    std::unordered_map<std::string, uint64_t> dirty_versions;
-    for (const auto &entry : dirty_entries) {
-        dirty_versions.emplace(entry.file_path, entry.version);
-    }
-
-    for (const auto &it : _timefiles_map) {
-        const auto &stamp = it.first;
-        const auto &timefile = it.second;
-
-        auto dirty_it = dirty_versions.find(timefile);
-        bool is_dirty = dirty_it != dirty_versions.end();
-        bool has_expirable = stamp < latest_keep_time;
-
-        // Skip files that are entirely within the keep window and were not modified.
-        if (!is_dirty && !has_expirable) {
-            TraceL << "Skip rebuild time file: " << timefile;
-            continue;
-        }
-
-        try {
-            TraceL << "Rebuild time file: " << timefile << (is_dirty ? " (dirty)" : "");
-            auto rebuilder = std::make_shared<TimeRebuilder>(timefile);
-            if (is_dirty) {
-                // Clear the dirty mark only after the rebuilt file replaced the source,
-                // and only when no new block was written since the snapshot. Clearing
-                // earlier made the pending swap see a version change and discard itself.
-                const std::string device_path = _src_path;
-                const uint64_t version = dirty_it->second;
-                rebuilder->setOnSwapped([device_path, timefile, version]() {
-                    TimeFileDirtyTracker::Instance().clearIfUnchanged(device_path, timefile, version);
-                });
-            }
-            total_removed_bytes += rebuilder->rebuildTimeLine(map);
-        } catch (std::exception &ex) {
-            WarnL << ex.what();
-        }
-    }
-    return total_removed_bytes;
+    // Skip files that are entirely within the keep window and were not modified.
+    return rebuildFiles(
+        [latest_keep_time](uint64_t stamp, const string &, const TimeFileDirtyEntry *entry) {
+            return entry != nullptr || stamp < latest_keep_time;
+        },
+        keepByThreshold(map));
 }
 
 size_t MultiTimeRebuilder::removeTimeBlocks(const vector<TimeBlockIdentity> &blocks) {
-    size_t total_removed_bytes = 0;
     if (blocks.empty())
         return 0;
     // Daily files hold blocks by the local date of their start time; only rewrite
@@ -458,17 +497,25 @@ size_t MultiTimeRebuilder::removeTimeBlocks(const vector<TimeBlockIdentity> &blo
     std::set<uint64_t> block_days;
     for (const auto &identity : blocks)
         block_days.insert(StampUtils::getStartOfDay(identity.start_time));
-    for (const auto &it : _timefiles_map) {
-        if (it.first != 0 && block_days.count(it.first) == 0)
-            continue;
-        try {
-            auto rebuilder = std::make_shared<TimeRebuilder>(it.second);
-            total_removed_bytes += rebuilder->removeTimeBlocks(blocks);
-        } catch (const std::exception &ex) {
-            WarnL << "Failed to selectively rebuild " << it.second << ": " << ex.what();
-        }
-    }
-    return total_removed_bytes;
+    return rebuildFiles(
+        [&block_days](uint64_t stamp, const string &, const TimeFileDirtyEntry *) {
+            return stamp == 0 || block_days.count(stamp) != 0;
+        },
+        keepUnlessListed(blocks));
+}
+
+size_t MultiTimeRebuilder::sortTimeFiles(size_t max_files) {
+    size_t started = 0;
+    rebuildFiles(
+        [&started](uint64_t, const string &, const TimeFileDirtyEntry *entry) {
+            if (!entry || entry->unsorted_version == 0)
+                return false;
+            ++started;
+            return true;
+        },
+        [](const TimeBlock &) { return true; },
+        max_files);
+    return max_files ? std::min(started, max_files) : started;
 }
 
 } // namespace managerkit

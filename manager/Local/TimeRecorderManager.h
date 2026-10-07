@@ -1,6 +1,8 @@
 #ifndef S3MEDIAKIT_TIMERECORDERMANAGER_H_
 #define S3MEDIAKIT_TIMERECORDERMANAGER_H_
 
+#include <unordered_map>
+#include <unordered_set>
 #include "TimeRecorder.h"
 
 namespace managerkit {
@@ -32,6 +34,20 @@ public:
      */
     size_t closeIdleWriters();
 
+    /**
+     * Rewrite in start-time order the time files marked unsorted (a block appended after newer
+     * ones by gap fill or SD-card import), today's included, up to
+     * `record.timefileSortMaxFilesPerCycle` files. Every device when `device_id` is empty.
+     * Blocking: storage or tier pool only. Returns how many files were rewritten.
+     */
+    size_t sortUnsortedTimeFiles(const std::string &device_id = "");
+
+    /**
+     * Queue sortUnsortedTimeFiles(device_id) on the storage pool after
+     * `record.timefileSortDelayAfterGapFillMs`; at most one queued pass per device.
+     */
+    void postSortTimeFiles(const std::string &device_id);
+
 private:
     TimeRecorderManager();
 
@@ -42,6 +58,7 @@ private:
 private:
     std::mutex _mutex;
     std::unordered_map<std::string, TimeRecorder::Ptr> _recorders;
+    std::unordered_set<std::string> _sort_pending;
 };
 
 } // namespace managerkit

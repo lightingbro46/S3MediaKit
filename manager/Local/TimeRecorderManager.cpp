@@ -1,6 +1,9 @@
 #include "TimeRecorderManager.h"
 #include "TimeFileDirtyTracker.h"
+#include "TimeRebuilder.h"
 #include "Common/config.h"
+#include "Common/BlockingExecutors.h"
+#include "Poller/EventPoller.h"
 
 using namespace std;
 using namespace toolkit;
@@ -14,8 +17,19 @@ namespace TimeRecord {
 // the gap between two blocks of a recording stream. 0 disables closing.
 const std::string kTimefileIdleCloseSec = "record.timefileIdleCloseSec";
 
+// Rewrite in order the time files where gap fill or SD-card import appended a block after newer
+// ones; windowed queries (playback, tier ranges) do not see such a block until then.
+const std::string kTimefileSortEnabled = "record.timefileSortEnabled";
+// Files rewritten per pass; the rest wait for the next tier cycle.
+const std::string kTimefileSortMaxFilesPerCycle = "record.timefileSortMaxFilesPerCycle";
+// Delay after a gap-fill connection closed, so its last segment's block is written first.
+const std::string kTimefileSortDelayAfterGapFillMs = "record.timefileSortDelayAfterGapFillMs";
+
 static toolkit::onceToken token([]() {
     mINI::Instance()[kTimefileIdleCloseSec] = 600;
+    mINI::Instance()[kTimefileSortEnabled] = 1;
+    mINI::Instance()[kTimefileSortMaxFilesPerCycle] = 50;
+    mINI::Instance()[kTimefileSortDelayAfterGapFillMs] = 10000;
 });
 } // namespace TimeRecord
 
@@ -133,6 +147,66 @@ size_t TimeRecorderManager::closeIdleWriters() {
         InfoL << "Closed " << closed << " idle time file writer(s) of " << recorders.size() << " device(s)";
     }
     return closed;
+}
+
+size_t TimeRecorderManager::sortUnsortedTimeFiles(const string &device_id) {
+    GET_CONFIG(bool, enabled, TimeRecord::kTimefileSortEnabled);
+    if (!enabled) {
+        return 0;
+    }
+    GET_CONFIG(int, max_files, TimeRecord::kTimefileSortMaxFilesPerCycle);
+    const size_t budget = max_files > 0 ? static_cast<size_t>(max_files) : 50;
+    GET_CONFIG(string, recordPath, Protocol::kMP4SavePath);
+    GET_CONFIG(string, appName, Record::kAppName);
+    const string record_path = File::absolutePath(appName, recordPath);
+
+    // Keyed like TimeRecorder marks them: the device directory without a trailing slash.
+    vector<string> device_paths;
+    if (device_id.empty()) {
+        device_paths = TimeFileDirtyTracker::Instance().devicesWithUnsorted();
+    } else {
+        device_paths.push_back(record_path + "/" + device_id);
+    }
+
+    size_t sorted = 0;
+    for (const auto &device_path : device_paths) {
+        if (sorted >= budget) {
+            break;
+        }
+        if (!File::is_dir(device_path.data())) {
+            continue;
+        }
+        sorted += MultiTimeRebuilder(device_path).sortTimeFiles(budget - sorted);
+    }
+    if (sorted) {
+        InfoL << "Rewrote " << sorted << " out-of-order time file(s) in start-time order";
+    }
+    return sorted;
+}
+
+void TimeRecorderManager::postSortTimeFiles(const string &device_id) {
+    if (device_id.empty()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (!_sort_pending.insert(device_id).second) {
+            return;
+        }
+    }
+    GET_CONFIG(int, delay_ms, TimeRecord::kTimefileSortDelayAfterGapFillMs);
+    EventPollerPool::Instance().getPoller()->doDelayTask(std::max(0, delay_ms), [device_id]() {
+        // Rewriting files blocks: storage pool, not the poller.
+        BlockingExecutors::storage()->async([device_id]() {
+            {
+                // Cleared before running, so a gap fill closing during the sort queues another.
+                std::lock_guard<std::mutex> lock(TimeRecorderManager::Instance()._mutex);
+                TimeRecorderManager::Instance()._sort_pending.erase(device_id);
+            }
+            TimeRecorderManager::Instance().sortUnsortedTimeFiles(device_id);
+        }, false);
+        return 0;
+    });
 }
 
 } // namespace managerkit

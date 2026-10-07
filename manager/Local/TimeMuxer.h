@@ -48,6 +48,12 @@ public:
      */
     void closeFile();
 
+    /**
+     * Start of the minute of the latest block in the index (0 without an index): the newest
+     * block start already in the file, at minute precision.
+     */
+    uint64_t lastIndexedStamp() { return _maker ? _maker->getLastStamp() : 0; }
+
 protected:
     TimeFileIO::Writer createWriter() override;
 

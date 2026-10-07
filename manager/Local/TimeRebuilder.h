@@ -2,9 +2,13 @@
 #define LOCAL_TIMEREBUILDER_H_
 
 #include <functional>
+#include "Util/onceToken.h"
 #include "TimeRecorderManager.h"
+#include "TimeFileDirtyTracker.h"
 
 namespace managerkit {
+
+using TimeFileDirtyEntry = TimeFileDirtyTracker::DirtyEntry;
 
 struct TimeBlockIdentity {
     std::string camera_id;
@@ -30,6 +34,9 @@ public:
     // Remove only the durable catalog entries whose exact identities are supplied.
     size_t removeTimeBlocks(const std::vector<TimeBlockIdentity> &blocks);
 
+    // Rewrite the file keeping the blocks `keep_block` accepts, in start-time order.
+    size_t rebuildTimeLineWithPredicate(const std::function<bool(const TimeBlock &)> &keep_block);
+
     // Invoked on the swap thread after the rebuilt file replaced the source.
     // Not invoked when the swap is discarded because the source changed.
     void setOnSwapped(const std::function<void()> &cb) { _on_swapped = cb; }
@@ -50,8 +57,6 @@ private:
 
     void closeTempFileAfterActiveSwap();
 
-    size_t rebuildTimeLineWithPredicate(const std::function<bool(const TimeBlock &)> &keep_block);
-
 private:
     TimeRecorder::Ptr _writer;
     TimeRecorder::Ptr _recorder;
@@ -63,6 +68,8 @@ private:
     // simple (non-mirrored) swap to detect concurrent writes.
     uint64_t _dirty_version_at_start = 0;
     std::function<void()> _on_swapped;
+    // Held from the start of a rebuild until its swap callback finished (or it was discarded).
+    std::shared_ptr<toolkit::onceToken> _rebuild_guard;
 };
 
 class MultiTimeRebuilder {
@@ -83,11 +90,26 @@ public:
 
     size_t removeTimeBlocks(const std::vector<TimeBlockIdentity> &blocks);
 
+    /**
+     * Rewrite in start-time order the files holding a block appended after newer ones (gap fill,
+     * SD-card import), today's file included, at most `max_files` of them. Returns how many
+     * rebuilds were started.
+     */
+    size_t sortTimeFiles(size_t max_files);
+
 private:
     /**
      * Open all time files under source path
      */    
     void openTimeFiles(const std::string &src_path);
+
+    // Shared by every rebuild: `select(stamp, path, entry)` picks the files (entry is null when the
+    // file is neither dirty nor unsorted), `keep` the blocks. A rebuilt file loses its dirty and
+    // unsorted marks once its swap ran, and marks of files that no longer exist are dropped.
+    size_t rebuildFiles(const std::function<bool(uint64_t, const std::string &,
+                                                 const TimeFileDirtyEntry *)> &select,
+                        const std::function<bool(const TimeBlock &)> &keep,
+                        size_t max_files = 0);
 
 private:
     std::string _src_path;

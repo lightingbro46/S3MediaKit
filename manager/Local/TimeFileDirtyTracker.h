@@ -24,7 +24,8 @@ class TimeFileDirtyTracker {
 public:
     struct DirtyEntry {
         std::string file_path;
-        uint64_t version;
+        uint64_t version;            // 0 when the file is only unsorted
+        uint64_t unsorted_version;   // 0 when the blocks are in start-time order
     };
 
     static TimeFileDirtyTracker &Instance();
@@ -35,7 +36,26 @@ public:
     void markDirty(const std::string &device_path, const std::string &file_path);
 
     /**
-     * Snapshot the current dirty files of a device without clearing them.
+     * Mark a time file as holding a block older than one written before it (gap fill or SD-card
+     * import appending to an existing day). Windowed queries stop reading before such a block,
+     * so the file must be rewritten in order. Persisted with the dirty set.
+     */
+    void markUnsorted(const std::string &device_path, const std::string &file_path);
+
+    /**
+     * After a rebuild rewrote the file in order: clear the dirty mark and the unsorted mark,
+     * each only when it was not set again since the snapshot. A file that no longer exists
+     * (dropped by a rebuild that kept nothing) is cleared the same way.
+     */
+    void clearRebuilt(const std::string &device_path, const DirtyEntry &snapshot_entry);
+
+    /**
+     * Device paths that hold at least one unsorted time file.
+     */
+    std::vector<std::string> devicesWithUnsorted();
+
+    /**
+     * Snapshot the current dirty and unsorted files of a device without clearing them.
      */
     std::vector<DirtyEntry> snapshot(const std::string &device_path);
 
@@ -67,6 +87,7 @@ private:
 private:
     struct DeviceState {
         std::unordered_map<std::string /*file_path*/, uint64_t /*version*/> files;
+        std::unordered_map<std::string /*file_path*/, uint64_t /*version*/> unsorted;
         uint64_t next_version = 1;
     };
 

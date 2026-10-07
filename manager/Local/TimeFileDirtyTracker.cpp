@@ -14,6 +14,8 @@ namespace managerkit {
 
 INSTANCE_IMP(TimeFileDirtyTracker)
 
+static const char kUnsortedPrefix = '!';
+
 string TimeFileDirtyTracker::dirtyFilePath(const string &device_path) {
     return device_path + "/.dirty";
 }
@@ -35,6 +37,56 @@ void TimeFileDirtyTracker::markDirty(const string &device_path, const string &fi
     }
 }
 
+void TimeFileDirtyTracker::markUnsorted(const string &device_path, const string &file_path) {
+    if (device_path.empty() || file_path.empty()) {
+        return;
+    }
+    lock_guard<mutex> lock(_mutex);
+    auto &state = _devices[device_path];
+    bool newly_added = state.unsorted.find(file_path) == state.unsorted.end();
+    state.unsorted[file_path] = state.next_version++;
+    if (newly_added) {
+        flushDeviceLocked(device_path);
+    }
+}
+
+void TimeFileDirtyTracker::clearRebuilt(const string &device_path, const DirtyEntry &entry) {
+    lock_guard<mutex> lock(_mutex);
+    auto it = _devices.find(device_path);
+    if (it == _devices.end()) {
+        return;
+    }
+    bool changed = false;
+    auto clear = [&](unordered_map<string, uint64_t> &files, uint64_t version) {
+        auto file_it = files.find(entry.file_path);
+        if (version == 0 || file_it == files.end()) {
+            return;
+        }
+        if (file_it->second != version) {
+            // Written again while the rebuild ran: keep it for the next one.
+            return;
+        }
+        files.erase(file_it);
+        changed = true;
+    };
+    clear(it->second.files, entry.version);
+    clear(it->second.unsorted, entry.unsorted_version);
+    if (changed) {
+        flushDeviceLocked(device_path);
+    }
+}
+
+vector<string> TimeFileDirtyTracker::devicesWithUnsorted() {
+    vector<string> result;
+    lock_guard<mutex> lock(_mutex);
+    for (const auto &device : _devices) {
+        if (!device.second.unsorted.empty()) {
+            result.push_back(device.first);
+        }
+    }
+    return result;
+}
+
 vector<TimeFileDirtyTracker::DirtyEntry> TimeFileDirtyTracker::snapshot(const string &device_path) {
     vector<DirtyEntry> result;
     lock_guard<mutex> lock(_mutex);
@@ -42,9 +94,17 @@ vector<TimeFileDirtyTracker::DirtyEntry> TimeFileDirtyTracker::snapshot(const st
     if (it == _devices.end()) {
         return result;
     }
-    result.reserve(it->second.files.size());
-    for (const auto &file : it->second.files) {
-        result.push_back(DirtyEntry{file.first, file.second});
+    const auto &state = it->second;
+    result.reserve(state.files.size());
+    for (const auto &file : state.files) {
+        auto unsorted = state.unsorted.find(file.first);
+        result.push_back(DirtyEntry{file.first, file.second,
+                                    unsorted == state.unsorted.end() ? 0 : unsorted->second});
+    }
+    for (const auto &file : state.unsorted) {
+        if (state.files.find(file.first) == state.files.end()) {
+            result.push_back(DirtyEntry{file.first, 0, file.second});
+        }
     }
     return result;
 }
@@ -83,7 +143,7 @@ uint64_t TimeFileDirtyTracker::currentVersion(const string &device_path, const s
 void TimeFileDirtyTracker::flushDeviceLocked(const string &device_path) {    
     auto it = _devices.find(device_path);
     string path = dirtyFilePath(device_path);
-    if (it == _devices.end() || it->second.files.empty()) {
+    if (it == _devices.end() || (it->second.files.empty() && it->second.unsorted.empty())) {
         // nothing dirty, remove the persisted file if any
         if (File::fileExist(path)) {
             File::delete_file(path);
@@ -94,6 +154,11 @@ void TimeFileDirtyTracker::flushDeviceLocked(const string &device_path) {
     ostringstream oss;
     for (const auto &file : it->second.files) {
         oss << file.first << "\n";
+    }
+    // "!" never starts an absolute path, so an older build reading this file skips the line as a
+    // file that does not exist.
+    for (const auto &file : it->second.unsorted) {
+        oss << kUnsortedPrefix << file.first << "\n";
     }
 
     string tmp_path = path + ".tmp";
@@ -132,16 +197,21 @@ void TimeFileDirtyTracker::loadFromDisk(const string &record_path) {
             if (line.empty()) {
                 continue;
             }
+            auto *files = &state.files;
+            if (line[0] == kUnsortedPrefix) {
+                line.erase(0, 1);
+                files = &state.unsorted;
+            }
             // ignore files that no longer exist on disk
             if (!File::fileExist(line)) {
                 continue;
             }
             // Keep versions already tracked in memory: bumping them would make an
             // in-flight rebuild believe the file was written and discard its swap.
-            if (state.files.count(line) != 0) {
+            if (files->count(line) != 0) {
                 continue;
             }
-            state.files[line] = state.next_version++;
+            (*files)[line] = state.next_version++;
             ++count;
         }
         if (count > 0) {

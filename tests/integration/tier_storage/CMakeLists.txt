@@ -75,6 +75,8 @@ foreach(manager_case
     ReconcilesRangesWhoseFilesAreMissing
     BackfillSkipsBlocksWithoutFiles
     RebuildClearsDirtyAfterSwapAndKeepsConcurrentBlocks
+    SortsTimefileAfterOutOfOrderGapFill
+    SweepsStaleTimefileBlocksOfPastDays
     AlignsMoveThresholdToSplitGranularity
     EnforcesRestoreConcurrencyLimit
     QueuesRestoreAsynchronouslyForMediaPoller
