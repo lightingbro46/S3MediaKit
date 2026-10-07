@@ -378,7 +378,7 @@ Quét dải IP (`manager/Control/SubnetScan.cpp`):
 | Key | Mặc định | Ghi chú |
 |---|---|---|
 | `searcher.max_parallel` | 8 | Số IP được probe đồng thời trong **một** lần quét |
-| `searcher.timeout_sec` | 10 | |
+| `searcher.timeout_sec` | 10 | Hạn tổng probe một địa chỉ: request `device/discovery` (tính từ lúc nhận, gồm cả thời gian xếp hàng) và từng IP của `subnetScan`. Quá hạn trả `CODE_DEVICE_TIMEOUT` (HTTP 504, 905006) kèm `data.address`, `data.err_msg`. Giữ nhỏ hơn `http.keepAliveSecond` (15) |
 | `searcher.delay_close_sec` | 300 | Thời gian giữ kết quả scan nền trước khi đóng |
 
 ## 6. Hạn Chế Đã Biết

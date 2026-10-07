@@ -9,6 +9,7 @@
 #include "Onvif/SoapUtil.h"
 #include "OnvifDeviceControl.h"
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -257,26 +258,81 @@ private:
     std::string _pass;
 };
 
+static uint64_t steadyNowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// The usual per-request timeout, also the cap while a deadline is set.
+static const int kSoapTimeoutSec = 10;
+
+void OnvifControl::setDeadline(uint64_t steady_ms) {
+    _deadline_ms = steady_ms;
+    _deadline_exceeded = false;
+}
+
+bool OnvifControl::applyDeadline(struct soap *soap) {
+    if (_deadline_ms == 0) {
+        return true;
+    }
+    const uint64_t now = steadyNowMs();
+    if (now >= _deadline_ms) {
+        _deadline_exceeded = true;
+        soap_set_sender_error(soap, "Deadline exceeded", "The discovery deadline has passed", SOAP_TCP_ERROR);
+        return false;
+    }
+    const uint64_t left_ms = std::min<uint64_t>(_deadline_ms - now, kSoapTimeoutSec * 1000);
+    // Negative = microseconds. transfer_timeout bounds the whole request (a camera trickling its
+    // answer byte by byte resets recv_timeout forever), but gSOAP 2.8.133 scales its negative
+    // form wrongly, so it gets whole seconds, rounded up.
+    soap->connect_timeout = soap->recv_timeout = soap->send_timeout = -static_cast<int>(left_ms * 1000);
+    soap->transfer_timeout = static_cast<int>((left_ms + 999) / 1000);
+    return true;
+}
+
+void OnvifControl::checkDeadline() {
+    // A request cut by the shortened timeouts fails a little before the deadline itself.
+    static const uint64_t kSlackMs = 200;
+    if (_deadline_ms != 0 && steadyNowMs() + kSlackMs >= _deadline_ms) {
+        _deadline_exceeded = true;
+    }
+}
+
 int OnvifControl::callWithAuth(const std::function<int()> &call) {
     std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     // reportError() sets it again if this call fails.
     _last_failure = static_cast<int>(DeviceFailure::None);
     _measured_this_call = false;
+    // Every attempt is checked against the deadline: the retries below would otherwise each wait
+    // the full timeout again.
+    auto attempt = [&]() {
+        if (!applyDeadline(_m_soap)) {
+            return static_cast<int>(SOAP_TCP_ERROR);
+        }
+        const int r = call();
+        if (r != SOAP_OK) {
+            checkDeadline();
+        }
+        return r;
+    };
     if (_http_auth) {
         // Also covers a second call after one setCredentials(): the first response cleared the
         // HTTP credentials gSOAP keeps.
         _http_auth->apply();
     }
-    int ret = call();
+    int ret = attempt();
+    if (_deadline_exceeded) {
+        return ret;
+    }
     if (ret == 401 && _http_auth && _http_auth->learn(_strUsername, _strPassword)) {
         if (!setCredentials()) {
             return ret;
         }
         _http_auth->apply();
-        ret = call();
+        ret = attempt();
     } else if (ret != SOAP_OK && rejectedSignature(ret) && resignWithFreshClock()) {
         _http_auth->apply();
-        ret = call();
+        ret = attempt();
     }
     return ret;
 }
@@ -1453,11 +1509,16 @@ bool OnvifControl::readCameraClock(struct soap *soap, DeviceBindingProxy *proxy,
     if (challenge) {
         challenge->date = 0;
     }
+    if (!applyDeadline(soap)) {
+        request_failed = true;
+        return false;
+    }
     _tds__GetSystemDateAndTime* req = soap_new__tds__GetSystemDateAndTime(soap, -1);
     _tds__GetSystemDateAndTimeResponse resp;
 
     if (proxy->GetSystemDateAndTime(req, resp)) {
         request_failed = true;
+        checkDeadline();
         // ONVIF lets anyone read the clock, but some cameras want credentials even for this, and
         // signing needs the very clock we cannot read. Their refusal still carries a Date header.
         if (challenge && challenge->date && !isNetworkError(soap->error)) {

@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <future>
 #include "Util/onceToken.h"
@@ -23,7 +25,7 @@ const string kDelayCloseSec = SUBNETSCAN_FIELD"delay_close_sec";
 const string kMaxParallel = SUBNETSCAN_FIELD"max_parallel";
 
 onceToken token([]() {
-    // Default subnet scan timeout is 10 seconds
+    // Time limit of probing one address (discovery, or one IP of a subnet scan): 10 seconds
     mINI::Instance()[kTimeoutSec] = 10;
     // Default delay close time is 300 seconds
     mINI::Instance()[kDelayCloseSec] = 300;
@@ -92,6 +94,20 @@ void SubnetScan::discovery_device(const SubnetScanOption &option, const string &
     const bool defaultPort = option.defaultPort;
     const auto type        = option.type;
     DeviceScanResult ret;
+
+    // One deadline for the whole probe of this address, whichever branch it takes.
+    GET_CONFIG(float, config_timeout_sec, Searcher::kTimeoutSec);
+    const float timeout_sec = config_timeout_sec > 0 ? config_timeout_sec : 10;
+    const auto steady_now_ms = []() -> uint64_t {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    };
+    const uint64_t deadline_ms = steady_now_ms() + static_cast<uint64_t>(timeout_sec * 1000);
+    const auto remaining_ms = [&]() -> uint64_t {
+        const uint64_t now = steady_now_ms();
+        return now < deadline_ms ? deadline_ms - now : 0;
+    };
+    const string timeout_msg = StrPrinter << "Discovery timeout after " << timeout_sec << " s";
     if (start_with(address, "rtsp://")) {
         if (type != DeviceType::Camera) {
             cb(SockException(Err_other, "RTSP URL only supports camera", ApiErrCode::CODE_INVALID_ARGS), ret);
@@ -108,11 +124,22 @@ void SubnetScan::discovery_device(const SubnetScanOption &option, const string &
             url = UriUtils::replacePort(url, option.port);
         }
 
+        // FFmpegProbe kills an ffprobe that overruns its timeout with process->kill(2000): leave
+        // that grace inside the deadline, but always give ffprobe at least 1 s.
+        static const float kKillGraceSec = 2;
+        const float probe_sec = std::max(1.0f, remaining_ms() / 1000.0f - kKillGraceSec);
+        const uint64_t probe_start_ms = steady_now_ms();
         // Synchronous: cb runs before probe() returns, like the ONVIF branch below.
-        FFmpegProbe::probe(url, 10, [=](bool success, const string &err_msg, const ProbeInfo &info) mutable {
+        FFmpegProbe::probe(url, probe_sec, [&](bool success, const string &err_msg, const ProbeInfo &info) {
             if (!success) {
                 ret.address = url;
                 ret.err_msg = err_msg;
+                // Killed by the watchdog at probe_sec (the timer may fire a few ms early).
+                if (steady_now_ms() - probe_start_ms + 50 >= static_cast<uint64_t>(probe_sec * 1000)) {
+                    ret.err_msg = timeout_msg;
+                    cb(SockException(Err_timeout, "Device Timeout", ApiErrCode::CODE_DEVICE_TIMEOUT), ret);
+                    return;
+                }
                 cb(SockException(Err_other, "Device Not Found", ApiErrCode::CODE_DEVICE_NOT_FOUND), ret);
             } else {
                 ret.manufacturer = GENERIC_RTSP_CAMERA;
@@ -148,7 +175,17 @@ void SubnetScan::discovery_device(const SubnetScanOption &option, const string &
             const int port = defaultPort ? 80 : option.port;
             string ipAddress = StrPrinter << ip << ":" << port;
             auto onvif = std::make_shared<OnvifControl>(ipAddress, username, password);
-            if (!onvif->connect()) {
+            onvif->setDeadline(deadline_ms);
+            const bool connected = onvif->connect();
+            // A request cut by the deadline may have left the device half read (profiles or
+            // stream URIs missing) even when connect() succeeded: report the timeout instead.
+            if (onvif->deadlineExceeded()) {
+                ret.address = "http://" + ipAddress;
+                ret.err_msg = timeout_msg;
+                cb(SockException(Err_timeout, "Device Timeout", ApiErrCode::CODE_DEVICE_TIMEOUT), ret);
+                return;
+            }
+            if (!connected) {
                 ret.address = "http://" + ipAddress;
                 ret.err_msg = onvif->getSoapErrMsg();
                 cb(SockException(Err_other, "Device Not Found", ApiErrCode::CODE_DEVICE_NOT_FOUND), ret);
@@ -213,9 +250,15 @@ void SubnetScan::discovery_device(const SubnetScanOption &option, const string &
             SockException ex;
             IDevice::Ptr device;
             {
+                // A probe still running after the deadline goes on in the background and is then
+                // dropped: its callback only holds `result`.
                 std::unique_lock<std::mutex> lock(result->mtx);
-                if (!result->cv.wait_for(lock, std::chrono::seconds(30), [&result]() { return result->done; })) {
-                    result->ex = SockException(Err_timeout, "Speaker probe timeout");
+                if (!result->cv.wait_for(lock, std::chrono::milliseconds(remaining_ms()), [&result]() { return result->done; })) {
+                    ret.address = "http://" + ipAddress;
+                    ret.err_msg = timeout_msg;
+                    lock.unlock();
+                    cb(SockException(Err_timeout, "Device Timeout", ApiErrCode::CODE_DEVICE_TIMEOUT), ret);
+                    return;
                 }
                 ex = result->ex;
                 device = std::move(result->device);

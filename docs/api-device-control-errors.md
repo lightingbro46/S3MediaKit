@@ -79,6 +79,19 @@ không nhầm với token người dùng hết hạn (`901001`).
    Không biết nguyên nhân (camera chưa từng kết nối, đang dừng, lỗi khác) thì vẫn `905002`.
 3. Camera tự kết nối lại mỗi 60 s. Sau khi người dùng sửa mật khẩu camera, lỗi `905004` hết sau lần kết nối lại kế tiếp.
 
+## Dò thiết bị (`device/discovery`, `subnetScan`)
+
+Áp dụng từ 2026-10-07.
+
+- `/media/mserver/device/discovery` luôn trả lời trong `searcher.timeout_sec` (mặc định 10 s) tính từ lúc server nhận
+  request, kể cả thời gian chờ worker. Quá hạn trả `905006` (HTTP 504) kèm `data.address` (địa chỉ đã gửi) và
+  `data.err_msg` (`"Discovery timeout after 10 s"`). Trước đây camera chậm làm request treo tới khi server đóng kết nối
+  (`http.keepAliveSecond`, 15 s), FE không nhận được JSON.
+- Áp cho cả ba nhánh: camera ONVIF (cả khi camera trả lời được vài lệnh đầu nhưng hết hạn trước khi đọc xong
+  profile/stream URI), URL `rtsp://` (ffprobe) và loa.
+- `subnetScan` (cả bản quét nền): mỗi IP cũng bị giới hạn bởi cùng hạn; IP quá hạn không có trong danh sách thiết bị.
+- Các lỗi khác của discovery giữ nguyên (`905001` không tìm thấy thiết bị, `902001` tham số sai).
+
 ## Loa
 
 Áp dụng từ 2026-10-04.

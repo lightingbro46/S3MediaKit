@@ -150,10 +150,35 @@ void registerControlApis() {
         struct DiscoveryResult {
             SockException ex;
             DeviceScanResult data;
+            // Set by whichever answers first, the probe or the timer below; both run on the
+            // request poller.
+            bool answered = false;
         };
         auto result = std::make_shared<DiscoveryResult>();
         auto session = apiRequestSession(sender);
-        runApiWork(apiRequestPoller(sender), session,
+        auto poller = apiRequestPoller(sender);
+
+        // The probe stops itself at searcher.timeout_sec, but only counts from when it starts:
+        // this timer also covers the time spent queued for a worker, so the client always gets
+        // an answer within the limit (and before http.keepAliveSecond closes the connection).
+        GET_CONFIG(float, config_timeout_sec, Searcher::kTimeoutSec);
+        const float timeout_sec = config_timeout_sec > 0 ? config_timeout_sec : 10;
+        auto timer = poller->doDelayTask(static_cast<uint64_t>(timeout_sec * 1000),
+            [result, respond, session, address, timeout_sec]() mutable {
+                if (result->answered) {
+                    return 0;
+                }
+                result->answered = true;
+                if (session.expired()) {
+                    return 0;
+                }
+                DeviceScanResult data;
+                data.address = address;
+                data.err_msg = StrPrinter << "Discovery timeout after " << timeout_sec << " s";
+                respond(SockException(Err_timeout, "Device Timeout", ApiErrCode::CODE_DEVICE_TIMEOUT), data);
+                return 0;
+            });
+        runApiWork(poller, session,
             [result, option, address]() {
                 SubnetScan::discovery_device(option, address,
                     [result](const SockException &ex, const DeviceScanResult &data) {
@@ -161,7 +186,13 @@ void registerControlApis() {
                         result->data = data;
                     });
             },
-            [result, respond, session, invoker](const std::exception_ptr &error) mutable {
+            [result, respond, session, invoker, timer, address](const std::exception_ptr &error) mutable {
+                if (result->answered) {
+                    DebugL << "Discovery of " << address << " finished after its request timed out";
+                    return;
+                }
+                result->answered = true;
+                timer->cancel();
                 if (error) {
                     responseApiException(error, invoker, session);
                     return;

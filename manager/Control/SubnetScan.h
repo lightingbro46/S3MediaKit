@@ -12,6 +12,7 @@
 #include "Common/DeviceOption.h"
 
 namespace Searcher {
+// Time limit (s) of probing one address: a discovery request, or one IP of a subnet scan (default 10).
 extern const std::string kTimeoutSec;
 // Maximum IPs of one subnet scan probed at the same time (default 8).
 extern const std::string kMaxParallel;
@@ -103,10 +104,11 @@ public:
      * and credentials of `option`.
      *
      * Blocking, whatever the address is: `cb` runs exactly once, on the calling thread, before this
-     * returns. Both branches wait for a device that may never answer (~20s for ONVIF, `timeout_sec`
-     * for ffprobe), so it must be called from a blocking executor (BlockingExecutors::discovery()
-     * for a range scan, BlockingExecutors::api() for a one-off API request), never from an
-     * EventPoller. Callers must not branch on the address to decide where to run it.
+     * returns. Every branch waits for a device that may never answer, up to `searcher.timeout_sec`
+     * in all (a little more while ffprobe is killed); past it `cb` gets CODE_DEVICE_TIMEOUT. It must
+     * be called from a blocking executor (BlockingExecutors::discovery() for a range scan,
+     * BlockingExecutors::api() for a one-off API request), never from an EventPoller. Callers must
+     * not branch on the address to decide where to run it.
      */
     static void discovery_device(const SubnetScanOption &option, const std::string &address, const onScan &cb);
 

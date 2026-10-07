@@ -10,8 +10,16 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include "Common/config.h"
 #include "Control/SubnetScan.h"
+#include "Util/NoticeCenter.h"
 #include "server/FFmpegSource.h"
 #include "server/WebApiErrCode.h"
 
@@ -21,9 +29,17 @@ using namespace toolkit;
 // SubnetScan probes RTSP URLs through FFmpegProbe (server/); subnet scans pass IPs. The stub keeps
 // the real contract: `cb` runs on the calling thread, before probe() returns.
 std::atomic<int> g_probe_calls{0};
+// Timeout of the last probe, and whether the stub plays an ffprobe that never answers (it then
+// waits the whole timeout, as the kill watchdog would).
+std::atomic<float> g_probe_timeout{0};
+std::atomic<bool> g_probe_hangs{false};
 
-void FFmpegProbe::probe(const std::string &play_url, float, const onProbe &cb) {
+void FFmpegProbe::probe(const std::string &play_url, float timeout_sec, const onProbe &cb) {
     ++g_probe_calls;
+    g_probe_timeout = timeout_sec;
+    if (g_probe_hangs) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(timeout_sec * 1000)));
+    }
     ProbeInfo info;
     info.url = play_url;
     cb(false, "not available in unit test", info);
@@ -209,4 +225,129 @@ TEST(SubnetScanTest, DiscoveryDeviceRejectsAddressThatIsNeitherIpNorRtsp) {
             EXPECT_EQ(ApiErrCode::CODE_INVALID_ARGS, ex.getCustomCode());
         });
     EXPECT_TRUE(called);
+}
+
+// ── searcher.timeout_sec bounds the whole probe of one address ───────────────
+
+namespace {
+
+void setSearcherTimeout(float sec) {
+    mINI::Instance()[Searcher::kTimeoutSec] = sec;
+    NOTICE_EMIT(BroadcastReloadConfigArgs, mediakit::Broadcast::kBroadcastReloadConfig);
+}
+
+struct SearcherTimeoutGuard {
+    explicit SearcherTimeoutGuard(float sec) { setSearcherTimeout(sec); }
+    ~SearcherTimeoutGuard() {
+        g_probe_hangs = false;
+        setSearcherTimeout(10);
+    }
+};
+
+// A TCP server on 127.0.0.1 that accepts every connection and never answers: an ONVIF camera
+// that is up but stuck.
+class SilentServer {
+public:
+    SilentServer() {
+        _fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in addr = {};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = 0;
+        ::bind(_fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
+        socklen_t len = sizeof(addr);
+        ::getsockname(_fd, reinterpret_cast<sockaddr *>(&addr), &len);
+        _port = ntohs(addr.sin_port);
+        ::listen(_fd, 16);
+        _thread = std::thread([this]() {
+            for (;;) {
+                int client = ::accept(_fd, nullptr, nullptr);
+                if (client < 0) {
+                    return;
+                }
+                std::lock_guard<std::mutex> lck(_mtx);
+                _clients.push_back(client);
+            }
+        });
+    }
+    ~SilentServer() {
+        ::shutdown(_fd, SHUT_RDWR);
+        ::close(_fd);
+        _thread.join();
+        for (int client : _clients) {
+            ::close(client);
+        }
+    }
+    int port() const { return _port; }
+
+private:
+    int _fd = -1;
+    int _port = 0;
+    std::thread _thread;
+    std::mutex _mtx;
+    std::vector<int> _clients;
+};
+
+int64_t elapsedMs(const std::chrono::steady_clock::time_point &start) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+}
+
+} // namespace
+
+TEST(SubnetScanTest, DiscoveryDeviceTimesOutOnSilentOnvifCamera) {
+    SearcherTimeoutGuard guard(2);
+    SilentServer server;
+
+    SubnetScanOption option;
+    option.defaultPort = false;
+    option.port = server.port();
+    option.username = "admin";
+    option.password = "admin";
+
+    bool called = false;
+    const auto start = std::chrono::steady_clock::now();
+    SubnetScan::discovery_device(option, "127.0.0.1",
+        [&](const SockException &ex, const DeviceScanResult &data) {
+            called = true;
+            EXPECT_EQ(ApiErrCode::CODE_DEVICE_TIMEOUT, ex.getCustomCode());
+            EXPECT_EQ("http://127.0.0.1:" + std::to_string(server.port()), data.address);
+            EXPECT_NE(std::string::npos, data.err_msg.find("timeout"));
+        });
+    const int64_t took = elapsedMs(start);
+
+    EXPECT_TRUE(called);
+    // Without the deadline every SOAP request waits 10 s on its own.
+    EXPECT_GE(took, 1500);
+    EXPECT_LE(took, 2700);
+}
+
+TEST(SubnetScanTest, DiscoveryDeviceGivesFfprobeTheDeadlineMinusKillGrace) {
+    SearcherTimeoutGuard guard(10);
+    SubnetScanOption option;
+    option.defaultPort = true;
+    SubnetScan::discovery_device(option, "rtsp://10.10.0.1/stream",
+        [](const SockException &ex, const DeviceScanResult &) {
+            EXPECT_EQ(ApiErrCode::CODE_DEVICE_NOT_FOUND, ex.getCustomCode());
+        });
+    // 10 s, less the 2 s FFmpegProbe allows the kill of an ffprobe that overruns.
+    EXPECT_LE(g_probe_timeout.load(), 8.0f);
+    EXPECT_GE(g_probe_timeout.load(), 7.9f);
+}
+
+TEST(SubnetScanTest, DiscoveryDeviceReportsTimeoutWhenFfprobeOverruns) {
+    SearcherTimeoutGuard guard(3);
+    g_probe_hangs = true;
+    SubnetScanOption option;
+    option.defaultPort = true;
+
+    bool called = false;
+    SubnetScan::discovery_device(option, "rtsp://10.10.0.1/stream",
+        [&](const SockException &ex, const DeviceScanResult &data) {
+            called = true;
+            EXPECT_EQ(ApiErrCode::CODE_DEVICE_TIMEOUT, ex.getCustomCode());
+            EXPECT_NE(std::string::npos, data.err_msg.find("timeout"));
+        });
+    EXPECT_TRUE(called);
+    // Never below 1 s, so a short limit can still probe something.
+    EXPECT_FLOAT_EQ(1.0f, g_probe_timeout.load());
 }

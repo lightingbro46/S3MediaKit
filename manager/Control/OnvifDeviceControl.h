@@ -50,6 +50,17 @@ public:
 
     bool connect() override;
 
+    /**
+     * Bound every later SOAP request of this object by an absolute deadline, in milliseconds of
+     * std::chrono::steady_clock (0 = none, the default). Each request then waits at most the time
+     * left (never more than the usual 10 s), and none is sent once it has passed. Only the one-off
+     * discovery probe sets it; call it before connect(), from the thread that connects.
+     */
+    void setDeadline(uint64_t steady_ms);
+
+    // A request was cut short or skipped because the deadline of setDeadline() had passed.
+    bool deadlineExceeded() const { return _deadline_exceeded; }
+
     void disconnect() override;
 
     ControlProtocol protocol() const override { return ControlProtocol::ONVIF; }
@@ -387,6 +398,16 @@ private:
     void reportError();
 
     /**
+     * Fit the timeouts of `soap` to the deadline of setDeadline() before a request. Returns false
+     * (and fails `soap` with SOAP_TCP_ERROR) once the deadline has passed; true, with nothing
+     * changed, when there is no deadline.
+     */
+    bool applyDeadline(struct soap *soap);
+
+    // After a failed request: flags deadlineExceeded() when it failed at the deadline.
+    void checkDeadline();
+
+    /**
      * set timestamp and authentication credentials in a request message
      */
     bool setCredentials();
@@ -551,6 +572,9 @@ private:
     std::vector<OnvifRelayOutputProfile> _relayOutputProfiles;
 
     std::string _soapErrMsg;
+    // See setDeadline(); written before connect() on the probing thread only.
+    uint64_t _deadline_ms = 0;
+    bool _deadline_exceeded = false;
     std::atomic<int> _last_failure {static_cast<int>(DeviceFailure::None)};
     // Clock offset the current request was signed with (0 = local clock), set by setCredentials().
     time_t _signed_offset = 0;
