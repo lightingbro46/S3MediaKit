@@ -23,6 +23,14 @@
 using namespace mediakit;
 using namespace toolkit;
 
+namespace GapFill {
+// SD-card playback connections running at once across all cameras (one per camera at a time).
+// After an outage every camera has a gap; with 4 connections and 5 min gaps the 600 streams of a
+// 300-camera node took ~75 min at 8x playback, ~10 h at real time. <= 0 falls back to 4.
+const std::string kMaxConnections = "gapFill.maxConnections";
+static onceToken token([]() { mINI::Instance()[kMaxConnections] = 16; });
+} // namespace GapFill
+
 namespace managerkit {
 
 namespace GapFillState {
@@ -1210,8 +1218,11 @@ void MediaGapFillManager::schedule() {
         ConnectionState state;
         SourceProvider provider;
         {
+            GET_CONFIG(int, max_connections_cfg, GapFill::kMaxConnections);
+            const size_t max_connections = max_connections_cfg > 0
+                ? static_cast<size_t>(max_connections_cfg) : _max_connections;
             std::lock_guard<std::recursive_mutex> lock(_mtx);
-            if (_active.size() >= _max_connections || _pending.empty()) {
+            if (_active.size() >= max_connections || _pending.empty()) {
                 return;
             }
             const uint64_t now = static_cast<uint64_t>(time(nullptr));

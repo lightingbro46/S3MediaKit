@@ -8,7 +8,10 @@ tham số, phân quyền và response JSON của các API lịch sử được g
 1. `CameraStatisticImp` ghi một device-level status gap khi camera offline và đóng gap khi online.
 2. Sau khi ONVIF kết nối thành công, `CameraController` đăng ký provider SD bằng
    `MediaGapFillManager::onManager()`.
-3. Sự kiện online được phát sau khi gap đã đóng và gọi `onDeviceStateChanged()` để discovery.
+3. Discovery chỉ xét gap đã đóng. Gap được đóng trên hàng đợi ESC của camera (pool `api`), nên ngay
+   sau khi đóng, `saveDeviceStatusHistory()` gọi lại `onDeviceStateChanged()`. Lời gọi lúc controller
+   báo online (pool `gapFill`) có thể chạy trước khi gap kịp đóng — sau một đợt mất mạng, khi pool
+   `api` đang dồn việc, nó từng bỏ qua gần hết camera.
 4. Provider tìm recording/segment trên SD trong khoảng `[disconnect_time, reconnect_time)`.
 5. Các khoảng được lọc theo `sdCardSyncMinSegmentGapSec` và record schedule.
 6. Kết quả discovery được đánh dấu terminal trong `media_gap_fill_session`; gap không có media
@@ -114,4 +117,13 @@ trong `server/WebApiSdCardSync.cpp`.
 | `sdCardSyncMinSegmentGapSec` | Bỏ qua outage quá ngắn |
 | `sdCardSyncRetryCount` | Số retry tối đa của task |
 
-`MediaGapFillManager::setMaxConnections()` cấu hình giới hạn connection toàn hệ thống; mặc định là 4.
+| Khoá server | Mặc định | Vai trò |
+|---|---:|---|
+| `gapFill.maxConnections` | `16` | Số kết nối replay SD chạy cùng lúc trên toàn node (mỗi camera tối đa một session). `<= 0` thì dùng giá trị của `MediaGapFillManager::setMaxConnections()` (mặc định 4) |
+
+Đo bằng kịch bản `gapfill` của `tests/integration/stress_vms` (300 camera, rớt mạng 5 phút): với 4 kết
+nối, 468 task cần khoảng 75 phút khi camera phát nhanh ×8, khoảng 10 giờ nếu phát thời gian thực.
+
+URI replay của camera có hoặc không có query đều được: server nối `?starttime=…&endtime=…` hoặc
+`&starttime=…&endtime=…`, và `RtspPlayer` nhận cả hai dạng rồi bỏ phần này khỏi URL trước khi gửi
+`Range: npt=` trong lệnh PLAY.

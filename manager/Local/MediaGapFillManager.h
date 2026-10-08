@@ -141,6 +141,7 @@ private:
     std::map<std::string, SourceProvider> _providers;
     std::deque<ConnectionState> _pending;
     std::map<std::string, ConnectionState> _active;
+    // Used when `gapFill.maxConnections` is <= 0.
     size_t _max_connections = 4;
     std::string _default_source_type = "sdcard";
     std::map<std::string, std::string> _device_source_types;

@@ -638,11 +638,13 @@ def op_GetReplayUri(dev, body, port):
     stream = "sub" if token.endswith("sub") else "main"
     live = stream_uri(dev, stream)
     base, name = live.rsplit("/", 1)
-    # rtsp_source.py phát hữu hạn cho path "replay-*"; "?rec=1" để server nối "&starttime=".
+    # rtsp_source.py phát hữu hạn cho path "replay-*". Nửa số camera có sẵn query ("?rec=1",
+    # server nối "&starttime="), nửa kia không (server nối "?starttime="): phủ cả hai nhánh parse.
+    query = "?rec=1" if dev.index % 2 else ""
     with REG.lock:
         REG.counts["_replay_uri"] += 1
-    return envelope('<trp:GetReplayUriResponse><trp:Uri>%s/replay-%s?rec=1</trp:Uri>'
-                    '</trp:GetReplayUriResponse>' % (base, name))
+    return envelope('<trp:GetReplayUriResponse><trp:Uri>%s/replay-%s%s</trp:Uri>'
+                    '</trp:GetReplayUriResponse>' % (base, name, query))
 
 
 def op_GetMediaAttributes(dev, body, port):

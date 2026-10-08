@@ -25,7 +25,12 @@ static string parsePlaybackRange(const string &url, uint32_t &start_ms, uint32_t
     start_ms = 0;
     end_ms = 0;
 
+    // The range is the first query parameter when the replay URI had none ("?starttime=",
+    // MediaGapFillManager appendRtspRange), the next one otherwise ("&starttime=").
     auto start_pos = url.find("&starttime=");
+    if (start_pos == string::npos) {
+        start_pos = url.find("?starttime=");
+    }
     if (start_pos == string::npos) {
         return url;
     }
