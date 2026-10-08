@@ -80,6 +80,7 @@ Khi endpoint truyền nhiều permission vào `CHECK_USER_PERMISSION`, `checkPer
 | `914024` | 404 | Protected range không tồn tại |
 | `914029` | 400 | Không được xóa default HOT pool |
 | `914030` | 400 | Không được xóa system default policy |
+| `914034` | 409 | `pool/create`: đã đạt số pool tối đa `storage.tier_max_pools` (mặc định 32) |
 | `-1` | 500 | Thao tác thất bại không xác định được nguyên nhân (CRUD/clone/assign pool/policy, restore job, retry/cancel tiering job, protected range, cấu hình mã hoá), chi tiết ở `msg` |
 
 ### 1.5 Enum và capability
@@ -210,6 +211,9 @@ Credential không được trả rõ; chuỗi mask chỉ cho biết field đã c
 `POST /media/mserver/storage/pool/create` — JSON, permission `150302`.
 
 Required chung: `name`, `type`, `tier`.
+
+Tổng số pool (mọi tier) bị giới hạn bởi `storage.tier_max_pools` (mặc định 32, `<= 0` là không giới hạn).
+Khi đã đủ, request trả `914034` (HTTP 409) và không tạo pool. Pool đã có không bị ảnh hưởng khi hạ giới hạn.
 
 ```json
 {

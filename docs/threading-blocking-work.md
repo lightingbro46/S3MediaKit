@@ -349,16 +349,16 @@ Pool (`manager/Common/BlockingExecutors.cpp`):
 
 | Key | Mặc định | Ghi chú |
 |---|---|---|
-| `blocking.apiThreads` | `max(2, hw/2)` | Vẫn đọc `api.workerThreads` cũ nếu key mới bằng 0 |
-| `blocking.deviceThreads` | 4 | |
+| `blocking.apiThreads` | 16 | Vẫn đọc `api.workerThreads` cũ nếu key mới bằng 0. Không theo số core: phần lớn là SQLite, chỉ có một writer |
+| `blocking.deviceThreads` | 32 | Camera offline giữ 1 thread khoảng 10 s (timeout SOAP) mỗi lần thử lại 60 s, nên k camera offline cần khoảng k/6 thread; cộng 16 lệnh `device.control` đồng thời |
 | `blocking.discoveryThreads` | 8 | |
 | `blocking.storageThreads` | 1 | Một thread là đủ, và nhờ đó hai chu kỳ bảo trì không bao giờ chạy cùng lúc |
-| `blocking.ffmpegThreads` | 4 | |
-| `blocking.encryptionThreads` | 2 | Không được đăng ký default, chỉ đọc nếu có trong config |
-| `blocking.restoreThreads` | 5 | Trần của pool; số restore chạy đồng thời thực tế do `storage.auto_restore_max_concurrent` giới hạn |
+| `blocking.ffmpegThreads` | 8 | Bằng `api.limit.media.thumbnail.maxInflight` |
+| `blocking.encryptionThreads` | 4 | Không được đăng ký default, chỉ đọc nếu có trong config |
+| `blocking.restoreThreads` | 8 | Trần của pool; số restore chạy đồng thời thực tế do `storage.auto_restore_max_concurrent` giới hạn |
 | `blocking.tierThreads` | 3 | Một thread cho mỗi loại chu kỳ (tiering, backfill, health); mỗi loại có cờ chống chồng lấn |
 | `record.closeThreads` | 2 | Số pool 1 thread đóng segment MP4 (`src/`, đọc một lần ở lần đóng đầu tiên) |
-| `blocking.tierTransferThreads` | 4 | Trần của pool; số transfer đồng thời do `storage.tiering_transfer_max_concurrent` và `..._per_pool` giới hạn |
+| `blocking.tierTransferThreads` | 8 | Trần của pool; số transfer đồng thời do `storage.tiering_transfer_max_concurrent` và `..._per_pool` giới hạn |
 | `blocking.gapFillThreads` | 2 | Số camera tìm bản ghi thẻ nhớ đồng thời (thêm một lượt cho hàng đợi `gapfill state`) |
 
 Backpressure (`server/ApiWorkDispatcher.cpp`), đọc lại ở mỗi request:

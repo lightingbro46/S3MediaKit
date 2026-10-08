@@ -630,6 +630,9 @@ private:
     std::string _strMediaUrl;
     std::string _strImagingUrl;
     std::string _strPTZUrl;
+    std::string _strSearchUrl;
+    std::string _strReplayUrl;
+    std::string _strRecordingUrl;
 
     // Serialises all gSOAP operations on this instance.  recursive_mutex is
     // required because public methods call other public methods

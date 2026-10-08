@@ -157,6 +157,11 @@ def camera(index, total, node_ids, args):
             "onvif": {"mainStream": "AUTO", "subStream": "AUTO"},
         },
     }
+    # Kịch bản gapfill: camera có thẻ SD (onvif_mock --profile-g), server tự bù khoảng hở khi
+    # camera có lại kết nối. Bật qua env để mọi lệnh phase dựng lại cùng danh sách camera.
+    if os.environ.get("STRESS_GAP_FILL") == "1":
+        entry["sdCardSyncConfig"] = {"syncEnabled": True, "autoSyncEnabled": True,
+                                     "minSegmentGapSec": 10, "retryCount": 2}
     return entry, cohort
 
 
@@ -291,7 +296,9 @@ def node_overrides(node_id, d, ports, args):
         "cluster": {"serverLocationId": 0, "failoverActiveDelaySec": 15},
         "auth": {"enableAuthorize": 0},
         # Pool blocking cố định để so sánh được giữa các lần chạy; ONVIF chạy trên device().
-        "blocking": {"apiThreads": args.api_threads,
+        # STRESS_BLOCKING=code giữ mặc định trong code (đo cấu hình production).
+        "blocking": {} if os.environ.get("STRESS_BLOCKING") == "code" else
+                    {"apiThreads": args.api_threads,
                      "deviceThreads": args.device_threads,
                      "discoveryThreads": 4,
                      "ffmpegThreads": 2},
@@ -339,6 +346,10 @@ def write_specs(work, cams, by_cohort, phase):
         # một nửa số camera rớt nguồn mỗi 20s
         drop["flaky"] = ["%s-main" % c["id"] for c in cams[::2]]
         drop["flaky_sec"] = 20
+    elif phase == "net_outage":
+        # rớt mạng đồng loạt: mọi luồng 404, mọi thiết bị ONVIF không trả lời
+        drop["offline"] += ["%s-main" % c["id"] for c in cams] + ["%s-sub" % c["id"] for c in cams]
+        faults["default"] = {"latency_ms": 0, "offline": True}
     elif phase == "recover":
         drop["offline"] = []
         drop["flaky"] = []

@@ -88,7 +88,8 @@ TEST(BlockingExecutorsTest, ThreadsAreNamedAndAreNotPollers) {
     EXPECT_FALSE(api.on_poller);
 
     auto device = runOn(BlockingExecutors::device());
-    EXPECT_EQ(0u, device.thread_name.find("device worker")) << device.thread_name;
+    // Thread names hold 15 chars: from "device worker 10" on, toolkit shortens them to "devic...rker 10".
+    EXPECT_EQ(0u, device.thread_name.find("devic")) << device.thread_name;
     EXPECT_FALSE(device.on_poller);
 
     auto ffmpeg = runOn(BlockingExecutors::ffmpeg());
@@ -122,17 +123,17 @@ TEST(BlockingExecutorsTest, ThreadsAreNamedAndAreNotPollers) {
 
 TEST(BlockingExecutorsTest, DevicePoolRunsConfiguredNumberOfTasksInParallel) {
     const int threads = BlockingExecutors::deviceThreadCount();
-    EXPECT_EQ(4, threads);
-    EXPECT_GE(BlockingExecutors::apiThreadCount(), 2);
-    EXPECT_EQ(4, BlockingExecutors::ffmpegThreadCount());
+    EXPECT_EQ(32, threads);
+    EXPECT_EQ(16, BlockingExecutors::apiThreadCount());
+    EXPECT_EQ(8, BlockingExecutors::ffmpegThreadCount());
     // One thread on purpose: it also keeps two maintenance cycles from ever running at once.
     EXPECT_EQ(1, BlockingExecutors::storageThreadCount());
     // Matches the storage.auto_restore_max_concurrent default.
-    EXPECT_EQ(5, BlockingExecutors::restoreThreadCount());
+    EXPECT_EQ(8, BlockingExecutors::restoreThreadCount());
     // One thread each for the tiering cycle, backfill and health check.
     EXPECT_EQ(3, BlockingExecutors::tierThreadCount());
     // Matches the storage.tiering_transfer_max_concurrent default.
-    EXPECT_EQ(4, BlockingExecutors::tierTransferThreadCount());
+    EXPECT_EQ(8, BlockingExecutors::tierTransferThreadCount());
     EXPECT_EQ(2, BlockingExecutors::gapFillThreadCount());
 
     // Every thread blocks until all of them have started: this only completes if the pool really

@@ -890,7 +890,10 @@ bool OnvifControl::getDeviceCapabilities() {
         }
     }
     if (GetCapabilitiesResponse.Capabilities->Extension != nullptr && GetCapabilitiesResponse.Capabilities->Extension->Search != nullptr) {
-        thread_local string strUrl;
+        // A member, like the other service URLs: soap_endpoint keeps a pointer to it, and a
+        // thread_local shared by every camera connecting on this thread sent its search/replay
+        // requests to whichever camera connected last.
+        auto &strUrl = _strSearchUrl;
         strUrl = GetCapabilitiesResponse.Capabilities->Extension->Search->XAddr;
         int indexFooter = strUrl.find("/onvif");
         // Check if contains onvif then replace cameraip to header
@@ -904,7 +907,10 @@ bool OnvifControl::getDeviceCapabilities() {
     }
 
     if (GetCapabilitiesResponse.Capabilities->Extension != nullptr && GetCapabilitiesResponse.Capabilities->Extension->Replay != nullptr) {
-        thread_local string strUrl;
+        // A member, like the other service URLs: soap_endpoint keeps a pointer to it, and a
+        // thread_local shared by every camera connecting on this thread sent its search/replay
+        // requests to whichever camera connected last.
+        auto &strUrl = _strReplayUrl;
         strUrl = GetCapabilitiesResponse.Capabilities->Extension->Replay->XAddr;
         int indexFooter = strUrl.find("/onvif");
         // Check if contains onvif then replace cameraip to header
@@ -918,7 +924,10 @@ bool OnvifControl::getDeviceCapabilities() {
     }
 
     if (GetCapabilitiesResponse.Capabilities->Extension != nullptr && GetCapabilitiesResponse.Capabilities->Extension->Recording != nullptr) {
-        thread_local string strUrl;
+        // A member, like the other service URLs: soap_endpoint keeps a pointer to it, and a
+        // thread_local shared by every camera connecting on this thread sent its search/replay
+        // requests to whichever camera connected last.
+        auto &strUrl = _strRecordingUrl;
         strUrl = GetCapabilitiesResponse.Capabilities->Extension->Recording->XAddr;
         int indexFooter = strUrl.find("/onvif");
         // Check if contains onvif then replace cameraip to header

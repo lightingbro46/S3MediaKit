@@ -651,6 +651,7 @@ const string kTierObjectOrphanSweepIntervalSeconds = STORAGE_FIELD "tier_object_
 const string kTieringSplitGranularitySeconds = STORAGE_FIELD "tiering_split_granularity_seconds";
 const string kTieringTransferMaxConcurrent = STORAGE_FIELD "tiering_transfer_max_concurrent";
 const string kTieringTransferMaxConcurrentPerPool = STORAGE_FIELD "tiering_transfer_max_concurrent_per_pool";
+const string kTierMaxPools = STORAGE_FIELD "tier_max_pools";
 const string kTieringJobRetentionDays = STORAGE_FIELD "tiering_job_retention_days";
 const string kTieringTerminalRangeRetentionDays = STORAGE_FIELD "tiering_terminal_range_retention_days";
 const string kStorageAlertRetentionDays = STORAGE_FIELD "storage_alert_retention_days";
@@ -690,7 +691,7 @@ static onceToken token([]() {
     mINI::Instance()[kLimitPercentUsage] = 90;
     mINI::Instance()[kRemovePercentExtra] = 5;
     mINI::Instance()[kAutoRestoreOnRecordAccess] = 0;
-    mINI::Instance()[kAutoRestoreMaxConcurrent] = 5;
+    mINI::Instance()[kAutoRestoreMaxConcurrent] = 8;
 #if defined(__linux__)
     mINI::Instance()[kRestoreSavePath] = "/dev/shm/restore";
     mINI::Instance()[kDecryptSavePath] = "/dev/shm/decrypt";
@@ -723,8 +724,9 @@ static onceToken token([]() {
     mINI::Instance()[kTierObjectOrphanMinAgeSeconds] = 86400;
     mINI::Instance()[kTierObjectOrphanSweepIntervalSeconds] = 86400;
     mINI::Instance()[kTieringSplitGranularitySeconds] = 3600;
-    mINI::Instance()[kTieringTransferMaxConcurrent] = 4;
-    mINI::Instance()[kTieringTransferMaxConcurrentPerPool] = 2;
+    mINI::Instance()[kTieringTransferMaxConcurrent] = 8;
+    mINI::Instance()[kTieringTransferMaxConcurrentPerPool] = 4;
+    mINI::Instance()[kTierMaxPools] = 32;
     mINI::Instance()[kTieringJobRetentionDays] = 7;
     mINI::Instance()[kTieringTerminalRangeRetentionDays] = 30;
     mINI::Instance()[kStorageAlertRetentionDays] = 14;

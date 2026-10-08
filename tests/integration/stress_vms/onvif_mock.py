@@ -48,6 +48,9 @@ NS = (
     'xmlns:tr2="http://www.onvif.org/ver20/media/wsdl" '
     'xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" '
     'xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl" '
+    'xmlns:tse="http://www.onvif.org/ver10/search/wsdl" '
+    'xmlns:trp="http://www.onvif.org/ver10/replay/wsdl" '
+    'xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2" '
     'xmlns:tt="http://www.onvif.org/ver10/schema"'
 )
 
@@ -190,7 +193,19 @@ def op_GetCapabilities(dev, body, port):
         '</tt:StreamingCapabilities></tt:Media>'
         '<tt:PTZ><tt:XAddr>%s/onvif/ptz_service</tt:XAddr></tt:PTZ>'
         '<tt:Imaging><tt:XAddr>%s/onvif/imaging_service</tt:XAddr></tt:Imaging>'
-        '</tds:Capabilities></tds:GetCapabilitiesResponse>' % (base, base, base, base))
+        '%s'
+        '</tds:Capabilities></tds:GetCapabilitiesResponse>'
+        % (base, base, base, base, _profile_g_capabilities(base)))
+
+
+def _profile_g_capabilities(base):
+    if not REG.args.profile_g:
+        return ""
+    return ('<tt:Extension>'
+            '<tt:Search><tt:XAddr>%s/onvif/search_service</tt:XAddr>'
+            '<tt:MetadataSearch>false</tt:MetadataSearch></tt:Search>'
+            '<tt:Replay><tt:XAddr>%s/onvif/replay_service</tt:XAddr></tt:Replay>'
+            '</tt:Extension>' % (base, base))
 
 
 def op_GetNetworkInterfaces(dev, body, port):
@@ -551,6 +566,136 @@ def op_GetConfigurationOptions(dev, body, port):
         % "".join(spaces))
 
 
+# ------------------------------------------------------------ Profile G (thẻ SD)
+# Chỉ bật với --profile-g. Mỗi camera có hai bản ghi trên thẻ (REC_main, REC_sub, đúng thứ tự
+# server sắp theo token), ghi liên tục từ --sd-from-sec trước lúc mock khởi động tới hiện tại.
+# Token tìm kiếm mang luôn tham số (không giữ trạng thái), nên mock đa luồng không cần khoá.
+PROFILE_G_OPS = ("GetRecordingSummary", "FindRecordings", "GetRecordingSearchResults", "EndSearch",
+                 "GetReplayUri", "GetMediaAttributes", "FindEvents", "GetEventSearchResults")
+
+
+def _iso(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+
+
+def _parse_iso(text):
+    if not text:
+        return None
+    text = text.rstrip("Z").split(".")[0]
+    try:
+        return calendar.timegm(time.strptime(text, "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return None
+
+
+def _sd_window(dev):
+    return REG.started - REG.args.sd_from_sec, dev_now(dev.ip)
+
+
+def op_GetRecordingSummary(dev, body, port):
+    start, until = _sd_window(dev)
+    return envelope(
+        '<tse:GetRecordingSummaryResponse><tse:Summary>'
+        '<tt:DataFrom>%s</tt:DataFrom><tt:DataUntil>%s</tt:DataUntil>'
+        '<tt:NumberRecordings>2</tt:NumberRecordings>'
+        '</tse:Summary></tse:GetRecordingSummaryResponse>' % (_iso(start), _iso(until)))
+
+
+def op_FindRecordings(dev, body, port):
+    return envelope('<tse:FindRecordingsResponse><tse:SearchToken>REC-SEARCH</tse:SearchToken>'
+                    '</tse:FindRecordingsResponse>')
+
+
+def _recording_info(dev, token):
+    start, until = _sd_window(dev)
+    return (
+        '<tt:RecordingInformation><tt:RecordingToken>%s</tt:RecordingToken>'
+        '<tt:Source><tt:SourceId>%s</tt:SourceId><tt:Name>%s</tt:Name><tt:Location>sd</tt:Location>'
+        '<tt:Description>sd</tt:Description><tt:Address>%s</tt:Address></tt:Source>'
+        '<tt:EarliestRecording>%s</tt:EarliestRecording><tt:LatestRecording>%s</tt:LatestRecording>'
+        '<tt:Content>continuous</tt:Content>'
+        '<tt:Track><tt:TrackToken>VIDEO001</tt:TrackToken><tt:TrackType>Video</tt:TrackType>'
+        '<tt:Description>video</tt:Description><tt:DataFrom>%s</tt:DataFrom><tt:DataTo>%s</tt:DataTo>'
+        '</tt:Track><tt:RecordingStatus>Recording</tt:RecordingStatus></tt:RecordingInformation>'
+        % (token, token, token, dev.ip, _iso(start), _iso(until), _iso(start), _iso(until)))
+
+
+def op_GetRecordingSearchResults(dev, body, port):
+    return envelope(
+        '<tse:GetRecordingSearchResultsResponse><tse:ResultList>'
+        '<tt:SearchState>Completed</tt:SearchState>%s%s'
+        '</tse:ResultList></tse:GetRecordingSearchResultsResponse>'
+        % (_recording_info(dev, "REC_main"), _recording_info(dev, "REC_sub")))
+
+
+def op_EndSearch(dev, body, port):
+    return envelope('<tse:EndSearchResponse><tse:Endpoint>%s</tse:Endpoint></tse:EndSearchResponse>'
+                    % _iso(dev_now(dev.ip)))
+
+
+def op_GetReplayUri(dev, body, port):
+    token = xml_text(body, "RecordingToken") or "REC_main"
+    stream = "sub" if token.endswith("sub") else "main"
+    live = stream_uri(dev, stream)
+    base, name = live.rsplit("/", 1)
+    # rtsp_source.py phát hữu hạn cho path "replay-*"; "?rec=1" để server nối "&starttime=".
+    with REG.lock:
+        REG.counts["_replay_uri"] += 1
+    return envelope('<trp:GetReplayUriResponse><trp:Uri>%s/replay-%s?rec=1</trp:Uri>'
+                    '</trp:GetReplayUriResponse>' % (base, name))
+
+
+def op_GetMediaAttributes(dev, body, port):
+    token = xml_text(body, "RecordingTokens") or "REC_main"
+    cfg = dev.encoders["Profile_2" if token.endswith("sub") else "Profile_1"]
+    start, until = _sd_window(dev)
+    return envelope(
+        '<tse:GetMediaAttributesResponse><tse:MediaAttributes>'
+        '<tt:RecordingToken>%s</tt:RecordingToken><tt:TrackAttributes>'
+        '<tt:TrackInformation><tt:TrackToken>VIDEO001</tt:TrackToken><tt:TrackType>Video</tt:TrackType>'
+        '<tt:Description>video</tt:Description><tt:DataFrom>%s</tt:DataFrom><tt:DataTo>%s</tt:DataTo>'
+        '</tt:TrackInformation><tt:VideoAttributes><tt:Bitrate>%d</tt:Bitrate>'
+        '<tt:Width>%d</tt:Width><tt:Height>%d</tt:Height><tt:Encoding>%s</tt:Encoding>'
+        '<tt:Framerate>%d</tt:Framerate></tt:VideoAttributes></tt:TrackAttributes>'
+        '<tt:From>%s</tt:From><tt:Until>%s</tt:Until></tse:MediaAttributes>'
+        '</tse:GetMediaAttributesResponse>'
+        % (token, _iso(start), _iso(until), cfg["bitrate"], cfg["width"], cfg["height"],
+           cfg["encoding"], cfg["fps"], _iso(start), _iso(until)))
+
+
+def op_FindEvents(dev, body, port):
+    start = _parse_iso(xml_text(body, "StartPoint")) or int(dev_now(dev.ip))
+    end = _parse_iso(xml_text(body, "EndPoint")) or int(dev_now(dev.ip))
+    token = xml_text(body, "IncludedRecordings") or "REC_main"
+    with REG.lock:
+        REG.counts["_find_events"] += 1
+    return envelope('<tse:FindEventsResponse><tse:SearchToken>EV|%s|%d|%d</tse:SearchToken>'
+                    '</tse:FindEventsResponse>' % (token, start, end))
+
+
+def _track_event(token, when, start_state, present):
+    return (
+        '<tt:Result><tt:RecordingToken>%s</tt:RecordingToken><tt:TrackToken>VIDEO001</tt:TrackToken>'
+        '<tt:Time>%s</tt:Time><tt:Event><wsnt:Message><tt:Message UtcTime="%s">'
+        '<tt:Source><tt:SimpleItem Name="RecordingToken" Value="%s"/></tt:Source>'
+        '<tt:Data><tt:SimpleItem Name="IsDataPresent" Value="%s"/></tt:Data>'
+        '</tt:Message></wsnt:Message></tt:Event>'
+        '<tt:StartStateEvent>%s</tt:StartStateEvent></tt:Result>'
+        % (token, _iso(when), _iso(when), token, "true" if present else "false",
+           "true" if start_state else "false"))
+
+
+def op_GetEventSearchResults(dev, body, port):
+    parts = (xml_text(body, "SearchToken") or "EV|REC_main|0|0").split("|")
+    token, start, end = parts[1], int(parts[2]), int(parts[3])
+    # Thẻ ghi liên tục: có dữ liệu từ đầu khoảng tìm, tới cuối khoảng.
+    events = _track_event(token, start, True, True) + _track_event(token, end, False, False)
+    return envelope(
+        '<tse:GetEventSearchResultsResponse><tse:ResultList>'
+        '<tt:SearchState>Completed</tt:SearchState>%s'
+        '</tse:ResultList></tse:GetEventSearchResultsResponse>' % events)
+
+
 HANDLERS = {name[3:]: fn for name, fn in list(globals().items()) if name.startswith("op_")}
 
 
@@ -720,6 +865,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(fault("ActionNotSupported", "injected failure"), 500)
 
         handler = HANDLERS.get(op)
+        if op in PROFILE_G_OPS and not a.profile_g:
+            handler = None
         if handler is None:
             with REG.lock:
                 REG.faults[op] += 1
@@ -819,6 +966,10 @@ def main():
                     help="GetSystemDateAndTime cũng bắt xác thực (camera không theo chuẩn)")
     ap.add_argument("--nonce-uses", type=int, default=0,
                     help="digest: nonce hết hạn sau N request hợp lệ (0 = không hết hạn)")
+    ap.add_argument("--profile-g", action="store_true",
+                    help="khai báo Search/Replay: mỗi camera có thẻ SD ghi liên tục (gap fill)")
+    ap.add_argument("--sd-from-sec", type=float, default=86400.0,
+                    help="thẻ SD có dữ liệu từ N giây trước lúc mock khởi động")
     ap.add_argument("--verbose", action="store_true")
     REG = Registry(ap.parse_args())
     REG.reload()

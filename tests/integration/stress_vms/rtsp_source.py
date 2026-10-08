@@ -9,6 +9,10 @@ Dùng:
     rtsp_source.py <h264_file> [--sub-media <h264_file>] [--port 8554] [--fps 5]
                    [--procs N] [--stats-sec 10] [--drop-spec PATH] [--state PATH]
 
+Path "replay-<luồng>" (URI GetReplayUri của onvif_mock --profile-g) là đoạn bản ghi hữu hạn:
+độ dài lấy từ Range npt=a-b của PLAY, timestamp RTP tính từ 0, phát --replay-speed frame mỗi
+nhịp rồi đóng kết nối như camera phát hết đoạn trên thẻ SD.
+
 --sub-media: luồng có path kết thúc bằng "-sub" phát file này (luồng phụ độ phân giải thấp),
 còn lại phát <h264_file>. Không có thì mọi luồng phát cùng một file.
 
@@ -142,7 +146,7 @@ class Loop(object):
 # ---------------------------------------------------------------- session state
 class Session(object):
     __slots__ = ("sid", "path", "writer", "channel", "media", "playing", "started",
-                 "packets", "closed")
+                 "packets", "closed", "replay_left", "replay_frame", "replay_seq")
 
     def __init__(self, sid, path, writer, media):
         self.sid = sid
@@ -154,6 +158,10 @@ class Session(object):
         self.started = 0.0
         self.packets = 0
         self.closed = False
+        # Phiên replay (path "replay-*", thẻ SD): còn bao nhiêu frame, đồng hồ riêng từ 0.
+        self.replay_left = None
+        self.replay_frame = 0
+        self.replay_seq = 0
 
 
 class Server(object):
@@ -176,6 +184,7 @@ class Server(object):
         self.stat_bytes = 0
         self.stat_plays = 0
         self.stat_teardowns = 0
+        self.stat_replays_done = 0
         self.started = time.time()
 
     # -------------------------------------------------- điều kiện lỗi từ file
@@ -208,6 +217,23 @@ class Server(object):
         if len(parts) > 1 and parts[-1].lower().startswith("trackid="):
             parts.pop()
         return parts[-1]
+
+    def build_replay(self, sess):
+        """Frame kế tiếp của phiên replay, timestamp tính từ đầu đoạn (không dùng bộ đếm chung)."""
+        media = sess.media
+        frame = media.frames[sess.replay_frame % len(media.frames)]
+        ts = sess.replay_frame * media.ts_step
+        buf = bytearray()
+        last = len(frame) - 1
+        for i, payload in enumerate(frame):
+            hdr = struct.pack("!BBHII", 0x80, 96 | (0x80 if i == last else 0),
+                              (sess.replay_seq + i) & 0xFFFF, ts & 0xFFFFFFFF, self.SSRC)
+            pkt = hdr + payload
+            buf += struct.pack("!BBH", 0x24, sess.channel, len(pkt)) + pkt
+        sess.replay_seq += len(frame)
+        sess.replay_frame += 1
+        sess.replay_left -= 1
+        return bytes(buf), len(frame)
 
     def media_for(self, path):
         return self.sub_media if self.stream_key(path).endswith("-sub") else self.media
@@ -255,11 +281,32 @@ class Server(object):
             if not sess.playing or sess.closed:
                 continue
             key = self.stream_key(sess.path)
+            if key in self.drop["offline"]:
+                # rớt mạng: phiên đang phát cũng đứt, không chỉ request mới bị 404
+                dead.append(sess)
+                continue
             if key in self.drop["flaky"] and flaky_sec > 0:
                 # ngắt luồng định kỳ để buộc camera phải reconnect
                 if now - sess.started > flaky_sec:
                     dead.append(sess)
                     continue
+            if sess.replay_left is not None:
+                # Phát nhanh hơn thời gian thực như camera xả thẻ SD, rồi đóng khi hết đoạn.
+                for _ in range(self.args.replay_speed):
+                    if sess.replay_left <= 0:
+                        break
+                    data, npkt = self.build_replay(sess)
+                    sess.packets += npkt
+                    self.stat_packets += npkt
+                    self.stat_bytes += len(data)
+                    try:
+                        sess.writer.write(data)
+                    except (ConnectionError, OSError):
+                        break
+                if sess.replay_left <= 0:
+                    self.stat_replays_done += 1
+                    dead.append(sess)
+                continue
             ck = (id(sess.media), sess.channel)
             built = cache.get(ck)
             if built is None:
@@ -379,10 +426,22 @@ class Server(object):
                 sess.playing = True
                 sess.started = time.monotonic()
                 self.stat_plays += 1
+                if self.stream_key(sess.path).startswith("replay-"):
+                    # Độ dài đoạn lấy từ Range npt=a-b của PLAY; thêm một frame để tiến độ chạm 100%.
+                    rng = headers.get("range", "").replace("npt=", "").split("-")
+                    try:
+                        dur = float(rng[1]) - float(rng[0])
+                    except (IndexError, ValueError):
+                        dur = 60.0
+                    sess.replay_left = int(max(1.0, dur) * sess.media.fps) + 1
             key = id(sess.media) if sess else id(self.media)
+            if sess and sess.replay_left is not None:
+                rtp_seq, rtp_ts = 0, 0
+            else:
+                rtp_seq, rtp_ts = self.seq[key] & 0xFFFF, self.ts[key] & 0xFFFFFFFF
             writer.write((base + "Session: %s\r\nRange: npt=0.000-\r\n"
                           "RTP-Info: url=%s/trackID=0;seq=%d;rtptime=%d\r\n\r\n"
-                          % (sid, url, self.seq[key] & 0xFFFF, self.ts[key] & 0xFFFFFFFF)).encode())
+                          % (sid, url, rtp_seq, rtp_ts)).encode())
         elif method in ("TEARDOWN", "PAUSE"):
             sid = headers.get("session", "").split(";")[0]
             sess = self.sessions.get(sid)
@@ -420,6 +479,7 @@ class Server(object):
             if self.args.state:
                 state = {"sessions": len(self.sessions), "playing": playing,
                          "plays": self.stat_plays, "teardowns": self.stat_teardowns,
+                         "replays_done": self.stat_replays_done,
                          "packets": self.stat_packets, "bytes": self.stat_bytes,
                          "kbps": round((self.stat_bytes - last_b) * 8 / dt / 1000),
                          "cpu_pct": round(cpu_pct, 1), "tick_late_p99_ms": round(late_p99, 1),
@@ -441,7 +501,7 @@ def write_state(path, state):
 def merge_states(paths, out, started):
     """Gộp state của các tiến trình con vào một file cho check_stress.py/check_ccu.py."""
     total = {"sessions": 0, "playing": 0, "plays": 0, "teardowns": 0, "packets": 0,
-             "bytes": 0, "kbps": 0, "procs": len(paths), "procs_fresh": 0,
+             "bytes": 0, "kbps": 0, "replays_done": 0, "procs": len(paths), "procs_fresh": 0,
              "cpu_pct_max": 0.0, "tick_late_p99_ms": 0.0, "tick_late_max_ms": 0.0}
     for p in paths:
         try:
@@ -450,7 +510,7 @@ def merge_states(paths, out, started):
             continue
         if time.time() - st.get("at", 0) < 60:
             total["procs_fresh"] += 1
-        for k in ("sessions", "playing", "plays", "teardowns", "packets", "bytes", "kbps"):
+        for k in ("sessions", "playing", "plays", "teardowns", "replays_done", "packets", "bytes", "kbps"):
             total[k] += st.get(k, 0)
         total["cpu_pct_max"] = max(total["cpu_pct_max"], st.get("cpu_pct", 0))
         total["tick_late_p99_ms"] = max(total["tick_late_p99_ms"], st.get("tick_late_p99_ms", 0))
@@ -475,7 +535,7 @@ def supervise(args):
         paths.append(child_state)
         cmd = [sys.executable, os.path.abspath(__file__), args.media, "--port", str(args.port),
                "--host", args.host, "--fps", str(args.fps), "--stats-sec", str(args.stats_sec),
-               "--state", child_state, "--reuse-port"]
+               "--state", child_state, "--reuse-port", "--replay-speed", str(args.replay_speed)]
         if args.sub_media:
             cmd += ["--sub-media", args.sub_media]
         if args.drop_spec:
@@ -513,6 +573,8 @@ async def main():
     ap.add_argument("--state", default=None)
     ap.add_argument("--sub-media", default=None, help="file cho luồng có path kết thúc bằng -sub")
     ap.add_argument("--procs", type=int, default=1, help="số tiến trình con cùng cổng")
+    ap.add_argument("--replay-speed", type=int, default=4,
+                    help="path replay-*: số frame gửi mỗi nhịp (phát nhanh như xả thẻ SD)")
     ap.add_argument("--reuse-port", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
 

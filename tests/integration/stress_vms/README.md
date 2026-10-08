@@ -30,7 +30,7 @@ tests/integration/stress_vms/run_stress.sh /tmp/s3mk_stress stop
 | Tham số | Giá trị |
 |---|---|
 | `profile` | `smoke` (30 cam / 60 luồng), `mid` (120/240), `full` (300/600) |
-| `scenario` | `all`, `ramp`, `steady`, `onvif`, `flap`, `schedule`, `retention`, `failover`, `storage`, `recover`, `soak`, `videorule`, `ccu`, `ccu_storm`, `ccu_churn`, `ccu_soak`, `ccu_admission` |
+| `scenario` | `all`, `ramp`, `steady`, `onvif`, `flap`, `schedule`, `retention`, `failover`, `storage`, `recover`, `soak`, `videorule`, `gapfill`, `ccu`, `ccu_storm`, `ccu_churn`, `ccu_soak`, `ccu_admission` |
 | `MEDIASERVER_DIR` | thư mục chứa binary (mặc định `<repo>/release/linux/Debug`) |
 | `NODES` | số node (mặc định 2; `storage` và `videorule` luôn 1) |
 | `PHASE_SEC` | thời lượng mỗi phase (mặc định 60/120/180 theo profile) |
@@ -171,6 +171,25 @@ grep -h "idle time file writer" <work_dir>/node-*/log/*.log
 ```
 
 Kết quả ghi ra `<work_dir>/report_<phase>.json` và `report_final.json`.
+
+## Kịch bản `gapfill` — rớt mạng đồng loạt rồi bù từ thẻ SD
+
+```bash
+NODES=1 PHASE_SEC=180 OUTAGE_SEC=300 GAPFILL_WATCH_SEC=1500 REPLAY_SPEED=8 \
+    bash tests/integration/stress_vms/run_stress.sh /tmp/s3mk_gapfill full gapfill
+```
+
+- `onvif_mock.py --profile-g`: mỗi camera có thẻ SD ghi liên tục (Search/Replay: GetRecordingSummary,
+  FindRecordings, FindEvents, GetReplayUri, GetMediaAttributes). URI replay là `replay-cam-NNNN-*` của
+  `rtsp_source.py`, phát hữu hạn theo `Range npt=a-b` nhanh gấp `REPLAY_SPEED` rồi đóng kết nối.
+- Phase: `steady` → `net_outage` (mọi luồng 404 và phiên đang phát bị ngắt, mọi ONVIF không trả lời,
+  `OUTAGE_SEC`) → `net_recover` (`GAPFILL_WATCH_SEC`).
+- Rig chạy `TZ=UTC` (mock khai báo giờ UTC0, server cộng chênh múi giờ máy vào khoảng tìm kiếm) và giữ
+  số thread BlockingExecutors mặc định trong code (`STRESS_BLOCKING=code`).
+- `blocking.jsonl`: mẫu `/index/api/getBlockingExecutors` mỗi 5 s (hàng đợi, chờ, % bận theo pool).
+  `check_gapfill.py` in theo phase: vòng tier, các pool, số timefile được sắp xếp; cuối cùng là trạng thái
+  task gap fill, số replay đã phát hết và số timefile còn dấu chưa sắp xếp.
+- Máy dev ngủ giữa chừng làm hỏng số liệu: kiểm khoảng trống thời gian trong `resources.jsonl` trước khi đọc.
 
 ## Kịch bản `storage` — StorageManager khi `ENABLE_TIER_STORAGE=OFF`
 

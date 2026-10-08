@@ -71,6 +71,13 @@ CYCLES="${CYCLES:-4}"
 [ "$SCENARIO" = "videorule" ] && NODES=1
 case "$SCENARIO" in
     ccu*) NODES=1; CCU_PRODUCTION_ARGS="${CCU_PRODUCTION_ARGS:-1}"; CONFIG_BASE="${CONFIG_BASE:-code}" ;;
+    gapfill)
+        # Rớt mạng đồng loạt rồi bù từ thẻ SD (onvif_mock --profile-g). Mock khai báo giờ UTC0,
+        # server cộng chênh múi giờ máy vào khoảng tìm kiếm, nên cả rig chạy TZ=UTC.
+        NODES=1; CONFIG_BASE="${CONFIG_BASE:-code}"
+        export TZ=UTC STRESS_GAP_FILL=1 STRESS_BLOCKING="${STRESS_BLOCKING:-code}"
+        # --stream-base: URI replay của mock trỏ về nguồn RTSP của harness (path replay-cam-NNNN-*).
+        ONVIF_MOCK_ARGS="${ONVIF_MOCK_ARGS:-} --profile-g --stream-base rtsp://127.0.0.1:$RTSP_PORT" ;;
 esac
 CCU_PORT=18600
 CCU_SINGLE_PORT=18601
@@ -122,7 +129,7 @@ stop_helpers() {
         kill $(cat "$WORK/viewer_remote.pids") 2>/dev/null
         rm -f "$WORK/viewer_remote.pids"
     fi
-    for name in rtsp_source onvif_mock mock_api sampler; do
+    for name in rtsp_source onvif_mock mock_api sampler blocking_sampler; do
         if [ -f "$WORK/$name.pid" ]; then
             kill "$(cat "$WORK/$name.pid")" 2>/dev/null
             rm -f "$WORK/$name.pid"
@@ -376,6 +383,7 @@ trap stop_all EXIT
 nohup python3 "$HERE/rtsp_source.py" "$MEDIA" --port "$RTSP_PORT" --fps "$SOURCE_FPS" \
     ${SUB_MEDIA:+--sub-media "$SUB_MEDIA"} --procs "$RTSP_PROCS" \
     --drop-spec "$WORK/drop_spec.json" --state "$WORK/rtsp_state.json" \
+    --replay-speed "${REPLAY_SPEED:-4}" \
     > "$WORK/rtsp_source.log" 2>&1 &
 echo $! > "$WORK/rtsp_source.pid"
 
@@ -436,6 +444,20 @@ sleep 2
     done
 ) >> "$WORK/resources.jsonl" 2>/dev/null &
 echo $! > "$WORK/sampler.pid"
+
+# Hàng đợi và thời gian bận của các pool BlockingExecutors, mỗi 5 s (cửa sổ reset mỗi lần gọi).
+(
+    while true; do
+        for n in $(node_list); do
+            port=$(python3 -c "import json;print(json.load(open('$WORK/inventory.json'))['ports']['$n']['http'])" 2>/dev/null)
+            secret=$(awk -F= '/^secret=/{sub(/\r$/, "", $2); print $2; exit}' "$WORK/$n/config.ini" 2>/dev/null)
+            body=$(curl -s -m 3 "http://127.0.0.1:$port/index/api/getBlockingExecutors?secret=$secret" | tr -d '\n')
+            [ -n "$body" ] && echo "{\"at\":$(date +%s),\"node\":\"$n\",\"resp\":$body}"
+        done
+        sleep 5
+    done
+) >> "$WORK/blocking.jsonl" 2>/dev/null &
+echo $! > "$WORK/blocking_sampler.pid"
 
 # ------------------------------------------------------------------ kịch bản
 run_phase() {
@@ -519,6 +541,13 @@ case "$SCENARIO" in
             cycle=$((cycle + 1))
         done
         run_phase recover "$PHASE_SEC" recover
+        ;;
+    gapfill)
+        # nền -> rớt mạng đồng loạt OUTAGE_SEC -> có mạng lại, theo dõi bù khoảng hở GAPFILL_WATCH_SEC
+        run_phase steady "$PHASE_SEC" ""
+        run_phase net_outage "${OUTAGE_SEC:-180}" net_outage
+        run_phase net_recover "${GAPFILL_WATCH_SEC:-1500}" recover
+        python3 "$HERE/check_gapfill.py" "$WORK" | tee "$WORK/report_gapfill.txt"
         ;;
     videorule)
         # Checklist chạy thật của video config rule trên onvif_mock.py (không cần camera).

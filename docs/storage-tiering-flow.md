@@ -820,7 +820,7 @@ Backend insert atomic một `restore_jobs` parent và một hay nhiều `restore
 
 ### 8.5 Thread Và Lifetime
 
-Restore không chạy trên EventPoller/HTTP thread và cũng không chạy trên `WorkThreadPool`: một lần tải object có thể kéo dài hàng chục giây, còn mỗi thread của `WorkThreadPool` là một `EventPoller` đang giữ timer và hàng đợi có thứ tự. Mọi việc của restore chạy trên pool riêng `BlockingExecutors::restore()` (thread `restore N`, cấu hình `blocking.restoreThreads`, mặc định 5):
+Restore không chạy trên EventPoller/HTTP thread và cũng không chạy trên `WorkThreadPool`: một lần tải object có thể kéo dài hàng chục giây, còn mỗi thread của `WorkThreadPool` là một `EventPoller` đang giữ timer và hàng đợi có thứ tự. Mọi việc của restore chạy trên pool riêng `BlockingExecutors::restore()` (thread `restore N`, cấu hình `blocking.restoreThreads`, mặc định 8):
 
 ```text
 processRestoreJobs()       gọi từ bất kỳ thread nào (poller media, API worker, tiering cycle); không đụng SQLite
@@ -1098,7 +1098,7 @@ Các cấu hình và giá trị mặc định trong `src/Common/config.cpp`:
 
 ```ini
 storage.auto_restore_on_record_access=0
-storage.auto_restore_max_concurrent=5
+storage.auto_restore_max_concurrent=8
 storage.restore_save_path=/dev/shm/restore       # Linux
 # storage.restore_save_path=./www/restore        # Nền tảng khác
 storage.restore_ttl_seconds=3600
@@ -1126,8 +1126,9 @@ storage.tier_object_orphan_work_budget_ms=1000
 storage.tier_object_orphan_min_age_seconds=86400
 storage.tier_object_orphan_sweep_interval_seconds=86400
 storage.tiering_split_granularity_seconds=3600
-storage.tiering_transfer_max_concurrent=4
-storage.tiering_transfer_max_concurrent_per_pool=2
+storage.tiering_transfer_max_concurrent=8
+storage.tiering_transfer_max_concurrent_per_pool=4
+storage.tier_max_pools=32                       # tổng số pool mọi tier; <= 0 không giới hạn
 storage.pool_throughput_alert_enabled=1
 storage.pool_throughput_window_seconds=3600
 storage.pool_throughput_safety_factor=1.2

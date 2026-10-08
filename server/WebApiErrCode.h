@@ -137,6 +137,7 @@ namespace managerkit {
     XX(CODE_STORAGE_ENCRYPTION_PASSWORD_SAME, "New password must be different from old password", 400, 914031) \
     XX(CODE_STORAGE_ENCRYPTION_REENCRYPT_JOB_RUNNING, "Re-encrypt job is running", 409, 914032) \
     XX(CODE_STORAGE_ENCRYPTION_INVALID_OLD_PASSWORD, "Invalid old password", 400, 914033) \
+    XX(CODE_STORAGE_POOL_LIMIT_EXCEEDED,    "Storage pool limit reached",      409,         914034) \
     /* 915xxx - Audio errors */                                                                        \
     XX(CODE_AUDIO_FILE_NOT_FOUND,           "Audio file not found",             404,         915001) \
     XX(CODE_PLAY_AUDIO_FAILED,              "Failed to play audio file",        500,         915002) \

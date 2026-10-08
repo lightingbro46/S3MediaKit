@@ -251,6 +251,13 @@ void storagePoolDetail(const ArgsMap &allArgs, Json::Value &val) {
 void storagePoolCreate(const ArgsJson &allArgs, Json::Value &val) {
     auto pool = TierStorageBase::poolFromJson(allArgs.getArgs());
 
+    // Runs in the serial `storage.mutation` group, so two creates cannot both pass this check.
+    GET_CONFIG(int, max_pools, Storage::kTierMaxPools);
+    if (max_pools > 0 && TierStorageManager::Instance().listPools().size() >= static_cast<size_t>(max_pools)) {
+        throw ApiResponseException(ApiErrCode::CODE_STORAGE_POOL_LIMIT_EXCEEDED,
+                                   "Storage pool limit reached (storage.tier_max_pools=" + std::to_string(max_pools) + ")");
+    }
+
     std::string pool_err;
     if (!TierStorageBase::validatePoolByType(pool, pool_err)) {
         throw ApiResponseException(ApiErrCode::CODE_INVALID_ARGS, pool_err);

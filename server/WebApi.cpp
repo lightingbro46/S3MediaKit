@@ -90,6 +90,7 @@
 #include "Local/TierStorageManager.h"
 #endif // ENABLE_TIER_STORAGE
 #include "Server/ClusterManager.h"
+#include "Common/BlockingExecutors.h"
 #include "HlsPlayback.h"
 #include "Codec/TranscodeStats.h"
 
@@ -840,6 +841,25 @@ void installWebApi() {
     api_regist("/index/api/getWorkThreadsLoad", [](API_ARGS_MAP_ASYNC) {
         CHECK_SECRET();
         getThreadsLoad(WorkThreadPool::Instance(), API_ARGS_VALUE, invoker);
+    });
+
+    // Queue and busy time of the blocking pools (BlockingExecutors); window fields reset per call
+    // Test url http://127.0.0.1/index/api/getBlockingExecutors
+    api_regist("/index/api/getBlockingExecutors", [](API_ARGS_MAP) {
+        CHECK_SECRET();
+        for (const auto &st : BlockingExecutors::stats()) {
+            Value obj(objectValue);
+            obj["name"] = st.name;
+            obj["threads"] = st.threads;
+            obj["queued"] = static_cast<Json::UInt64>(st.queued);
+            obj["running"] = st.running;
+            obj["completed"] = static_cast<Json::UInt64>(st.completed);
+            obj["window_tasks"] = static_cast<Json::UInt64>(st.window_tasks);
+            obj["window_wait_avg_ms"] = st.window_wait_avg_ms;
+            obj["window_wait_max_ms"] = st.window_wait_max_ms;
+            obj["window_busy_pct"] = st.window_busy_pct;
+            val["data"].append(obj);
+        }
     });
 
     // Get server configuration

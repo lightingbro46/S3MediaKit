@@ -2,6 +2,7 @@
 #define COMMON_BLOCKINGEXECUTORS_H
 
 #include <string>
+#include <vector>
 #include "Thread/TaskExecutor.h"
 
 namespace managerkit {
@@ -17,11 +18,13 @@ class BlockingExecutors {
 public:
     // Blocking part of HTTP API handlers (server/ApiWorkDispatcher). Threads are named "api worker N".
     // Size: `blocking.apiThreads`, falling back to the legacy `api.workerThreads`;
-    // <= 0 means max(2, hardware_concurrency / 2).
+    // <= 0 means 16.
     static toolkit::TaskExecutor::Ptr api();
 
     // Blocking device calls (ONVIF SOAP, vendor SDK). Threads are named "device worker N".
-    // Size: `blocking.deviceThreads` (<= 0 means 4).
+    // Size: `blocking.deviceThreads` (<= 0 means 32). An offline camera holds a thread ~10 s (SOAP
+    // timeout) on every 60 s reconnect, so k offline cameras need about k/6 threads on their own;
+    // 32 also leaves room for the 16 in-flight `device.control` commands.
     static toolkit::TaskExecutor::Ptr device();
 
     // Device discovery probes (subnet scan: one ONVIF connect per IP, ~20s for an IP that does not
@@ -40,21 +43,21 @@ public:
     // Waiting for an ffmpeg/ffprobe child process (snapshots, thumbnails). One wait lasts as long as
     // the media takes, so it is kept apart from `api`: a slow thumbnail must not use up the threads
     // that serve API requests. Threads are named "ffmpeg worker N".
-    // Size: `blocking.ffmpegThreads` (<= 0 means 4).
+    // Size: `blocking.ffmpegThreads` (<= 0 means 8, the `media.thumbnail.maxInflight` default).
     static toolkit::TaskExecutor::Ptr ffmpeg();
 
     // Record encryption work: encrypting each finished segment and the re-encryption jobs that
     // rewrite a whole pool after a password or mode change. Both are long and disk bound, so they
     // are kept apart from `api` (must not starve REST) and from `storage` (whose single thread runs
     // the retention/timefile cycles). Threads are named "encryption worker N".
-    // Size: `blocking.encryptionThreads` (<= 0 means 2).
+    // Size: `blocking.encryptionThreads` (<= 0 means 4).
     static toolkit::TaskExecutor::Ptr encryption();
 
     // Restoring segments from object storage (S3/MinIO download into the restore cache). One
     // download can take tens of seconds, so it must not sit on a WorkThreadPool poller, and a
     // viewer waiting for a restore must not queue behind the `storage` maintenance cycle or an
     // `encryption` job. `storage.auto_restore_max_concurrent` still bounds how many run at once.
-    // Threads are named "restore N". Size: `blocking.restoreThreads` (<= 0 means 5).
+    // Threads are named "restore N". Size: `blocking.restoreThreads` (<= 0 means 8).
     static toolkit::TaskExecutor::Ptr restore();
 
     // Tier storage cycles: the tiering/maintenance cycle (range scans, object reconcile LIST/DELETE,
@@ -67,7 +70,7 @@ public:
     // Tier transfer jobs: copying a segment to NAS or uploading it to S3/MinIO. Kept apart from
     // `tier` so a burst of uploads never delays the health check. `storage.tiering_transfer_max_concurrent`
     // and its per-pool limit still bound how many run at once. Threads are named "tier xfer N".
-    // Size: `blocking.tierTransferThreads` (<= 0 means 4).
+    // Size: `blocking.tierTransferThreads` (<= 0 means 8).
     static toolkit::TaskExecutor::Ptr tierTransfer();
 
     // SD-card gap fill: searching the camera's recordings over ONVIF (findVideoSegments,
@@ -76,6 +79,21 @@ public:
     // which would take every device thread and stall PTZ. Threads are named "gapfill N".
     // Size: `blocking.gapFillThreads` (<= 0 means 2).
     static toolkit::TaskExecutor::Ptr gapFill();
+
+    // Counters of every pool created so far. The window_* fields cover the time since the
+    // previous call (which resets them); one caller at a time (the stats API) is expected.
+    struct PoolStats {
+        std::string name;
+        int threads = 0;
+        size_t queued = 0;          // tasks waiting for a thread now
+        int running = 0;            // tasks running now
+        uint64_t completed = 0;     // since start
+        uint64_t window_tasks = 0;
+        double window_wait_avg_ms = 0;
+        double window_wait_max_ms = 0;
+        double window_busy_pct = 0; // running time / (threads x window)
+    };
+    static std::vector<PoolStats> stats();
 
     // Pool sizes as resolved from config (exposed for logging and tests).
     static int apiThreadCount();

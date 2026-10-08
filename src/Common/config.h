@@ -940,6 +940,9 @@ extern const std::string kTieringSplitGranularitySeconds;
 extern const std::string kTieringTransferMaxConcurrent;
 // Maximum concurrent tier-transfer jobs touching the same storage pool.
 extern const std::string kTieringTransferMaxConcurrentPerPool;
+// Maximum number of storage pools (all tiers) that can exist; pool/create is refused beyond it.
+// Every pool adds a health check, transfer slots and a restore source. <= 0 means no limit.
+extern const std::string kTierMaxPools;
 // Retention for terminal tiering jobs and EXPIRED restore jobs. Zero disables pruning.
 extern const std::string kTieringJobRetentionDays;
 // Retention for DELETED/EXPIRED compact ranges. Zero disables pruning.

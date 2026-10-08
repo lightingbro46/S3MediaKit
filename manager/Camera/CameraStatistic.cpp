@@ -6,6 +6,7 @@
 #include "Common/config.h"
 #include "Common/StrUtil.h"
 #include "Local/TierStorageManager.h"
+#include "Local/MediaGapFillManager.h"
 #include "Extension/Resource.h"
 #include "Common/BlockingExecutors.h"
 
@@ -1778,6 +1779,12 @@ void CameraStatisticImp::saveDeviceStatusHistory(const std::string &device_id, c
         const bool saved = connect
             ? ResourceStatusManager::Instance().onReconnected(device_id, event_time)
             : ResourceStatusManager::Instance().onDisconnected(device_id, reason, event_time);
+        if (saved && connect) {
+            // Gap fill only takes closed gaps. The trigger in GenericRtspCameraImp runs on the gap-fill
+            // pool and races this write on the API pool: after an outage, with that pool busy, it read
+            // the gap still open and skipped it for good. Ask again once the gap is closed.
+            MediaGapFillManager::Instance().onDeviceStateChanged(device_id, true);
+        }
         if (saved) {
             DebugL << "Saved local resource status for camera " << device_url << ": " << (connect ? "ONLINE" : "OFFLINE") << ", reason: " << reason;
         } else {
