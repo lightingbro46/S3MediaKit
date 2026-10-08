@@ -10,7 +10,7 @@
 #     profile : smoke (30 cam) | mid (120 cam) | full (300 cam)   [mặc định: mid]
 #     scenario: all | ramp | steady | onvif | flap | schedule | retention
 #               | failover | storage | recover | soak | videorule
-#               | ccu | ccu_storm | ccu_churn | ccu_soak | ccu_admission  [mặc định: all]
+#               | ccu | ccu_storm | ccu_churn | ccu_soak | ccu_admission | ccu_replay  [mặc định: all]
 #   run_stress.sh [work_dir] stop
 #
 # Env:
@@ -20,7 +20,15 @@
 #   CYCLES           số chu kỳ failover<->rebalance của kịch bản soak (mặc định 4)
 #
 # Env riêng cho kịch bản ccu* (docs/ccu-capacity-test-design.md):
-#   CCU_MIX          vms | fmp4-sub | fmp4-main | rtsp | hls | replay   [vms]
+#   CCU_MIX          vms | live | fmp4-sub | fmp4-main | rtsp | hls | replay   [vms]
+#                    live = fMP4 sub 50 / main 20, HLS sub 20 / main 10 (docs/live500-perf-test.md)
+#   CCU_PERF_SEC     ccu: perf record bấy nhiêu giây ở bậc CCU_ACCEPT (0 = tắt)    [0]
+#   ccu_replay: CCU_MIX=live_replay (đúng 20% replay), mở CCU_LEVEL viewer sau CCU_REPLAY_WAIT_SEC
+#                    giây ghi hình [900]; replay mở ở mốc lùi ngẫu nhiên CCU_REPLAY_BACK "min,max" giây
+#                    [300,900], xem CCU_REPLAY_WATCH giây [300] rồi kết thúc; chấm từng phiên
+#   STRESS_COHORT    dồn mọi camera vào một cohort, vd always = ghi 24/7 cả hai luồng
+#   STRESS_INI       ghi đè config.ini sau cùng: "hls.segDur=4;http.sendBufSize=262144"
+#   MS_EXTRA_ARGS    tham số thêm cho MediaServer, vd "-t 16" (số poller)
 #   CCU_DIST         hot | uniform                                       [hot]
 #   CCU_STEPS        danh sách bậc                     [0,100,200,300,400,500,600,800,...]
 #   CCU_HOLD_SEC     giữ mỗi bậc (bậc nghiệm thu giữ CCU_ACCEPT_HOLD_SEC)  [150]
@@ -194,6 +202,7 @@ start_node() {
     # Đo CCU phải chạy như production: số poller mặc định (= số lõi), không ghim CPU.
     local threads="-t 4 --affinity 0"
     [ "${CCU_PRODUCTION_ARGS:-0}" = 1 ] && threads=""
+    threads="$threads ${MS_EXTRA_ARGS:-}"
     LD_LIBRARY_PATH="$BIN_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" nohup "$BIN_DIR/MediaServer" -c "$d/config.ini" \
         -s "$PEM" -l 1 $threads --log-dir "$d/log/" \
         > "$d/stdout.log" 2>&1 &
@@ -284,14 +293,19 @@ run_ccu() {
     mark "ccu_$kind"
     # Viewer replay lùi 180-600 s; phải có đủ 180 s bản ghi, nếu không mốc bị kẹp sát cạnh bản
     # ghi mới nhất và replay phải chờ file đang ghi đóng lại (đo nhầm thành khựng).
-    case "${CCU_MIX:-vms}" in vms|replay)
-        local wait_rec=$(( REPLAY_EARLIEST + 180 - $(date +%s) ))
+    local need_rec=180 replay_args=()
+    if [ "$kind" = replay ]; then
+        need_rec="${CCU_REPLAY_WAIT_SEC:-900}"
+        replay_args=(--replay-back "${CCU_REPLAY_BACK:-300,900}" --replay-watch "${CCU_REPLAY_WATCH:-300}" --session-log)
+    fi
+    case "${CCU_MIX:-vms}" in vms|replay|live_replay)
+        local wait_rec=$(( REPLAY_EARLIEST + need_rec - $(date +%s) ))
         if [ "$wait_rec" -gt 0 ]; then
-            echo "chờ ${wait_rec}s cho đủ 180 s bản ghi (viewer replay)..."
+            echo "chờ ${wait_rec}s cho đủ ${need_rec} s bản ghi (viewer replay)..."
             sleep "$wait_rec"
         fi ;;
     esac
-    start_viewers "$CCU_PORT" viewer_ctl || return 1
+    start_viewers "$CCU_PORT" viewer_ctl ${replay_args[@]+"${replay_args[@]}"} || return 1
     local extra=""
     if [ "$kind" = admission ]; then
         # giới hạn theo camera: mọi viewer dồn vào cam-0000 (cohort always)
@@ -310,7 +324,8 @@ run_ccu() {
         --steps "${CCU_STEPS:-0,100,200,300,400,500,600,800,1000,1250,1500,2000}" \
         --hold "${CCU_HOLD_SEC:-150}" --accept "$accept" --accept-hold "${CCU_ACCEPT_HOLD_SEC:-300}" \
         --join-rate "${CCU_JOIN_RATE:-20}" --level "$level" --duration "$duration" \
-        ${CCU_ARGS:-}
+        --perf-sec "${CCU_PERF_SEC:-0}" --replay-watch "${CCU_REPLAY_WATCH:-300}" \
+        --replay-back "${CCU_REPLAY_BACK:-300,900}" ${CCU_ARGS:-}
     rc=$?
     curl -s -m 5 -X PUT -d '{"stop": true}' "http://127.0.0.1:$CCU_PORT/target" > /dev/null
     curl -s -m 5 -X PUT -d '{"stop": true}' "http://127.0.0.1:$CCU_SINGLE_PORT/target" > /dev/null 2>&1
@@ -489,7 +504,7 @@ REPLAY_EARLIEST=$(( $(date +%s) - PHASE_SEC + 30 ))
 
 case "$SCENARIO" in
     ramp) ;;
-    ccu|ccu_storm|ccu_churn|ccu_soak|ccu_admission)
+    ccu|ccu_storm|ccu_churn|ccu_soak|ccu_admission|ccu_replay)
         run_ccu "$SCENARIO"
         ccu_rc=$?
         mark done

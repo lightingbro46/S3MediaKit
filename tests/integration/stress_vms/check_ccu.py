@@ -18,6 +18,8 @@ import argparse
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -55,6 +57,10 @@ THRESHOLDS = {
     # Kernel không có PSI (CentOS 7 / 3.10): dùng tỉ lệ iowait của /proc/stat thay thế. Thô hơn
     # PSI (CPU rảnh mà có tác vụ chờ IO), nhưng đĩa bão hoà trên db3 cho 40%+ ngay bậc 0.
     "io_wait_ratio": 0.10,
+    # kịch bản replay: một phiên xem lại đạt khi vào được trong ttff_max_replay_ms, xem đủ thời lượng,
+    # nhận đủ media (media_sec ≥ tỉ lệ × thời lượng), không khựng > 2 s và không phải kết nối lại
+    "replay_media_ratio": 0.95,
+    "replay_session_ok_ratio": 0.99,
     # tự kiểm bộ sinh tải — vượt thì bậc không hợp lệ chứ không phải trượt
     "client_cpu_pct": 85.0,
     "client_loop_lag_ms": 200.0,
@@ -106,7 +112,8 @@ class Viewers(object):
         return http_json(self.url + "/stats", timeout=60)
 
     def playing(self):
-        return sum(self.stats().get("playing", {}).values())
+        st = self.stats()
+        return sum(st.get("playing", {}).values()) + sum((st.get("done") or {}).values())
 
     def stop(self):
         try:
@@ -173,6 +180,17 @@ class Server(object):
         except (OSError, TypeError):
             pass
         return 0
+
+    def proc_io(self):
+        """Byte tiến trình thật sự đọc/ghi xuống tầng block (không tính page cache đọc lại)."""
+        out = {}
+        try:
+            for line in open("/proc/%d/io" % self.pid()):
+                k, _, v = line.partition(":")
+                out[k] = int(v)
+        except (OSError, TypeError, ValueError):
+            pass
+        return out.get("read_bytes", 0), out.get("write_bytes", 0)
 
     def fd_count(self):
         try:
@@ -299,6 +317,59 @@ class Sampler(object):
             th.join(timeout=10)
 
 
+class Perf(object):
+    """`perf record` trên MediaServer trong cửa sổ đo của một bậc -> hàm nóng theo thread.
+
+    Lấy mẫu 99 Hz nên chi phí thêm không đáng kể. Không có perf / không đủ quyền thì bỏ qua và
+    ghi lý do vào báo cáo; bản build bị strip chỉ còn tên thư viện (nên đo bằng RelWithDebInfo).
+    """
+
+    def __init__(self, work, label, pid, sec):
+        self.data = os.path.join(work, "perf_%s.data" % label)
+        self.txt = os.path.join(work, "perf_%s.txt" % label)
+        self.proc, self.error = None, None
+        perf = shutil.which("perf")
+        if not perf:
+            self.error = "không có lệnh perf"
+            return
+        try:
+            self.proc = subprocess.Popen(
+                [perf, "record", "-F", "99", "-g", "-p", str(pid), "-o", self.data,
+                 "--", "sleep", str(int(sec))],
+                stdout=subprocess.DEVNULL, stderr=open(self.txt + ".log", "w"))
+        except OSError as exc:
+            self.error = str(exc)
+
+    def finish(self, top=25):
+        if not self.proc:
+            return {"error": self.error}
+        try:
+            self.proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+        if self.proc.returncode or not os.path.exists(self.data):
+            msg = open(self.txt + ".log").read().strip().splitlines()
+            return {"error": "perf record lỗi: %s" % (msg[-1] if msg else self.proc.returncode)}
+        with open(self.txt, "w") as fh:
+            subprocess.call(["perf", "report", "-i", self.data, "--stdio", "--no-children",
+                             "-g", "none", "--sort", "comm,dso,symbol", "--percent-limit", "0.3"],
+                            stdout=fh, stderr=subprocess.DEVNULL)
+        rows = []
+        for line in open(self.txt):
+            line = line.strip()
+            if not line or line.startswith("#") or "%" not in line.split()[0]:
+                continue
+            rows.append(" ".join(line.split()))
+            if len(rows) >= top:
+                break
+        return {"top": rows, "file": os.path.basename(self.txt)}
+
+
+def thread_group(comm):
+    """Gộp "event poller 3"/"work poller 12"/"api-7" thành nhóm để thấy loại việc nào ăn CPU."""
+    return re.sub(r"[\s_-]*\d+$", "", comm).strip() or comm
+
+
 def scan_logs(work, node):
     """Như check_stress.scan_logs, thêm số lần luồng kéo camera bị timeout (mất RTP)."""
     out = cs.scan_logs(work, node)
@@ -388,12 +459,14 @@ class Runner(object):
         self.always = set(self.s.inv.get("by_cohort", {}).get("always", []))
         self.baseline = None
         self.rows = []
+        self.extra_md = []   # phần báo cáo riêng của kịch bản (vd bảng từng phiên replay)
 
     # ---- đo
     def snapshot(self):
         rx, tx = self.s.nic_bytes()
         return {"t": time.time(), "cpu": self.s.cpu_ticks(), "tasks": self.s.task_ticks(),
                 "rx": rx, "tx": tx, "rss_kb": self.s.rss_kb(), "fds": self.s.fd_count(),
+                "proc_io": self.s.proc_io(),
                 "io_full_us": psi_total_us("io"), "mem_full_us": psi_total_us("memory"),
                 "iowait": cpu_iowait_ticks()}
 
@@ -441,6 +514,9 @@ class Runner(object):
         s0 = self.snapshot()
         smp.start()
         window = max(30, hold - warm)
+        # hàm nóng chỉ lấy ở bậc mục tiêu: đó là bậc cần biết tài nguyên đang tiêu vào đâu
+        perf = (Perf(a.work, label, self.s.pid(), min(a.perf_sec, window))
+                if a.perf_sec > 0 and level == a.accept and label == str(a.accept) else None)
         t_end = time.time() + window
         while time.time() < t_end and self.s.alive():
             time.sleep(min(5, max(0.1, t_end - time.time())))
@@ -458,6 +534,8 @@ class Runner(object):
             "kbps": ss[-1].get("kbps")}
         row = self.evaluate(level, label, ramp_sec, ramp if measure_join else None, win, s0, s1,
                             smp, view, logs0, logs1)
+        if perf:
+            row["perf"] = perf.finish()
         self.rows.append(row)
         self.save()
         log("  -> %s%s" % (row["verdict"], (": " + "; ".join(row["failures"][:4])) if row["failures"] else ""))
@@ -505,7 +583,8 @@ class Runner(object):
                          "loop_lag_max_ms": max([w.get("loop_lag_p99_ms") or 0 for w in fresh] or [0])}
 
         # ---- viewer
-        playing = sum((win.get("playing") or {}).values())
+        # phiên replay đã xem đủ --replay-watch tự kết thúc: tính như đang phát, không phải hụt
+        playing = sum((win.get("playing") or {}).values()) + sum((win.get("done") or {}).values())
         row["playing"] = playing
         joins_ok = joins_fail = 0
         ttff = defaultdict(list)
@@ -595,6 +674,17 @@ class Runner(object):
                 hot.append(((ticks - prev[1]) / float(HZ) / span * 100.0, comm))
         hot.sort(reverse=True)
         row["hot_threads"] = [["%s" % c, round(p, 1)] for p, c in hot[:4]]
+        groups = defaultdict(lambda: [0.0, 0])
+        for p, c in hot:
+            g = groups[thread_group(c)]
+            g[0] += p
+            g[1] += 1
+        # [nhóm, tổng % một lõi, số thread] — vd poller ăn 300% trên 16 thread vs 1 thread SQLite 95%
+        row["thread_groups"] = [[g, round(v[0], 1), v[1]] for g, v in
+                                sorted(groups.items(), key=lambda kv: -kv[1][0])[:8] if v[0] >= 0.5]
+        io0, io1 = s0.get("proc_io") or (0, 0), s1.get("proc_io") or (0, 0)
+        row["disk_read_mbps"] = round((io1[0] - io0[0]) / 1e6 / span, 1)
+        row["disk_write_mbps"] = round((io1[1] - io0[1]) / 1e6 / span, 1)
         loads = {k: sum(v) / float(len(v)) for k, v in smp.loads.items() if v}
         row["poller_load_max"] = round(max(loads.values()), 1) if loads else None
         if loads and max(loads.values()) > th["poller_load_pct"]:
@@ -690,6 +780,8 @@ class Runner(object):
                "thresholds": self.th, "rows": self.rows}
         if summary:
             out["summary"] = summary
+        if self.extra_md:
+            out["extra_md"] = self.extra_md
         name = "ccu_report" if self.args.scenario == "step" else "ccu_%s_report" % self.args.scenario
         with open(os.path.join(self.args.work, name + ".json"), "w") as fh:
             json.dump(out, fh, indent=1, ensure_ascii=False)
@@ -706,15 +798,15 @@ def render_md(rep):
         for k, v in s.items():
             lines.append("- **%s**: %s" % (k, v))
         lines.append("")
-    lines.append("| bậc | viewer | phát | client Mbps | NIC tx Mbps | CPU% | poller max | IO full % | "
+    lines.append("| bậc | viewer | phát | client Mbps | NIC tx Mbps | CPU% | poller max | ghi đĩa MB/s | IO full % | "
                  "healthcheck p95 | TTFF max (ms) | khựng % | trôi p95 | ghi hình | kết luận |")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in rep["rows"]:
         ttff = ", ".join("%s %s" % kv for kv in sorted((r.get("ttff_max_ms") or r.get("ttff_p95_ms") or {}).items())) or "-"
         rec = r.get("record") or {}
-        lines.append("| %s | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+        lines.append("| %s | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             r["label"], r["level"], r.get("playing"), r.get("client_mbps"), r.get("nic_tx_mbps"),
-            r.get("cpu_pct_total"), r.get("poller_load_max"),
+            r.get("cpu_pct_total"), r.get("poller_load_max"), r.get("disk_write_mbps"),
             r.get("io_full_pct") if r.get("io_full_pct") is not None
             else ("wa %s" % r["io_wait_pct"] if r.get("io_wait_pct") is not None else None),
             r.get("healthcheck_p95_ms"), ttff,
@@ -728,7 +820,31 @@ def render_md(rep):
             lines.append("- bậc %s: %s" % (r["label"], "; ".join(r["invalid"] + r["failures"])))
         if r.get("warnings"):
             lines.append("- bậc %s (cảnh báo, không tính trượt): %s" % (r["label"], "; ".join(r["warnings"])))
+    # Nút thắt: CPU theo nhóm thread ở mọi bậc, hàm nóng ở bậc mục tiêu
+    groups = [r for r in rep["rows"] if r.get("thread_groups")]
+    if groups:
+        lines += ["", "## CPU theo nhóm thread (% một lõi, số thread)", ""]
+        for r in groups:
+            lines.append("- bậc %s: %s" % (r["label"], ", ".join(
+                "%s %.0f%% (%d)" % tuple(g) for g in r["thread_groups"])))
+    for r in rep["rows"]:
+        p = r.get("perf")
+        if not p:
+            continue
+        lines += ["", "## Hàm nóng ở bậc %s (perf, self time)" % r["label"], ""]
+        if p.get("error"):
+            lines.append("- không lấy được: %s" % p["error"])
+            continue
+        lines.append("Chi tiết: `%s` (cột: %% mẫu, thread, thư viện, hàm)" % p["file"])
+        lines += ["", "```"] + p["top"] + ["```"]
+    render_extra(rep, lines)
     return "\n".join(lines) + "\n"
+
+
+def render_extra(rep, lines):
+    if rep.get("extra_md"):
+        lines += [""] + rep["extra_md"]
+    return lines
 
 
 def round_down(x, step=50):
@@ -788,6 +904,14 @@ def scenario_step(rn):
                                              "KHÔNG ĐẠT" if accept_row else "chưa chạy tới"),
         "Dư so với nghiệm thu": ("%.0f%%" % ((last_ok - a.accept) * 100.0 / a.accept)) if last_ok else "-",
     }
+    if accept_row:
+        # mức dư ở bậc mục tiêu — đọc cùng "CPU theo nhóm thread"/"Hàm nóng" để biết tinh chỉnh gì
+        groups = accept_row.get("thread_groups") or []
+        summary["Tài nguyên ở bậc %d" % a.accept] = (
+            "CPU %s%% tổng, poller nóng %s%%, NIC tx %s Mbps, ghi đĩa %s MB/s, RSS %s MB, nhóm nặng nhất: %s" % (
+                accept_row.get("cpu_pct_total"), accept_row.get("poller_load_max"),
+                accept_row.get("nic_tx_mbps"), accept_row.get("disk_write_mbps"), accept_row.get("rss_mb"),
+                ", ".join("%s %.0f%%/%d thread" % tuple(g) for g in groups[:3]) or "-"))
     if stopped:
         summary["Ghi chú"] = stopped
     base_row = next((r for r in rn.rows if r["level"] == 0), None)
@@ -795,6 +919,126 @@ def scenario_step(rn):
         # Không viewer mà đã trượt: nền (300 camera ghi hình) hoặc máy không đạt, mọi bậc sau
         # đều trượt theo — con số CCU vô nghĩa cho tới khi sửa nền.
         summary["NỀN KHÔNG ĐẠT ở bậc 0"] = "; ".join(base_row["invalid"] + base_row["failures"])
+    return summary
+
+
+def judge_session(x, th, watch):
+    """Lý do phiên replay không đạt (rỗng = đạt)."""
+    why = []
+    if x.get("ttff_ms") is None:
+        why.append("không vào được (%s)" % (x.get("last_reason") or x.get("state")))
+        return why
+    if x["ttff_ms"] > th["ttff_max_replay_ms"]:
+        why.append("TTFF %.1fs" % (x["ttff_ms"] / 1000.0))
+    if x["state"] != "done":
+        why.append("chưa xem đủ (%s)" % x["state"])
+    if x["media_sec"] < watch * th["replay_media_ratio"]:
+        why.append("media %.0f/%ds" % (x["media_sec"], watch))
+    if x["long_stalls"]:
+        why.append("%d lần khựng > 2s (dài nhất %.1fs)" % (x["long_stalls"], x["stall_max_sec"]))
+    if x["reconnects"] or x.get("join_fails"):
+        why.append("%d lần kết nối lại, %d lần mở lại lỗi (%s)" % (
+            x["reconnects"], x.get("join_fails", 0), x.get("reasons") or x.get("last_reason")))
+    return why
+
+
+def write_sessions_csv(path, sessions):
+    cols = ["slot", "kind", "cam", "stream", "back", "stamp", "ttff_ms", "watched_sec", "media_sec",
+            "stall_sec", "stall_count", "stall_max_sec", "long_stalls", "reconnects", "join_fails",
+            "kbps", "state", "last_reason", "reasons", "ok", "why"]
+    with open(path, "w") as fh:
+        fh.write(",".join(cols) + "\n")
+        for x in sessions:
+            fh.write(",".join('"%s"' % str(x.get(c, "")).replace('"', "'") if c in ("why", "last_reason", "reasons")
+                              else str(x.get(c, "") if x.get(c) is not None else "") for c in cols) + "\n")
+
+
+def scenario_replay(rn):
+    """Bậc mục tiêu với đúng 20% replay (CCU_MIX=live_replay): mỗi phiên replay mở ở mốc ngẫu nhiên
+    trong --replay-back, xem --replay-watch giây rồi kết thúc; chấm chất lượng TỪNG phiên."""
+    a = rn.args
+    watch = a.replay_watch
+    if watch <= 0:
+        raise SystemExit("kịch bản replay cần --replay-watch > 0")
+    rn.measure(0, 60)
+    rn.take_baseline()
+    # cửa sổ đo phủ trọn phiên replay: mở trong lúc ramp, TTFF ≤ 10 s, xem `watch` giây
+    row = rn.measure(a.level, watch + a.warmup + 30, label=str(a.level))
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        st = rn.v.stats()
+        ses = st.get("sessions") or []
+        if not any(x["kind"] == "replay" and x["state"] in ("playing", "opening") for x in ses):
+            break
+        time.sleep(3)
+    ses = sorted(rn.v.stats().get("sessions") or [], key=lambda x: x["slot"])
+    for x in ses:
+        why = judge_session(x, rn.th, watch) if x["kind"] == "replay" else []
+        if x["kind"] != "replay":
+            if x.get("ttff_ms") is None:
+                why.append("không vào được")
+            if x.get("long_stalls"):
+                why.append("%d lần khựng > 2s" % x["long_stalls"])
+            if x.get("reconnects"):
+                why.append("%d lần kết nối lại" % x["reconnects"])
+        x["ok"] = not why
+        x["why"] = "; ".join(why)
+    write_sessions_csv(os.path.join(a.work, "ccu_replay_sessions.csv"), ses)
+
+    rp = [x for x in ses if x["kind"] == "replay"]
+    ok = [x for x in rp if x["ok"]]
+    md = rn.extra_md
+    md += ["## Chất lượng từng phiên xem lại (%d phiên, xem %d s, mốc lùi %s s)" % (len(rp), watch, a.replay_back), ""]
+    # theo nhóm mốc lùi (chia khoảng --replay-back làm 3): mốc sát bản ghi mới phải chờ file đang ghi
+    # đóng, mốc xa đọc file cũ hơn — so các nhóm để thấy ảnh hưởng của vị trí mốc
+    try:
+        lo_b, hi_b = [int(v) for v in a.replay_back.split(",")]
+    except ValueError:
+        lo_b, hi_b = 0, max([x.get("back") or 0 for x in rp] or [0])
+    step_b = max(1, (hi_b - lo_b + 1) // 3)
+    buckets = [(lo_b, lo_b + step_b - 1), (lo_b + step_b, lo_b + 2 * step_b - 1), (lo_b + 2 * step_b, 10 ** 9)]
+    md += ["| mốc lùi (s) | phiên | đạt | TTFF p95/max (ms) | khựng tổng p95 (s) | khựng dài nhất (s) | kbps p50 |",
+           "|---|---|---|---|---|---|---|"]
+    for lo, hi in buckets:
+        b = [x for x in rp if x.get("back") is not None and lo <= x["back"] <= hi]
+        if not b:
+            continue
+        tt = [x["ttff_ms"] for x in b if x.get("ttff_ms") is not None]
+        md.append("| %s | %d | %d | %s | %s | %s | %s |" % (
+            "%d–%d" % (lo, hi) if hi < 10 ** 9 else ">= %d" % lo, len(b), sum(1 for x in b if x["ok"]),
+            "%d / %d" % (pct(tt, 0.95), max(tt)) if tt else "-",
+            round(pct([x["stall_sec"] for x in b], 0.95), 2),
+            max(x["stall_max_sec"] for x in b),
+            round(pct([x["kbps"] or 0 for x in b], 0.5))))
+    md += ["", "| slot | camera | luồng | lùi (s) | TTFF (ms) | đã xem (s) | media (s) | khựng (lần / tổng s / max s) "
+           "| kết nối lại | kbps | kết quả |", "|---|---|---|---|---|---|---|---|---|---|---|"]
+    for x in rp:
+        md.append("| %d | %s | %s | %s | %s | %s | %s | %d / %s / %s | %d | %s | %s |" % (
+            x["slot"], x["cam"], x["stream"], x.get("back"), x.get("ttff_ms"), x["watched_sec"],
+            x["media_sec"], x["stall_count"], x["stall_sec"], x["stall_max_sec"], x["reconnects"],
+            x.get("kbps"), "đạt" if x["ok"] else "TRƯỢT: " + x["why"]))
+    live = [x for x in ses if x["kind"] != "replay"]
+    if live:
+        md += ["", "## Phiên xem trực tiếp cùng lúc (theo loại)", "",
+               "| loại | phiên | đạt | TTFF p95/max (ms) | phiên khựng > 2s | kết nối lại |", "|---|---|---|---|---|---|"]
+        for k in sorted(set(x["kind"] for x in live)):
+            b = [x for x in live if x["kind"] == k]
+            tt = [x["ttff_ms"] for x in b if x.get("ttff_ms") is not None]
+            md.append("| %s | %d | %d | %s | %d | %d |" % (
+                k, len(b), sum(1 for x in b if x["ok"]), "%d / %d" % (pct(tt, 0.95), max(tt)) if tt else "-",
+                sum(1 for x in b if x.get("long_stalls")), sum(x.get("reconnects") or 0 for x in b)))
+    md += ["", "Từng phiên (cả live): `ccu_replay_sessions.csv`."]
+
+    ratio = len(ok) / float(len(rp)) if rp else 0.0
+    passed = row["ok"] and rp and ratio >= rn.th["replay_session_ok_ratio"]
+    summary = {
+        "Replay %d%% ở bậc %d" % (round(len(rp) * 100.0 / max(1, a.level)), a.level):
+            "ĐẠT" if passed else "KHÔNG ĐẠT",
+        "Phiên xem lại đạt": "%d/%d (%.1f%%, cần ≥ %.0f%%)" % (
+            len(ok), len(rp), ratio * 100, rn.th["replay_session_ok_ratio"] * 100),
+        "Bậc %d (live + nền ghi hình)" % a.level: row["verdict"] + (
+            (": " + "; ".join(row["failures"][:3])) if row["failures"] else ""),
+    }
     return summary
 
 
@@ -1013,7 +1257,7 @@ def main():
     ap.add_argument("--single-controller", default="", help="controller có --single-camera (admission)")
     ap.add_argument("--node", default="node-a")
     ap.add_argument("--nic", default=os.environ.get("CCU_NIC", "lo"))
-    ap.add_argument("--scenario", default="step", choices=("step", "storm", "churn", "soak", "admission"))
+    ap.add_argument("--scenario", default="step", choices=("step", "storm", "churn", "soak", "admission", "replay"))
     ap.add_argument("--mix", default="vms")
     ap.add_argument("--dist", default="hot")
     ap.add_argument("--steps", default="0,100,200,300,400,500,600,800,1000,1250,1500,2000")
@@ -1032,6 +1276,10 @@ def main():
     ap.add_argument("--max-stream", type=int, default=200, help="admission")
     ap.add_argument("--max-per-camera", type=int, default=8, help="admission")
     ap.add_argument("--reload-wait", type=int, default=25)
+    ap.add_argument("--replay-watch", type=int, default=0, help="replay: thời lượng xem mỗi phiên (giây)")
+    ap.add_argument("--replay-back", default="", help="replay: chỉ để ghi vào báo cáo")
+    ap.add_argument("--perf-sec", type=int, default=0,
+                    help="step: perf record bấy nhiêu giây ở bậc --accept (0 = tắt)")
     ap.add_argument("--th", action="append", help="ghi đè ngưỡng: ten=giatri")
     args = ap.parse_args()
 
@@ -1045,6 +1293,8 @@ def main():
             summary = scenario_churn(rn)
         elif args.scenario == "soak":
             summary = scenario_soak(rn)
+        elif args.scenario == "replay":
+            summary = scenario_replay(rn)
         else:
             summary = scenario_admission(rn)
     finally:
@@ -1054,7 +1304,8 @@ def main():
             pass
     rep = rn.save(summary)
     print(render_md(rep))
-    verdicts = " ".join(str(v) for k, v in summary.items() if k.startswith("Nghiệm thu") or k[:1].isdigit() or k.startswith("A"))
+    verdicts = " ".join(str(v) for k, v in summary.items()
+                        if k.startswith("Nghiệm thu") or k[:1].isdigit() or k.startswith("A") or k.startswith("Replay"))
     sys.exit(1 if "KHÔNG ĐẠT" in verdicts or "VƯỢT" in verdicts else 0)
 
 

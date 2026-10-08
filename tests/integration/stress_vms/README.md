@@ -302,9 +302,17 @@ bash run_stress.sh /data/s3mk_ccu full ccu_admission   # A2 + giới hạn produ
 | `viewer_load.py` | Controller (HTTP :18600) + worker asyncio. Viewer fMP4 (`/media/live/<cam>/<stream>.live.mp4`), RTSP/TCP, HLS (`hls.m3u8?session_id=`), replay (`/media/record/<cam>/<stream>/vod/<epoch>.live.mp4`). Không giải mã; đọc moof/tfdt, RTP timestamp, `#EXTINF` rồi chạy mô hình player để ra TTFF, khựng, trôi, tốc độ media. Worker báo CPU và trễ vòng lặp của chính nó. |
 | `check_ccu.py` | Điều khiển bậc, lấy mẫu server trong cửa sổ đo (healthcheck 4 lần/s, `getThreadsLoad`, CPU theo luồng từ `/proc`, NIC, RSS, fd, `getMediaList`, khoảng hở file ghi), chấm tiêu chí, chia đôi ngưỡng. Ghi `<work>/ccu_report.{json,md}` (kịch bản khác: `ccu_<tên>_report.*`). |
 
-Env chính: `CCU_MIX` (`vms`, `fmp4-sub`, `fmp4-main`, `rtsp`, `hls`, `replay`), `CCU_DIST`
+**Tinh chỉnh 300 camera ghi 24/7 + 500 người xem HLS/HTTP-MP4**: `--suite live500` của
+`ccu_test.sh` (kịch bản `live_step`, `live_uniform`, `live_storm`, `live_replay` — 20% xem lại, chấm
+từng phiên, harness `ccu_replay` —, `live_soak`), thêm
+`--set muc.khoa=gia_tri`, `--threads N`, `--tag TEN` để chạy lại cùng tải với cấu hình khác. Bậc
+mục tiêu có CPU theo nhóm thread, MB/s ghi đĩa và hàm nóng từ `perf`. Xem
+[docs/live500-perf-test.md](../../../docs/live500-perf-test.md).
+
+Env chính: `CCU_MIX` (`vms`, `live`, `live_replay`, `fmp4-sub`, `fmp4-main`, `rtsp`, `hls`, `replay`), `CCU_DIST`
 (`hot`, `uniform`), `CCU_STEPS`, `CCU_HOLD_SEC`, `CCU_ACCEPT`, `CCU_LEVEL`, `CCU_DURATION`,
-`CCU_JOIN_RATE`, `CCU_WORKERS`, `CCU_NIC`, `CCU_REST_LOAD`, `VIEWER_HOSTS`,
+`CCU_JOIN_RATE`, `CCU_WORKERS`, `CCU_NIC`, `CCU_REST_LOAD`, `CCU_PERF_SEC`, `CCU_REPLAY_WAIT_SEC`, `CCU_REPLAY_BACK`, `CCU_REPLAY_WATCH`, `STRESS_COHORT`,
+`STRESS_INI`, `MS_EXTRA_ARGS`, `VIEWER_HOSTS`,
 `VIEWER_WORKERS_PER_HOST`, `CCU_CTL_HOST`, `CCU_SERVER_HOST`, `CCU_ARGS` (vd
 `"--th stall_ratio=0.01 --bisect 0"`). Danh sách đầy đủ ở đầu `run_stress.sh`.
 

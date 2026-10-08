@@ -40,7 +40,14 @@ COHORTS = [
 
 
 def cohort_of(index, total):
-    """Chia camera vào cohort theo tỉ trọng, ổn định với mọi `total`."""
+    """Chia camera vào cohort theo tỉ trọng, ổn định với mọi `total`.
+
+    STRESS_COHORT=<tên> dồn mọi camera vào một cohort (vd "always": 300 camera ghi 24/7 cả hai
+    luồng cho test hiệu năng live500). Đặt qua env để mọi lệnh phase dựng lại cùng danh sách.
+    """
+    forced = os.environ.get("STRESS_COHORT")
+    if forced:
+        return forced
     pos = (index * 100) // total
     acc = 0
     for name, weight, _ in COHORTS:
@@ -263,7 +270,30 @@ def hls_dir(d):
     return "/dev/shm/stress_vms_%s/live" % tag
 
 
+def tuning_overrides():
+    """STRESS_INI="hls.segDur=4;http.sendBufSize=262144" -> ghi đè sau cùng, để tinh chỉnh
+    một khoá rồi chạy lại cùng tải (docs/live500-perf-test.md)."""
+    out = {}
+    for item in os.environ.get("STRESS_INI", "").replace("\n", ";").split(";"):
+        item = item.strip()
+        if not item:
+            continue
+        key, sep, val = item.partition("=")
+        sec, dot, name = key.strip().partition(".")
+        if not sep or not dot or not name:
+            sys.exit("STRESS_INI sai dạng (cần muc.khoa=gia_tri): %s" % item)
+        out.setdefault(sec, {})[name] = val.strip()
+    return out
+
+
 def node_overrides(node_id, d, ports, args):
+    ov = base_overrides(node_id, d, ports, args)
+    for sec, kv in tuning_overrides().items():
+        ov.setdefault(sec, {}).update(kv)
+    return ov
+
+
+def base_overrides(node_id, d, ports, args):
     return {
         "general": {"mediaServerId": node_id},
         "http": {"port": ports["http"], "sslport": 0, "rootPath": d + "/www",
@@ -518,6 +548,9 @@ def main():
     ap.add_argument("name", nargs="?", default="")
     add_args(ap)
     args = ap.parse_args()
+    forced = os.environ.get("STRESS_COHORT")
+    if forced and forced not in SCHEDULES:
+        sys.exit("STRESS_COHORT không hợp lệ: %s (%s)" % (forced, ", ".join(SCHEDULES)))
 
     if args.command == "layout":
         layout(args.repo, args.work, args)

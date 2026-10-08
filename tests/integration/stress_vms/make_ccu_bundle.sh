@@ -21,7 +21,7 @@ cp "$HERE"/*.py "$HERE"/run_stress.sh "$HERE"/README.md "$TMP/p/tests/integratio
 cp -r "$REPO/migration/updates" "$REPO/migration/mserver_updates" "$TMP/p/migration/"
 cp "$REPO/conf/config.ini" "$TMP/p/conf/"
 cp "$REPO/default.pem" "$TMP/p/"
-cp "$REPO/docs/ccu-capacity-test-design.md" "$TMP/p/docs/"
+cp "$REPO/docs/ccu-capacity-test-design.md" "$REPO/docs/live500-perf-test.md" "$TMP/p/docs/"
 
 # Clip giống hệt run_stress.sh (MEDIA_PROFILE=realistic): nhiễu theo thời gian để x264 không
 # nén testsrc2 xuống vài trăm kbps; 10 s = 5 GOP để vòng lặp khớp keyframe.

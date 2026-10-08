@@ -59,8 +59,16 @@ MIXES = {
     "rtsp": {"rtsp": 100},
     "hls": {"hls": 100},
     "replay": {"replay": 100},
+    # Mục tiêu tinh chỉnh 300 camera ghi 24/7 + 500 người xem live chỉ qua HLS và HTTP-MP4
+    # (docs/live500-perf-test.md): lưới xem luồng phụ, toàn màn hình luồng chính.
+    "live": {"fmp4-sub": 50, "fmp4-main": 20, "hls-sub": 20, "hls-main": 10},
+    # live + đúng 20% xem lại (EXACT_REPLAY): 500 người xem = 400 live theo tỉ lệ "live" + 100 replay
+    "live_replay": {"fmp4-sub": 40, "fmp4-main": 16, "hls-sub": 16, "hls-main": 8, "replay": 20},
 }
-KINDS = ("fmp4-sub", "fmp4-main", "hls", "rtsp", "replay")
+# Hỗn hợp có tỉ lệ replay CỐ ĐỊNH thay vì rút ngẫu nhiên: cứ 1/share viewer có một replay, nên
+# mọi bậc N có đúng floor(N × share) phiên replay.
+EXACT_REPLAY = {"live_replay": 0.20}
+KINDS = ("fmp4-sub", "fmp4-main", "hls", "hls-sub", "hls-main", "rtsp", "replay")
 # Người xem replay chiếm tối đa 20% số người xem (điều kiện nghiệm thu). Áp cho mọi tiền tố của
 # plan vì bậc N dùng N viewer đầu; hỗn hợp chỉ có replay (khoanh vùng) thì không áp.
 REPLAY_MAX_SHARE = 0.20
@@ -76,8 +84,15 @@ def now():
 
 
 # ================================================================== plan
-def build_plan(inv, mix, dist, max_viewers, seed, replay_earliest, single_camera=""):
-    """Danh sách viewer, phần tử i = viewer thứ i. Xác định theo seed."""
+def build_plan(inv, mix, dist, max_viewers, seed, replay_earliest, single_camera="",
+               replay_back=(180, 600), replay_watch=0, sessions=False):
+    """Danh sách viewer, phần tử i = viewer thứ i. Xác định theo seed.
+
+    replay_back  (min, max) giây lùi so với lúc mở của mốc replay, rút đều.
+    replay_watch >0: phiên replay xem đủ chừng này giây (tính từ frame đầu) rồi tự kết thúc, slot
+                 không mở lại — đo chất lượng trọn một phiên xem lại.
+    sessions     worker gửi số liệu từng phiên (bảng chất lượng theo luồng).
+    """
     rng = random.Random(seed)
     by_cohort = inv.get("by_cohort", {})
     live = sorted(c for co in LIVE_COHORTS for c in by_cohort.get(co, []))
@@ -110,6 +125,7 @@ def build_plan(inv, mix, dist, max_viewers, seed, replay_earliest, single_camera
     capped_w = float(sum(weights[k] for k in capped))
     plan = []
     n_replay = 0
+    exact = EXACT_REPLAY.get(mix)
     for i in range(max_viewers):
         r, acc, kind = rng.random() * total_w, 0.0, kinds[-1]
         for k in kinds:
@@ -117,7 +133,17 @@ def build_plan(inv, mix, dist, max_viewers, seed, replay_earliest, single_camera
             if r < acc:
                 kind = k
                 break
-        if kind == "replay" and capped_w and n_replay + 1 > REPLAY_MAX_SHARE * (i + 1):
+        if exact is not None:
+            # replay đúng ở các chỉ số làm floor((i+1) × share) tăng; còn lại rút trong phần live
+            kind = "replay" if int((i + 1) * exact) > int(i * exact) else None
+        if exact is not None and kind is None:
+            r, acc, kind = rng.random() * capped_w, 0.0, capped[-1]
+            for k in capped:
+                acc += weights[k]
+                if r < acc:
+                    kind = k
+                    break
+        elif kind == "replay" and capped_w and exact is None and n_replay + 1 > REPLAY_MAX_SHARE * (i + 1):
             r, acc, kind = rng.random() * capped_w, 0.0, capped[-1]
             for k in capped:
                 acc += weights[k]
@@ -130,19 +156,22 @@ def build_plan(inv, mix, dist, max_viewers, seed, replay_earliest, single_camera
             stream = "main"
             # Lùi ít nhất 3 × fileSecond (60 s): replay đuổi theo bản ghi mới, mốc sát cạnh
             # bản ghi thì viewer phải chờ file đang ghi đóng lại -> đo nhầm thành khựng/trôi.
-            back = rng.randint(180, 600)
+            back = rng.randint(replay_back[0], replay_back[1])
             spec = {"kind": kind, "cam": cam, "stream": "%s-main" % cam, "back": back}
+            if replay_watch > 0:
+                spec["watch"] = replay_watch
         else:
             cam = pick_live()
-            if kind == "fmp4-sub":
+            if kind in ("fmp4-sub", "hls-sub"):
                 stream = "sub"
-            elif kind == "fmp4-main":
+            elif kind in ("fmp4-main", "hls-main"):
                 stream = "main"
             else:
                 stream = rng.choice(("main", "sub"))
             spec = {"kind": kind, "cam": cam, "stream": "%s-%s" % (cam, stream)}
         plan.append(spec)
-    return {"plan": plan, "replay_earliest": replay_earliest, "mix": mix, "dist": dist}
+    return {"plan": plan, "replay_earliest": replay_earliest, "mix": mix, "dist": dist,
+            "sessions": bool(sessions)}
 
 
 # ================================================================== player
@@ -163,6 +192,13 @@ class Player(object):
         self.long_stalls = 0
         self.stalled = False
         self.stall_began = 0.0   # thời điểm (đồng hồ thực) bộ đệm cạn
+        self.stall_count = 0     # số lần khựng đã kết thúc
+        self.stall_max = 0.0     # lần khựng dài nhất (giây)
+        self.media0 = None       # mốc media của frame đầu -> tổng media đã nhận
+
+    def stall_now(self, t):
+        """Lần khựng đang diễn ra (giây), 0 nếu đang phát."""
+        return t - self.stall_began if self.stalled else 0.0
 
     def advance(self, t):
         if not self.started:
@@ -187,12 +223,16 @@ class Player(object):
             self.last = t
             self.playhead = start - self.prebuffer
             self.buffered = end
+            self.media0 = start
             return
         self.advance(t)
         if end > self.buffered:
             if self.stalled:
-                if t - self.stall_began > LONG_STALL:
+                dur = t - self.stall_began
+                if dur > LONG_STALL:
                     self.long_stalls += 1
+                self.stall_count += 1
+                self.stall_max = max(self.stall_max, dur)
                 self.stalled = False
             self.buffered = end
 
@@ -458,7 +498,7 @@ class Viewer(object):
         self.slot = slot
         self.spec = spec
         self.kind = spec["kind"]
-        self.player = Player(1.0 if self.kind == "hls" else 0.5)
+        self.player = Player(1.0 if self.kind.startswith("hls") else 0.5)
         self.task = None
         self.closing = False
         self.playing = False
@@ -467,12 +507,65 @@ class Viewer(object):
         self.window = None  # (t, stall_sec, long_stalls, buffered) lúc bắt đầu cửa sổ
         self.last_data = now()
         self.seg_dur = 0.0  # HLS: media đến theo từng segment
+        # Số liệu cả phiên (bảng chất lượng theo luồng), cộng dồn qua các lần kết nối lại
+        self.watch = float(spec.get("watch") or 0)  # >0: xem đủ chừng này giây rồi tự kết thúc
+        self.finished = False
+        self.t_open = now()
+        self.first_ever = None      # frame đầu tiên của phiên
+        self.ttff_ms = None
+        self.stamp = None           # replay: mốc epoch đã yêu cầu
+        self.reconnects = 0
+        self.join_fails = 0
+        self.last_reason = ""
+        self.reasons = []           # lý do đóng/từ chối theo thứ tự, tối đa 8
+        self.t_end = None
+        self.acc = {"stall_sec": 0.0, "stall_count": 0, "stall_max": 0.0, "long_stalls": 0, "media": 0.0}
 
     # ---- đo
     def _first_media(self, t, t_start):
         self.playing = True
         self.t_first = t
+        if self.first_ever is None:
+            self.first_ever = t
+            self.ttff_ms = round((t - t_start) * 1000.0, 1)
         self.w.on_join_ok(self, (t - t_start) * 1000.0)
+
+    def _fold_player(self, t):
+        """Cộng số liệu của player hiện tại vào phiên (trước khi bỏ player do kết nối lại)."""
+        p = self.player
+        p.advance(t)
+        cur = p.stall_now(t)
+        self.acc["stall_sec"] += p.stall_sec
+        self.acc["stall_count"] += p.stall_count + (1 if cur > 0 else 0)
+        self.acc["stall_max"] = max(self.acc["stall_max"], p.stall_max, cur)
+        self.acc["long_stalls"] += p.long_stalls + (1 if cur > LONG_STALL else 0)
+        if p.media0 is not None:
+            self.acc["media"] += p.buffered - p.media0
+
+    def session_row(self, t=None):
+        """Chất lượng trọn phiên của luồng này (từ lúc mở tới lúc kết thúc/hiện tại)."""
+        t = self.t_end or t or now()
+        saved = dict(self.acc)
+        self._fold_player(t)
+        a, self.acc = self.acc, saved
+        watched = (t - self.first_ever) if self.first_ever else 0.0
+        if self.finished:
+            state = "done"
+        elif self.t_end:
+            state = "closed"
+        elif self.playing:
+            state = "playing"
+        else:
+            state = "failed:" + self.last_reason if self.last_reason else "opening"
+        return {"slot": self.slot, "kind": self.kind, "cam": self.spec["cam"],
+                "stream": self.spec["stream"], "back": self.spec.get("back"), "stamp": self.stamp,
+                "watch_target": self.watch or None, "ttff_ms": self.ttff_ms,
+                "watched_sec": round(watched, 1), "media_sec": round(a["media"], 1),
+                "stall_sec": round(a["stall_sec"], 2), "stall_count": a["stall_count"],
+                "stall_max_sec": round(a["stall_max"], 2), "long_stalls": a["long_stalls"],
+                "reconnects": self.reconnects, "join_fails": self.join_fails,
+                "kbps": round(self.bytes * 8 / 1000.0 / watched, 1) if watched > 1 else None,
+                "state": state, "last_reason": self.last_reason, "reasons": " ".join(self.reasons)}
 
     def media(self, start, end):
         t = now()
@@ -535,11 +628,24 @@ class Viewer(object):
                 reason = "parse:" + type(exc).__name__
             if self.closing:
                 break
+            if self.finished:
+                # xem đủ thời lượng: kết thúc phiên, slot giữ nguyên để không mở lại
+                self.playing = False
+                self.t_end = now()
+                self.w.on_done(self)
+                break
             if self.t_first is None:
                 self.w.on_join_fail(self, reason)
+                self.join_fails += 1
             else:
                 self.w.on_unexpected_close(self, reason)
+                self.reconnects += 1
+            self.last_reason = reason
+            if len(self.reasons) < 8:
+                # chỉ giữ mã (http404, eof, data_timeout, ...): thân lỗi HTML làm bảng khó đọc
+                self.reasons.append("%s@%.0fs" % (reason.split(":<", 1)[0], now() - self.t_open))
             # Player thật thử lại; giữ nguyên slot để mức CCU không bị hụt.
+            self._fold_player(now())
             self.playing = False
             self.t_first = None
             self.window = None
@@ -552,6 +658,9 @@ class Viewer(object):
             timeout = TTFF_TIMEOUT if self.t_first is None else DATA_TIMEOUT
             if self.t_first is None:
                 timeout = max(0.1, TTFF_TIMEOUT - (now() - t_start))
+            if self.watch and self.first_ever and now() - self.first_ever >= self.watch:
+                self.finished = True
+                return
             data = await read(timeout)
             if not data:
                 return
@@ -566,6 +675,11 @@ class Viewer(object):
             earliest = w.replay_earliest
             if earliest and stamp < earliest:
                 stamp = earliest
+            if self.stamp is None:
+                self.stamp = stamp
+            elif self.watch:
+                # kết nối lại giữa phiên: xem tiếp từ chỗ đã tới thay vì mốc cũ
+                stamp = self.stamp + int(self.acc["media"])
             path = "/media/record/%s/%s/vod/%d.live.mp4" % (self.spec["cam"], self.spec["stream"], stamp)
         else:
             path = "/media/live/%s/%s.live.mp4" % (self.spec["cam"], self.spec["stream"])
@@ -763,6 +877,8 @@ class Viewer(object):
 
     def stop(self):
         self.closing = True
+        if self.t_end is None:
+            self.t_end = now()
         if self.task:
             self.task.cancel()
 
@@ -851,6 +967,8 @@ class Worker(object):
         self.viewers = {}
         self.plan = []
         self.replay_earliest = 0
+        self.sessions = False        # plan["sessions"]: gửi số liệu từng phiên
+        self.closed_sessions = []    # phiên đã đóng (slot bị bỏ), giữ tối đa 5000
         self.host = self.http_port = self.rtsp_port = None
         self.token = ""
         if args.token_file:
@@ -891,6 +1009,17 @@ class Worker(object):
 
     def on_unexpected_close(self, v, reason):
         self.closes["%s:%s" % (v.kind, reason)] += 1
+
+    def on_done(self, v):
+        self.events["%s_done" % v.kind] += 1
+
+    def drop_viewer(self, slot):
+        v = self.viewers.pop(slot)
+        v.stop()
+        if self.sessions:
+            self.closed_sessions.append(v.session_row())
+            del self.closed_sessions[:-5000]
+        return v
 
     def count_event(self, name, n=1):
         self.events[name] += n
@@ -937,8 +1066,7 @@ class Worker(object):
             wanted = set(self.my_slots(level))
             # đóng slot vượt mức (chỉ số cao trước)
             for slot in sorted(set(self.viewers) - wanted, reverse=True):
-                v = self.viewers.pop(slot)
-                v.stop()
+                self.drop_viewer(slot)
                 self.intended_closes += 1
             # mở slot thiếu theo tốc độ vào cho phép
             rate = float(tgt.get("join_rate") or 20.0) / self.total
@@ -957,8 +1085,7 @@ class Worker(object):
                     if v.t_first is not None and not hasattr(v, "leave_at"):
                         v.leave_at = v.t_first + random.expovariate(1.0 / churn)
                     if getattr(v, "leave_at", None) and now() >= v.leave_at:
-                        v.stop()
-                        self.viewers.pop(slot)
+                        self.drop_viewer(slot)
                         self.intended_closes += 1
                         self.events["churn_leave"] += 1
             await asyncio.sleep(0.2 if wanted - set(self.viewers) else 1.0)
@@ -982,7 +1109,12 @@ class Worker(object):
         rows = []
         active = defaultdict(int)
         playing = defaultdict(int)
+        done = defaultdict(int)
         for v in self.viewers.values():
+            if v.finished:
+                # xem đủ thời lượng (replay_watch): không còn mở, nhưng không phải lỗi
+                done[v.kind] += 1
+                continue
             active[v.kind] += 1
             if v.playing:
                 playing[v.kind] += 1
@@ -990,7 +1122,7 @@ class Worker(object):
                 if r:
                     rows.append(r)
         lag = sorted(self.loop_lag)
-        return {
+        out = {
             "worker": self.index, "host": os.uname()[1], "pid": os.getpid(), "mark": self.mark,
             "span_sec": round(span, 1),
             "cpu_pct": round((time.process_time() - self.cpu0) / span * 100.0, 1),
@@ -1000,8 +1132,11 @@ class Worker(object):
             "fail_reasons": dict(self.fail_reasons), "closes": dict(self.closes),
             "events": dict(self.events), "intended_closes": self.intended_closes,
             "ttff_ms": {k: v for k, v in self.ttff.items()},
-            "bytes": self.bytes, "viewers": rows,
+            "bytes": self.bytes, "viewers": rows, "done": dict(done),
         }
+        if self.sessions:
+            out["sessions"] = self.closed_sessions + [v.session_row(t) for v in self.viewers.values()]
+        return out
 
     async def report_loop(self):
         while True:
@@ -1022,6 +1157,7 @@ class Worker(object):
             raise SystemExit("không lấy được plan từ controller")
         self.plan = cfg["plan"]
         self.replay_earliest = cfg.get("replay_earliest") or 0
+        self.sessions = bool(cfg.get("sessions"))
         self.host, self.http_port, self.rtsp_port = cfg["host"], cfg["http_port"], cfg["rtsp_port"]
         if not self.token and cfg.get("token"):
             self.token = cfg["token"]
@@ -1044,8 +1180,12 @@ class Controller(object):
     def __init__(self, args):
         self.args = args
         inv = json.load(open(args.inventory))
+        back = tuple(int(x) for x in args.replay_back.split(","))
+        if len(back) != 2 or back[0] > back[1] or back[0] < 0:
+            raise SystemExit("--replay-back cần dạng min,max (giây)")
         self.plan = build_plan(inv, args.mix, args.dist, args.max_viewers, args.seed,
-                               args.replay_earliest, args.single_camera)
+                               args.replay_earliest, args.single_camera, replay_back=back,
+                               replay_watch=args.replay_watch, sessions=args.session_log)
         self.plan.update({"host": args.host, "http_port": args.http_port, "rtsp_port": args.rtsp_port})
         if args.token_file:
             with open(args.token_file) as fh:
@@ -1065,12 +1205,17 @@ class Controller(object):
                "workers": [], "active": defaultdict(int), "playing": defaultdict(int),
                "joins": defaultdict(lambda: {"ok": 0, "fail": 0}), "fail_reasons": defaultdict(int),
                "closes": defaultdict(int), "events": defaultdict(int), "ttff_ms": defaultdict(list),
-               "bytes": 0, "viewers": [], "intended_closes": 0, "span_sec": 0.0}
+               "bytes": 0, "viewers": [], "intended_closes": 0, "span_sec": 0.0,
+               "done": defaultdict(int), "sessions": []}
         for idx, (at, r) in sorted(reps.items()):
             fresh = t - at < 3 * REPORT_SEC + 2
             out["workers"].append({"worker": idx, "host": r.get("host"), "fresh": fresh,
                                    "same_mark": r.get("mark") == mark, "cpu_pct": r.get("cpu_pct"),
                                    "loop_lag_p99_ms": r.get("loop_lag_p99_ms")})
+            # số liệu từng phiên là của cả lần chạy, không theo cửa sổ đo
+            out["sessions"].extend(r.get("sessions") or [])
+            for k, v in (r.get("done") or {}).items():
+                out["done"][k] += v
             if r.get("mark") != mark:
                 continue
             out["span_sec"] = max(out["span_sec"], r.get("span_sec", 0))
@@ -1085,7 +1230,7 @@ class Controller(object):
             out["bytes"] += r.get("bytes", 0)
             out["intended_closes"] += r.get("intended_closes", 0)
             out["viewers"].extend(r.get("viewers") or [])
-        for key in ("active", "playing", "fail_reasons", "closes", "events", "ttff_ms"):
+        for key in ("active", "playing", "fail_reasons", "closes", "events", "ttff_ms", "done"):
             out[key] = dict(out[key])
         out["joins"] = {k: dict(v) for k, v in out["joins"].items()}
         return out
@@ -1204,6 +1349,10 @@ def main():
     c.add_argument("--seed", type=int, default=20260929)
     c.add_argument("--join-rate", type=float, default=20.0)
     c.add_argument("--replay-earliest", type=int, default=0, help="epoch sớm nhất có bản ghi")
+    c.add_argument("--replay-back", default="180,600", help="min,max giây lùi của mốc replay")
+    c.add_argument("--replay-watch", type=int, default=0,
+                   help=">0: phiên replay xem đủ chừng này giây rồi kết thúc, không mở lại")
+    c.add_argument("--session-log", action="store_true", help="worker gửi số liệu từng phiên")
     c.add_argument("--local-workers", type=int, default=max(1, (os.cpu_count() or 2) // 2))
     c.add_argument("--total", type=int, default=0, help="tổng worker kể cả máy khác (mặc định = cục bộ)")
     c.add_argument("--first-index", type=int, default=0)

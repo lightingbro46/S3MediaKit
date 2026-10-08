@@ -12,16 +12,25 @@
 #   --suite quick|standard|full  quick    ~45 phut: bac toi 600 (hot), storm, admission
 #                                standard ~2,5 gio: + chia doi nguong, bac uniform, churn 30 phut
 #                                full     ~8 gio : + 5 hon hop thuan + soak 4 gio
+#                                live500  ~2 gio  : 300 camera ghi 24/7 ca 2 luong + nguoi xem chi
+#                                         HLS/HTTP-MP4 (fMP4 sub 50/main 20, HLS sub 20/main 10),
+#                                         bac toi 1000 (hot) co perf o bac 500, bac uniform, storm 500;
+#                                         live_replay: 20% la xem lai (100/500), sau 15 phut ghi, moc
+#                                         ngau nhien 5-15 phut truoc, xem 5 phut, cham tung phien;
+#                                         --accept mac dinh 500. Them soak: --only ...,live_soak
 #                                [mac dinh: standard]
 #   --only a,b,...               chi chay cac kich ban nay (ten o cuoi --help)
 #   --work DIR                   thu muc lam viec, can nhieu dung luong [./ccu_work]
-#   --accept N                   muc nghiem thu [400]
+#   --accept N                   muc nghiem thu [400, suite live500: 500]
 #   --profile full|mid|smoke     so camera: 300 / 120 / 30 [full]
 #   --viewer-hosts h1,h2         chay them worker viewer tren may khac qua ssh (khong mat khau)
 #   --nic IFACE                  card mang phuc vu viewer (mac dinh lo, hoac tu do khi co --viewer-hosts)
 #   --soak-hours H               thoi luong soak [4]
 #   --keep-records               giu file ghi hinh sau moi kich ban (mac dinh xoa de do ton dia)
 #   --yes                        khong hoi lai khi canh bao dung luong
+#   --set muc.khoa=gia_tri       ghi de config.ini cua MediaServer (lap lai duoc), vd --set hls.segDur=4
+#   --threads N                  so poller cua MediaServer (-t N) [mac dinh = so loi]
+#   --tag TEN                    ten bien the cau hinh, gan vao ten file ket qua
 #
 # Ket qua: ccu_result_<may>_<thoi gian>.tar.gz trong thu muc hien tai. Gui nguyen file do.
 set -u
@@ -34,7 +43,7 @@ HOST=$(hostname -s 2>/dev/null || hostname)
 SUITE=standard
 ONLY=""
 WORK="$PWD/ccu_work"
-ACCEPT=400
+ACCEPT=""
 PROFILE=full
 VIEWER_HOSTS=""
 NIC=""
@@ -42,11 +51,14 @@ SOAK_HOURS=4
 KEEP_RECORDS=0
 ASSUME_YES=0
 BIN=""
+STRESS_INI="${STRESS_INI:-}"
+MS_EXTRA_ARGS="${MS_EXTRA_ARGS:-}"
+TAG=""
 
-ALL_SCENARIOS="step_hot step_uniform storm churn admission mix_fmp4-sub mix_fmp4-main mix_rtsp mix_hls mix_replay soak"
+ALL_SCENARIOS="step_hot step_uniform storm churn admission mix_fmp4-sub mix_fmp4-main mix_rtsp mix_hls mix_replay soak live_step live_uniform live_storm live_replay live_soak"
 
 usage() {
-    sed -n '2,26p' "$SELF" | sed 's/^# \{0,1\}//'
+    sed -n '2,35p' "$SELF" | sed 's/^# \{0,1\}//'
     echo "Kich ban: $ALL_SCENARIOS"
     exit "${1:-0}"
 }
@@ -63,6 +75,9 @@ while [ $# -gt 0 ]; do
         --soak-hours) SOAK_HOURS="$2"; shift 2 ;;
         --keep-records) KEEP_RECORDS=1; shift ;;
         --yes|-y) ASSUME_YES=1; shift ;;
+        --set) STRESS_INI="${STRESS_INI:+$STRESS_INI;}$2"; shift 2 ;;
+        --threads) MS_EXTRA_ARGS="-t $2"; shift 2 ;;
+        --tag) TAG="_$2"; shift 2 ;;
         -h|--help) usage 0 ;;
         -*) echo "Tuy chon la: $1"; usage 2 ;;
         *) BIN="$1"; shift ;;
@@ -81,8 +96,10 @@ case "$SUITE" in
     quick)    SCENARIOS="step_hot storm admission" ;;
     standard) SCENARIOS="step_hot step_uniform storm churn admission" ;;
     full)     SCENARIOS="step_hot step_uniform storm churn admission mix_fmp4-sub mix_fmp4-main mix_rtsp mix_hls mix_replay soak" ;;
+    live500)  SCENARIOS="live_step live_uniform live_storm live_replay" ;;
     *) echo "--suite khong hop le: $SUITE"; exit 2 ;;
 esac
+[ -n "$ACCEPT" ] || { [ "$SUITE" = live500 ] && ACCEPT=500 || ACCEPT=400; }
 [ -n "$ONLY" ] && SCENARIOS="${ONLY//,/ }"
 for s in $SCENARIOS; do
     case " $ALL_SCENARIOS " in *" $s "*) ;; *) echo "Kich ban la: $s"; exit 2 ;; esac
@@ -90,7 +107,7 @@ done
 
 mkdir -p "$WORK"
 WORK="$(cd "$WORK" && pwd)"
-OUT="$WORK/result_${HOST}_${STAMP}"
+OUT="$WORK/result_${HOST}${TAG}_${STAMP}"
 B="$WORK/bundle"
 mkdir -p "$OUT"
 exec > >(tee -a "$OUT/runner.log") 2>&1
@@ -116,6 +133,10 @@ if grep -aq "api-config.json" "$BIN" 2>/dev/null; then
 else
     IS_DEBUG=0
 fi
+case " $SCENARIOS " in *" live_step "*)
+    command -v perf > /dev/null \
+        || say "CANH BAO: khong co lenh perf - bao cao live_step se thieu ham nong (cai linux-tools/perf)." ;;
+esac
 
 # ------------------------------------------------------------------ giải nén harness
 say "giai nen harness vao $B"
@@ -162,6 +183,7 @@ fi
     echo "== sysctl";      sysctl vm.dirty_ratio vm.dirty_background_ratio net.core.somaxconn 2>/dev/null
     echo "== PSI";         for k in cpu io memory; do echo "$k: $(tr '\n' ' ' < /proc/pressure/$k 2>/dev/null)"; done
     echo "== tham so";     echo "suite=$SUITE scenarios=$SCENARIOS accept=$ACCEPT profile=$PROFILE nic=$NIC viewer_hosts=$VIEWER_HOSTS"
+    echo "== tinh chinh";  echo "tag=${TAG#_} set=$STRESS_INI args=$MS_EXTRA_ARGS"
 } > "$OUT/system.txt" 2>&1
 
 # ------------------------------------------------------------------ ước lượng dung lượng
@@ -171,7 +193,7 @@ per_sec_mb=$(( CAMERAS * 42 / 80 ))
 longest_min=60
 case " $SCENARIOS " in *" churn "*) longest_min=45 ;; esac
 case " $SCENARIOS " in *" step_hot "*) longest_min=75 ;; esac
-case " $SCENARIOS " in *" soak "*) longest_min=$(( SOAK_HOURS * 60 + 15 )) ;; esac
+case " $SCENARIOS " in *" soak "*|*" live_soak "*) longest_min=$(( SOAK_HOURS * 60 + 15 )) ;; esac
 need_gb=$(( per_sec_mb * 60 * longest_min / 1024 + 10 ))
 avail_gb=$(df -Pk "$WORK" | awk 'NR==2 {print int($4/1048576)}')
 say "ghi hinh ~ ${per_sec_mb} MB/s; kich ban dai nhat ~${longest_min} phut can ~ ${need_gb} GB; con trong ${avail_gb} GB"
@@ -260,6 +282,23 @@ scenario_env() {
         soak)      echo "CCU_MIX=vms"; echo "CCU_DIST=hot"
                    echo "CCU_DURATION=${CCU_SOAK_SEC:-$(( SOAK_HOURS * 3600 ))}" ;;
         admission) echo "CCU_MIX=vms"; echo "CCU_DIST=uniform" ;;
+        # live500: moi camera ghi 24/7 ca main va sub, nguoi xem chi HLS + HTTP-MP4 live
+        live_step)
+            echo "STRESS_COHORT=always"; echo "CCU_MIX=live"; echo "CCU_DIST=hot"
+            echo "CCU_PERF_SEC=${CCU_PERF_SEC:-120}"
+            steps=0,100,200,300,400,500,600,750,1000; args="--bisect 0" ;;
+        live_uniform)
+            echo "STRESS_COHORT=always"; echo "CCU_MIX=live"; echo "CCU_DIST=uniform"
+            steps=0,250,500,600,750; args="--bisect 0" ;;
+        live_storm) echo "STRESS_COHORT=always"; echo "CCU_MIX=live"; echo "CCU_DIST=hot" ;;
+        # 20% xem lai: cho 15 phut ghi, moc lui ngau nhien 5-15 phut (300-900 s), moi phien xem 300 s
+        live_replay) echo "STRESS_COHORT=always"; echo "CCU_MIX=live_replay"; echo "CCU_DIST=hot"
+                     echo "CCU_LEVEL=${CCU_LEVEL:-$ACCEPT}"
+                     echo "CCU_REPLAY_WAIT_SEC=${CCU_REPLAY_WAIT_SEC:-900}"
+                     echo "CCU_REPLAY_BACK=${CCU_REPLAY_BACK:-300,900}"
+                     echo "CCU_REPLAY_WATCH=${CCU_REPLAY_WATCH:-300}" ;;
+        live_soak)  echo "STRESS_COHORT=always"; echo "CCU_MIX=live"; echo "CCU_DIST=hot"
+                    echo "CCU_DURATION=${CCU_SOAK_SEC:-$(( SOAK_HOURS * 3600 ))}" ;;
     esac
     [ -n "$steps" ] && echo "CCU_STEPS=${CCU_STEPS:-$steps}"
     [ -n "$args" ] && echo "CCU_ARGS=${CCU_ARGS:-$args}"
@@ -268,8 +307,10 @@ scenario_env() {
 
 harness_scenario() {
     case "$1" in
-        step_*|mix_*) echo ccu ;;
-        storm) echo ccu_storm ;;
+        step_*|mix_*|live_step|live_uniform) echo ccu ;;
+        storm|live_storm) echo ccu_storm ;;
+        live_soak) echo ccu_soak ;;
+        live_replay) echo ccu_replay ;;
         churn) echo ccu_churn ;;
         soak) echo ccu_soak ;;
         admission) echo ccu_admission ;;
@@ -280,7 +321,7 @@ collect() {
     # chép bằng chứng của một kịch bản sang OUT, rồi xoá bản ghi nếu không giữ
     local s="$1" w="$WORK/$1" o="$OUT/$1"
     mkdir -p "$o"
-    for f in "$w"/ccu*_report.json "$w"/ccu*_report.md "$w"/report_*.json "$w"/phases.jsonl \
+    for f in "$w"/ccu*_report.json "$w"/ccu*_report.md "$w"/report_*.json "$w"/phases.jsonl "$w"/perf_*.txt "$w"/ccu_replay_sessions.csv \
              "$w"/resources.jsonl "$w"/inventory.json "$w"/rtsp_state.json "$w"/api_state.json \
              "$w"/load_ccu.json "$w"/rtsp_source.log "$w"/viewer_ctl.log "$w"/viewer_single.log \
              "$w"/mock_api.log "$w"/rest_load.log "$w"/onvif_mock.log; do
@@ -322,6 +363,7 @@ run_one() {
         export MEDIASERVER_DIR="$BIN_DIR" MEDIA_PROFILE=realistic MEDIA_DIR="$B/media"
         export PHASE_SEC="${PHASE_SEC:-180}" CCU_NIC="$NIC" CCU_SERVER_HOST="$SERVER_HOST"
         export CCU_CTL_HOST="$CTL_HOST" VIEWER_HOSTS="$VIEWER_HOSTS"
+        export STRESS_INI MS_EXTRA_ARGS
         while IFS= read -r kv; do export "$kv"; done < <(scenario_env "$s")
         bash "$H/run_stress.sh" "$WORK/$s" "$PROFILE" "$hs"
     ) > "$OUT/$s.console.log" 2>&1
@@ -344,6 +386,7 @@ finish() {
         echo "- Suite: $([ -n "$ONLY" ] && echo "--only" || echo "$SUITE") - kich ban: $SCENARIOS"
         echo "- Profile: $PROFILE ($CAMERAS camera / $(( CAMERAS * 2 )) luong, bitrate that), muc nghiem thu $ACCEPT"
         echo "- Viewer: $([ -n "$VIEWER_HOSTS" ] && echo "may nay + $VIEWER_HOSTS (NIC $NIC)" || echo "chay cung may (loopback)")"
+        echo "- Tinh chinh: tag=${TAG#_} set=${STRESS_INI:--} args=${MS_EXTRA_ARGS:--}"
         echo "- Tong thoi gian: $(( ($(date +%s) - START_TS) / 60 )) phut"
         echo
         echo "| Kich ban | rc | phut | Ket luan |"
@@ -368,7 +411,7 @@ finish() {
             done
         done
     } > "$sum"
-    local tarball="$PWD/ccu_result_${HOST}_${STAMP}.tar.gz"
+    local tarball="$PWD/ccu_result_${HOST}${TAG}_${STAMP}.tar.gz"
     tar czf "$tarball" -C "$WORK" "$(basename "$OUT")" 2>/dev/null
     say "tom tat: $sum"
     say "GUI LAI FILE NAY: $tarball ($(du -h "$tarball" | cut -f1))"
