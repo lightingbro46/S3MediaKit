@@ -137,6 +137,11 @@ struct DeviceCapabilities {
     bool supportsAudioBackchannel = false;
     bool supportsAudioVolumeControl = false;
     AudioVolumeInfo audioVolumeInfo;
+    // Vendor API channel of a device with a plugin (speakers), beside the control protocol: whether
+    // the last check or operation reached it, why not, and whether it ever played files.
+    bool vendorApiConnected = false;
+    std::string vendorApiStatus;
+    bool supportsAudioFilePlayback = false;
 
     bool operator==(const DeviceCapabilities &o) const {
         return isOnvifDevice == o.isOnvifDevice
@@ -145,7 +150,10 @@ struct DeviceCapabilities {
             && supportsSdCardPlayback == o.supportsSdCardPlayback
             && supportsAudioBackchannel == o.supportsAudioBackchannel
             && supportsAudioVolumeControl == o.supportsAudioVolumeControl
-            && audioVolumeInfo == o.audioVolumeInfo;
+            && audioVolumeInfo == o.audioVolumeInfo
+            && vendorApiConnected == o.vendorApiConnected
+            && vendorApiStatus == o.vendorApiStatus
+            && supportsAudioFilePlayback == o.supportsAudioFilePlayback;
     }
     bool operator!=(const DeviceCapabilities &o) const { return !(*this == o); }
 };

@@ -225,6 +225,7 @@ nghĩa đang chạy ONVIF. Option loa (`makeSpeakerOptionJson`) có thêm `contr
 | `speaker.control_auto_order` | `onvif,isapi,psia` | Như trên, cho loa |
 | `speaker.control_reprobe_failures` | `5` | Như trên, cho loa |
 | `speaker.control_auth_retry_sec` | `300` | Như trên, cho loa |
+| `speaker.detect_max_interval_sec` | `600` | Loa có `manufacturer` rỗng: mỗi chu kỳ thử API hãng (Bosch) rồi các giao thức, nhận ra hãng thì ghi đè `manufacturer` và báo qua webhook `media-device-info`. Khi không gì trả lời, chu kỳ nhân đôi từ 60 s tới giá trị này (0 = giữ 60 s) |
 | `psia.request_timeout_ms` | `5000` | Timeout mỗi request PSIA |
 | `isapi.request_timeout_ms` | `5000` | Timeout mỗi request ISAPI |
 

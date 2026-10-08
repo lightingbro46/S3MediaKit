@@ -1363,9 +1363,10 @@ void getServerStatisticJson(const function<void(Json::Value &data)> &cb) {
                         Json::Value item;
                         item["deviceType"] = static_cast<int>(DeviceType::Speaker);
                         item["deviceId"] = params.tuple.device_id;
-                        // Currently, the speaker online status is determined based on the ONVIF connection status.
-                        item["status"] = params.connect;
-                        item["errMsg"] = params.status;
+                        // Online through either channel; the controller fields below stay the control protocol's.
+                        const bool online = params.connect || params.device_caps.vendorApiConnected;
+                        item["status"] = online;
+                        item["errMsg"] = online && !params.connect ? "Connected" : params.status;
                         // Get controller status
                         if (!option.manufacturer.empty()) {
                             item["controller"]["status"] = params.connect;
@@ -1454,11 +1455,17 @@ static Json::Value getAudioVolumeInfoJson(const AudioVolumeInfo &info) {
     return ret;
 }
 
-static Json::Value getAudioPlaybackModeString(bool supportsBackchannel) {
+// What the speaker can play with: files through its vendor API (once it answered), the backchannel of
+// its control protocol, AUTO with either.
+static Json::Value getAudioPlaybackModeString(const DeviceCapabilities &caps) {
     Json::Value ret = Json::arrayValue;
-    ret.append("VENDOR_API_FILE");
-    if (supportsBackchannel) {
+    if (caps.supportsAudioFilePlayback) {
+        ret.append("VENDOR_API_FILE");
+    }
+    if (caps.supportsAudioFilePlayback || caps.supportsAudioBackchannel) {
         ret.append("AUTO");
+    }
+    if (caps.supportsAudioBackchannel) {
         ret.append("BACKCHANNEL");
     }
     return ret;
@@ -1575,7 +1582,9 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
             data["supportsSdCardPlayback"] = false;
             data["supportsAudioBackchannel"] = caps->supportsAudioBackchannel;
             data["supportsAudioVolumeControl"] = caps->supportsAudioVolumeControl;
-            data["supportedAudioPlaybackModes"] = getAudioPlaybackModeString(caps->supportsAudioBackchannel);
+            data["supportedAudioPlaybackModes"] = getAudioPlaybackModeString(*caps);
+            data["vendorApiConnected"] = caps->vendorApiConnected;
+            data["vendorApiStatus"] = caps->vendorApiStatus;
             data["audioVolumeInfo"] = getAudioVolumeInfoJson(caps->audioVolumeInfo);
             data["enablePrivacyMaskSupport"] = false;
             data["enableWatermarkSupport"] = false;
@@ -1919,9 +1928,10 @@ Json::Value makeDeviceStatisticJson(const DeviceSource::Ptr &device) {
                 auto option = params.option;
                 item["deviceType"] = static_cast<int>(DeviceType::Speaker);
                 item["deviceId"] = params.tuple.device_id;
-                // Currently, the speaker online status is determined based on the ONVIF connection status.
-                item["status"] = params.connect;
-                item["errMsg"] = params.status;
+                // Online through either channel; the controller fields below stay the control protocol's.
+                const bool online = params.connect || params.device_caps.vendorApiConnected;
+                item["status"] = online;
+                item["errMsg"] = online && !params.connect ? "Connected" : params.status;
                 // Get controller status
                 if (!option.manufacturer.empty()) {
                     item["controller"]["status"] = params.connect;

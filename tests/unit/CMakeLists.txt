@@ -184,6 +184,21 @@ target_include_directories(unit_camera_controller PRIVATE "${PROJECT_SOURCE_DIR}
 add_test(NAME unit.camera_controller_all COMMAND unit_camera_controller)
 set_tests_properties(unit.camera_controller_all PROPERTIES LABELS unit TIMEOUT 60)
 
+# VendorStage: brand/plugin of a device (configured or detected) and the detection back-off.
+add_s3_unit_test(unit_vendor_stage
+  manager/test_vendor_stage.cpp
+  "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
+target_link_libraries(unit_vendor_stage PRIVATE
+  -Wl,--start-group
+  S3MediaKit::MediaKit
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec
+  S3MediaKit::ext-plugin
+  -Wl,--end-group)
+target_include_directories(unit_vendor_stage PRIVATE "${PROJECT_SOURCE_DIR}/server")
+add_test(NAME unit.vendor_stage_all COMMAND unit_vendor_stage)
+set_tests_properties(unit.vendor_stage_all PROPERTIES LABELS unit TIMEOUT 30)
+
 # PsiaControl XML parsing and unit conversion. The PsiaMockTest cases run against
 # tests/integration/stress_vms/psia_mock.py when PSIA_MOCK_ADDR=ip:port is set, and skip otherwise.
 add_s3_unit_test(unit_psia_control

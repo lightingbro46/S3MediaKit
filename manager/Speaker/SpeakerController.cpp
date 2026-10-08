@@ -13,10 +13,6 @@ using namespace mediakit;
 
 namespace managerkit {
 
-static const std::vector<DeviceBrand> kSupportedBrands = {
-    DeviceBrand::BOSCH
-};
-
 SpeakerController::SpeakerController(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller) : _tuple(tuple), _poller(poller) {
     _device_queue = std::make_shared<SerialTaskQueue>(BlockingExecutors::device(), "speaker " + tuple.shortUrl());
 }
@@ -25,13 +21,14 @@ void SpeakerController::probe(const std::string& ip, int port,
                                          const std::string& username, const std::string& password,
                                          std::function<void(const SockException&, IDevice::Ptr)> cb,
                                          size_t brandIndex) {
-    if (brandIndex >= kSupportedBrands.size()) {
+    const auto &plugins = DeviceFactory::plugins(DeviceType::Speaker);
+    if (brandIndex >= plugins.size()) {
         WarnL << "Speaker scan failed for " << ip << ":" << port;
         cb(SockException(Err_other), nullptr);
         return;
     }
 
-    DeviceBrand brand = kSupportedBrands[brandIndex];
+    DeviceBrand brand = plugins[brandIndex].brand;
     SpeakerConfig cfg;
     cfg.ip       = ip;
     cfg.port     = port;
@@ -69,6 +66,17 @@ void SpeakerController::probe(const std::string& ip, int port,
     });
 }
 
+void SpeakerController::probeVendorApis(const std::string &ip, int port, const std::string &username,
+                                        const std::string &password, const VendorStage::OnProbe &cb) {
+    SpeakerConfig cfg;
+    cfg.id       = _tuple.device_id;
+    cfg.ip       = ip;
+    cfg.port     = port;
+    cfg.username = username;
+    cfg.password = password;
+    VendorStage::probe(DeviceType::Speaker, cfg, cb);
+}
+
 void SpeakerController::createTimer() {
     weak_ptr<SpeakerController> weak_self = shared_from_this();
     _timer_ctr = std::make_shared<Timer>(
@@ -98,9 +106,24 @@ SockException SpeakerController::notReadyError() const {
     return deviceNotReadyError(_device_ctr ? _device_ctr->lastFailure() : _probe_failure);
 }
 
+SockException SpeakerController::vendorNotReadyError() const {
+    CHECK(_poller->isCurrentThread(), "vendorNotReadyError must be called on the owner poller");
+    return deviceNotReadyError(_vendor_down);
+}
+
+void SpeakerController::restoreCapabilities(const DeviceCapabilities &caps) {
+    CHECK(_poller->isCurrentThread(), "restoreCapabilities must be called on the owner poller");
+    _protocol_caps = caps;
+    _vendor_seen = caps.supportsAudioFilePlayback;
+}
+
 DeviceControl::Ptr SpeakerController::createDeviceControl(ControlProtocol protocol, const std::string &address,
                                                                 const std::string &username, const std::string &password) {
     return makeDeviceControl(protocol, address, username, password);
+}
+
+IDevice::Ptr SpeakerController::createVendorDevice(const SpeakerConfig &cfg) {
+    return DeviceFactory::create(cfg);
 }
 
 void SpeakerController::setupController(const SpeakerOption &option) {
@@ -119,6 +142,8 @@ void SpeakerController::setupController(const SpeakerOption &option) {
     _device_ctr.reset();
     _configured = false;
     _probing = false;
+    _vendor_stage.configure(DeviceType::Speaker, "");
+    resetVendorChannel();
     _pacer.reset();
     ++_ctrl_generation;
     ReconnectResult pending;
@@ -148,8 +173,15 @@ void SpeakerController::setupController(const SpeakerOption &option) {
     _enableTimeSync  = option.enableTimeSync;
     _last_clock_sync = 0;
     _lock.setSetting(option.controlProtocol);
+    // Without a manufacturer the speaker starts as a generic one and every cycle looks for its brand
+    // first; a manufacturer without a plugin (e.g. "Hikvision") only probes the control protocols.
+    _vendor_stage.configure(DeviceType::Speaker, option.manufacturer);
 
-    if (!setupDeviceController()) {
+    const bool vendor_ok = setupDeviceController();
+    if (!_audio_playback_ctr) {
+        _vendor_seen = false;
+    }
+    if (!vendor_ok) {
         return;
     }
     _configured = true;
@@ -160,6 +192,7 @@ void SpeakerController::setupController(const SpeakerOption &option) {
     DebugL << "Controller of speaker: " << _tuple.shortUrl() << " (" << address << ")"
         << ", protocol setting: " << controlProtocolSetting(option.controlProtocol)
         << ", using: " << (protocol == ControlProtocol::NONE ? "probe" : controlProtocolToString(protocol))
+        << (_vendor_stage.detecting() ? ", manufacturer: detect" : "")
         << ", username: " << (_ctrl_username.empty() ? "empty" : "******")
         << ", password: " << (option.password.empty() ? "empty" : "******");
 }
@@ -178,6 +211,7 @@ void SpeakerController::stopController() {
     _device_ctr.reset();
     _vendor_ctr.reset();
     _audio_playback_ctr = nullptr;
+    resetVendorChannel();
     _configured = false;
     _probing = false;
     ++_ctrl_generation;
@@ -206,13 +240,17 @@ SpeakerController::ConnectContext SpeakerController::connectContext() const {
     ctx.vendor = _vendor_ctr;
     ctx.username = _ctrl_username;
     ctx.password = _ctrl_option.password;
-    ctx.sharedDsp = getDeviceBrand(_ctrl_option.manufacturer) == DeviceBrand::BOSCH;
+    ctx.sharedDsp = _vendor_stage.hasPlugin() && _vendor_stage.plugin().sharedDsp;
     ctx.generation = _ctrl_generation.load();
     return ctx;
 }
 
 void SpeakerController::onManager() {
     // Always called from the Timer which runs on _poller - no dispatch needed.
+    if (_configured) {
+        // Its own pacing, whatever the control protocol does.
+        checkVendorChannel(time(nullptr));
+    }
     if (!_configured || (!_device_ctr && !_lock.isAuto())) {
         onControllerReady(false, "Not supported", std::make_shared<DeviceCapabilities>());
         return;
@@ -220,11 +258,25 @@ void SpeakerController::onManager() {
 
     GET_CONFIG(int, auth_retry_sec, mediakit::Speaker::kControlAuthRetrySec);
     const uint64_t now = time(nullptr);
-    if (_probing || !_pacer.due(now, 60, auth_retry_sec)) {
+    if (_probing || !_pacer.due(now, cycleIntervalSec(), auth_retry_sec)) {
         // avoid reconnecting too frequently, and logging in with a rejected password even less often
         return;
     }
     _pacer.onAttempt(now);
+    if (_vendor_stage.detecting()) {
+        startDetect();
+        return;
+    }
+    runControlCycle();
+}
+
+int SpeakerController::cycleIntervalSec() const {
+    GET_CONFIG(int, max_interval_sec, mediakit::Speaker::kDetectMaxIntervalSec);
+    return _vendor_stage.cycleIntervalSec(max_interval_sec);
+}
+
+void SpeakerController::runControlCycle() {
+    const uint64_t now = time(nullptr);
     if (!_device_ctr) {
         startProtocolProbe();
         return;
@@ -310,6 +362,8 @@ void SpeakerController::reconnectNow(const ReconnectCallback &cb) {
     InfoL << "Reconnect of speaker " << _tuple.shortUrl() << " (" << _address << ") requested";
     _reconnect_waiters.push_back(cb);
     _pacer.reset();
+    _vendor_pacer.reset();
+    _vendor_stage.resetBackoff();
     // A probe already running answers the waiter when it ends.
     onManager();
 }
@@ -335,9 +389,11 @@ void SpeakerController::publishConnected(const DeviceControl::Ptr &device_ctr, c
     InfoL << controlProtocolToString(device_ctr->protocol()) << " controller of speaker " << _tuple.shortUrl()
           << " (" << _address << ") connected";
     std::weak_ptr<SpeakerController> weak_self = shared_from_this();
-    _poller->async([weak_self, device_ctr]() {
+    // Read by connect(): a speaker without a manufacturer is identified by it.
+    const std::string manufacturer = device_ctr->getDeviceInfo().manufacturer;
+    _poller->async([weak_self, device_ctr, manufacturer]() {
         if (auto self = weak_self.lock()) {
-            self->onConnectResult(device_ctr, ConnectError::NONE);
+            self->onConnectResult(device_ctr, ConnectError::NONE, manufacturer);
         }
     }, false);
     if (sync_clock) {
@@ -418,6 +474,9 @@ void SpeakerController::onProbeDone(const DeviceControl::Ptr &device_ctr, uint64
     if (!device_ctr) {
         WarnL << "No control protocol for speaker " << _tuple.shortUrl() << " (" << _address << "): " << err_msg;
         onAuthResult(err);
+        if (_vendor_stage.detecting()) {
+            onDetectCycleFailed(err == ConnectError::UNREACHABLE);
+        }
         result.error = err;
         result.msg = err_msg;
         result.failure = failure;
@@ -433,7 +492,7 @@ void SpeakerController::onProbeDone(const DeviceControl::Ptr &device_ctr, uint64
     finishReconnect(result);
 }
 
-void SpeakerController::onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err) {
+void SpeakerController::onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err, const std::string &manufacturer) {
     if (!device_ctr || device_ctr != _device_ctr) {
         return;
     }
@@ -444,7 +503,13 @@ void SpeakerController::onConnectResult(const DeviceControl::Ptr &device_ctr, Co
             WarnL << "Speaker " << _tuple.shortUrl() << " (" << _address << "): control protocol changed from "
                   << controlProtocolToString(previous) << " to " << controlProtocolToString(device_ctr->protocol());
         }
+        if (_vendor_stage.detecting()) {
+            onProtocolIdentified(device_ctr, manufacturer);
+        }
         return;
+    }
+    if (_vendor_stage.detecting()) {
+        onDetectCycleFailed(err == ConnectError::UNREACHABLE);
     }
     GET_CONFIG(int, reprobe_failures, mediakit::Speaker::kControlReprobeFailures);
     if (_lock.onConnectError(err, reprobe_failures)) {
@@ -473,6 +538,111 @@ void SpeakerController::onAuthResult(ConnectError err) {
     }
 }
 
+void SpeakerController::startDetect() {
+    _probing = true;
+    _vendor_stage.startCycle();
+    const uint64_t generation = _ctrl_generation.load();
+    auto poller = _poller;
+    std::weak_ptr<SpeakerController> weak_self = shared_from_this();
+    // The account of the config: a vendor plugin logs in with it, the ONVIF one does not exist yet.
+    probeVendorApis(_ctrl_option.ip, _ctrl_option.port, _ctrl_option.username, _ctrl_option.password,
+        [weak_self, poller, generation](const VendorStage::ProbeResult &result) {
+            poller->async([weak_self, generation, result]() {
+                if (auto self = weak_self.lock()) {
+                    self->onVendorProbeDone(generation, result);
+                }
+            }, false);
+        });
+}
+
+void SpeakerController::onVendorProbeDone(uint64_t generation, const VendorStage::ProbeResult &result) {
+    if (generation != _ctrl_generation.load() || !_vendor_stage.detecting()) {
+        return;
+    }
+    _probing = false;
+    if (_vendor_stage.onVendorProbe(result)) {
+        InfoL << "Speaker " << _tuple.shortUrl() << " (" << _address << ") detected through its vendor API: "
+              << _vendor_stage.name();
+        // Connects on the next timer tick (the pacer was reset), as a speaker configured with this
+        // brand does: by then the plugin has provisioned the ONVIF account it logs in with. The vendor
+        // channel checks on that tick too, and reports the brand even if the protocol does not connect.
+        onBrandDetected();
+        return;
+    }
+    if (result.rejected) {
+        // The control protocols may still name the manufacturer; otherwise the next cycle tries again.
+        WarnL << "Speaker " << _tuple.shortUrl() << " (" << _address
+              << "): a vendor API rejected the account, brand not detected yet";
+    }
+    runControlCycle();
+}
+
+void SpeakerController::onProtocolIdentified(const DeviceControl::Ptr &device_ctr, const std::string &manufacturer) {
+    if (!_vendor_stage.identify(manufacturer)) {
+        // Controlled fine without a name: nothing more to learn by asking again.
+        InfoL << "Speaker " << _tuple.shortUrl() << " (" << _address << ") connected over "
+              << controlProtocolToString(device_ctr->protocol()) << " without a manufacturer, kept generic";
+        return;
+    }
+    InfoL << "Speaker " << _tuple.shortUrl() << " (" << _address << ") reports manufacturer \"" << manufacturer
+          << "\" over " << controlProtocolToString(device_ctr->protocol());
+    if (!_vendor_stage.hasPlugin()) {
+        onBrandDetected();
+        return;
+    }
+    // A brand with a plugin whose API did not answer this cycle: switch to the plugin. Through the
+    // device queue: the connect that got here publishes its "connected" state from there, which must
+    // reach _poller before the switch, not after it.
+    _probing = true;
+    const uint64_t generation = _ctrl_generation.load();
+    auto poller = _poller;
+    std::weak_ptr<SpeakerController> weak_self = shared_from_this();
+    _device_queue->post([weak_self, poller, generation]() {
+        poller->async([weak_self, generation]() {
+            auto self = weak_self.lock();
+            if (!self || generation != self->_ctrl_generation.load()) {
+                return;
+            }
+            self->_probing = false;
+            self->onBrandDetected();
+        }, false);
+    });
+}
+
+void SpeakerController::onBrandDetected() {
+    _pacer.reset();
+    _ctrl_option.manufacturer = _vendor_stage.name();
+    if (_vendor_stage.hasPlugin()) {
+        // The controller (if any) logs in with the configured account and any protocol: set the
+        // plugin up and recreate it the way setupController() does for this brand.
+        if (_device_ctr) {
+            _ready = false;
+            onControllerReady(false, "Manufacturer detected", nullptr);
+            BackchannelManager::Instance().unregisterDevice(_tuple.device_id);
+            _device_ctr.reset();
+        }
+        _lock.unlock();
+        ++_ctrl_generation;
+        resetVendorChannel();
+        if (!setupDeviceController()) {
+            _configured = false;
+        } else {
+            ControlProtocol protocol = _lock.fixedOrLocked();
+            if (protocol != ControlProtocol::NONE) {
+                _device_ctr = createDeviceControl(protocol, _address, _ctrl_username, _ctrl_option.password);
+            }
+        }
+    }
+}
+
+void SpeakerController::onDetectCycleFailed(bool unreachable) {
+    _vendor_stage.onCycleFailed(unreachable);
+    if (cycleIntervalSec() > 60) {
+        DebugL << "Speaker " << _tuple.shortUrl() << " (" << _address << ") without manufacturer did not answer, next detection in "
+               << cycleIntervalSec() << " s";
+    }
+}
+
 void SpeakerController::onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps) {
     if (!_poller->isCurrentThread()) {
         auto self = shared_from_this();
@@ -484,42 +654,171 @@ void SpeakerController::onControllerReady(bool connect, const std::string &statu
 
     _ready = connect;
     _err_msg = status;
-    auto data = toolkit::Any(caps);
+    if (caps) {
+        _protocol_caps = *caps;
+    }
+    auto data = toolkit::Any(std::make_shared<DeviceCapabilities>(currentCaps()));
     DeviceSourceEventInterceptor::onControllerReady(DeviceSource::NullDeviceSource(), connect, status, data);
+}
+
+DeviceCapabilities SpeakerController::currentCaps() const {
+    DeviceCapabilities caps = _protocol_caps;
+    caps.vendorApiConnected = false;
+    caps.vendorApiStatus.clear();
+    caps.supportsAudioFilePlayback = false;
+    if (!_audio_playback_ctr) {
+        return caps;
+    }
+    caps.vendorApiConnected = _vendor_ready.load();
+    caps.vendorApiStatus = _vendor_status;
+    caps.supportsAudioFilePlayback = _vendor_seen;
+    if (_vendor_known) {
+        // The volume only goes through the vendor API.
+        caps.audioVolumeInfo = _vendor_audio;
+        caps.supportsAudioVolumeControl = caps.audioVolumeInfo.supportsControl();
+    }
+    auto &info = caps.onvifProfile.deviceInfo;
+    if (info.manufacturer.empty()) {
+        // No control protocol told who made it: what the vendor API or the detection did.
+        if (_vendor_known && !_vendor_info.manufacturer.empty()) {
+            info.manufacturer    = _vendor_info.manufacturer;
+            info.model           = _vendor_info.model;
+            info.firmwareVersion = _vendor_info.firmwareVersion;
+            info.serialNumber    = _vendor_info.serialNumber;
+            info.hardwareId      = _vendor_info.hardwareId;
+            info.macAddress      = _vendor_info.macAddress;
+        } else {
+            info.manufacturer = _vendor_stage.name();
+        }
+    }
+    return caps;
+}
+
+void SpeakerController::resetVendorChannel() {
+    ++_vendor_generation;
+    _vendor_checking = false;
+    _vendor_ready = false;
+    _vendor_status.clear();
+    _vendor_down = DeviceFailure::None;
+    _vendor_known = false;
+    _vendor_pacer.reset();
+}
+
+SpeakerConfig SpeakerController::vendorConfig() const {
+    SpeakerConfig cfg;
+    cfg.id       = _tuple.device_id;
+    cfg.name     = _device_name;
+    cfg.ip       = _ctrl_option.ip;
+    cfg.type     = DeviceType::Speaker;
+    cfg.brand    = _vendor_stage.plugin().brand;
+    cfg.port     = _ctrl_option.port;
+    cfg.username = _ctrl_option.username;
+    cfg.password = _ctrl_option.password;
+    return cfg;
+}
+
+void SpeakerController::checkVendorChannel(uint64_t now) {
+    if (!_audio_playback_ctr || _vendor_checking || _vendor_stage.detecting()) {
+        return;
+    }
+    GET_CONFIG(int, auth_retry_sec, mediakit::Speaker::kControlAuthRetrySec);
+    if (!_vendor_pacer.due(now, 60, auth_retry_sec)) {
+        return;
+    }
+    _vendor_pacer.onAttempt(now);
+    IDevice::Ptr device;
+    try {
+        device = createVendorDevice(vendorConfig());
+    } catch (const std::exception &e) {
+        WarnL << "Create vendor API check of speaker " << _tuple.shortUrl() << " failed: " << e.what();
+    }
+    if (!device) {
+        return;
+    }
+    _vendor_checking = true;
+    const uint64_t generation = _vendor_generation;
+    auto poller = _poller;
+    std::weak_ptr<SpeakerController> weak_self = shared_from_this();
+    // The callbacks run on the plugin's HTTP poller: only the device and copies, then back to _poller.
+    device->connect([device, poller, weak_self, generation](bool ok, const std::string &data) {
+        const DeviceFailure failure = ok ? DeviceFailure::None : device->lastFailure();
+        auto done = [device, poller, weak_self, generation, ok, data, failure]() {
+            poller->async([device, weak_self, generation, ok, data, failure]() {
+                if (auto self = weak_self.lock()) {
+                    if (generation == self->_vendor_generation) {
+                        self->_vendor_checking = false;
+                        self->onVendorResult(generation, ok, data, failure, device);
+                    }
+                }
+            }, false);
+        };
+        if (!ok) {
+            done();
+            return;
+        }
+        device->disconnect([done](bool, const std::string &) { done(); });
+    });
+}
+
+void SpeakerController::onVendorResult(uint64_t generation, bool ok, const std::string &msg, DeviceFailure failure,
+                                       const IDevice::Ptr &device) {
+    if (generation != _vendor_generation || !_audio_playback_ctr) {
+        return;
+    }
+    const DeviceCapabilities before = currentCaps();
+    _vendor_pacer.onResult(failure == DeviceFailure::Unauthorized ? ConnectError::AUTH_FAILED : ConnectError::NONE);
+    _vendor_down = failure;
+    if (ok) {
+        if (!_vendor_ready.load()) {
+            InfoL << "Vendor API of speaker " << _tuple.shortUrl() << " (" << _address << ") answers";
+        }
+        _vendor_ready = true;
+        _vendor_status.clear();
+        _vendor_seen = true;
+        if (device) {
+            _vendor_info = device->getDeviceInfo();
+            if (auto playback = dynamic_cast<IAudioPlayback *>(device.get())) {
+                _vendor_audio = playback->getAudioSettings();
+            }
+            _vendor_known = true;
+        }
+    } else {
+        if (_vendor_ready.load()) {
+            WarnL << "Vendor API of speaker " << _tuple.shortUrl() << " (" << _address << ") no longer answers: " << msg;
+        }
+        _vendor_ready = false;
+        _vendor_status = msg.empty() ? "Vendor API did not answer" : msg;
+    }
+    if (currentCaps() != before) {
+        // Republished with the protocol state as it is: the vendor channel only changes the capabilities.
+        onControllerReady(_ready.load(), _err_msg, nullptr);
+    }
 }
 
 bool SpeakerController::setupDeviceController() {
     auto password = _ctrl_option.password;
     auto shortUrl = _tuple.shortUrl();
 
-    auto brand = getDeviceBrand(_ctrl_option.manufacturer);
-    auto requiresSeparateCredentail = requiresSeparateDeviceCredential(brand);
-    if (!requiresSeparateCredentail) {
-        _ctrl_username = _ctrl_option.username;
+    _ctrl_username = _ctrl_option.username;
+    if (!_vendor_stage.hasPlugin()) {
         return true;
     }
+    const VendorPluginInfo plugin = _vendor_stage.plugin();
 
-    // The vendor plugin provisions an ONVIF account and its backchannel needs ONVIF: such a speaker is
-    // always controlled with ONVIF, whatever the option says.
-    if (controlProtocolFromString(_ctrl_option.controlProtocol) != ControlProtocol::ONVIF &&
-        controlProtocolFromString(_ctrl_option.controlProtocol) != ControlProtocol::NONE) {
-        WarnL << "Speaker " << shortUrl << " needs ONVIF for its vendor plugin, ignoring control protocol "
-              << _ctrl_option.controlProtocol;
+    // A plugin that needs one control protocol (Bosch: ONVIF for its account and backchannel) gets it,
+    // whatever the option says.
+    if (!plugin.requiredProtocol.empty()) {
+        const ControlProtocol required = controlProtocolFromString(plugin.requiredProtocol);
+        const ControlProtocol setting = controlProtocolFromString(_ctrl_option.controlProtocol);
+        if (setting != required && setting != ControlProtocol::NONE) {
+            WarnL << "Speaker " << shortUrl << " needs " << plugin.requiredProtocol
+                  << " for its vendor plugin, ignoring control protocol " << _ctrl_option.controlProtocol;
+        }
+        _lock.setSetting(plugin.requiredProtocol);
     }
-    _lock.setSetting("ONVIF");
-
-    SpeakerConfig cfg;
-    cfg.id       = _tuple.device_id;
-    cfg.name     = _device_name;
-    cfg.ip       = _ctrl_option.ip;
-    cfg.type     = DeviceType::Speaker;
-    cfg.brand    = brand;
-    cfg.port     = _ctrl_option.port;
-    cfg.username = _ctrl_option.username;
-    cfg.password = password;
 
     try {
-        _vendor_ctr = DeviceFactory::create(cfg);
+        _vendor_ctr = createVendorDevice(vendorConfig());
         _audio_playback_ctr = dynamic_cast<IAudioPlayback*>(_vendor_ctr.get());
         if (!_audio_playback_ctr) {
             _vendor_ctr.reset();
@@ -529,6 +828,9 @@ bool SpeakerController::setupDeviceController() {
     } catch (const std::exception& e) {
         WarnL << "Create API speaker controller " << _tuple.shortUrl() << " failed: " << e.what();
         return false;
+    }
+    if (!plugin.ownControlAccount) {
+        return true;
     }
 
     // ONVIF goes through the speaker.onvifUsername account provisioned below. The controller is
@@ -576,8 +878,8 @@ bool SpeakerController::setupDeviceController() {
 
 IDevice::Ptr SpeakerController::vendorDevice(const OnDeviceResult &cb) {
     CHECK(_poller->isCurrentThread(), "Speaker vendor operations must be called on the owner poller");
-    if (!_vendor_ctr || !_audio_playback_ctr || !_ready.load()) {
-        cb(false, "API controller is not ready");
+    if (!_vendor_ctr || !_audio_playback_ctr || !_vendor_ready.load()) {
+        cb(false, "Vendor API of the speaker is not ready");
         return nullptr;
     }
     return _vendor_ctr;
@@ -597,19 +899,38 @@ void SpeakerController::runVendorOp(const VendorOp &op, const OnDeviceResult &cb
             self->_vendor_failure = static_cast<int>(ok ? DeviceFailure::None : device->lastFailure());
         }
     };
-    device->connect([device, op, cb, autoDisconnect, record](bool ok, const std::string& data) {
+    // The vendor channel learns from operations too: a failed login takes it down without waiting for
+    // the next check, a success refreshes the volume it reports (setAudioVolume() changed it).
+    const uint64_t generation = _vendor_generation;
+    auto poller = _poller;
+    auto report = [weak_self, poller, generation, device](bool ok, const std::string &msg) {
+        const DeviceFailure failure = ok ? DeviceFailure::None : device->lastFailure();
+        poller->async([weak_self, generation, device, ok, msg, failure]() {
+            if (auto self = weak_self.lock()) {
+                self->onVendorResult(generation, ok, msg, failure, device);
+            }
+        }, false);
+    };
+    device->connect([device, op, cb, autoDisconnect, record, report](bool ok, const std::string& data) {
         if (!ok) {
             record(false);
+            report(false, data);
             cb(false, "Connection failed: " + data);
             return;
         }
-        OnDeviceResult done = [record, cb](bool ok, const std::string& data) {
+        OnDeviceResult done = [record, report, cb](bool ok, const std::string& data) {
             record(ok);
+            if (ok) {
+                report(true, "");
+            }
             cb(ok, data);
         };
         if (autoDisconnect) {
-            done = [device, cb, record](bool ok, const std::string& data) {
+            done = [device, cb, record, report](bool ok, const std::string& data) {
                 record(ok);
+                if (ok) {
+                    report(true, "");
+                }
                 doDisconnect(device, ok, data, cb);
             };
         }

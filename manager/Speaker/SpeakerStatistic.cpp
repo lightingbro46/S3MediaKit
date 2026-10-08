@@ -4,6 +4,7 @@
 #include "Common/StrUtil.h"
 #include "Common/BlockingExecutors.h"
 #include "Extension/Resource.h"
+#include "ext-plugin/DeviceFactory.h"
 
 using namespace std;
 using namespace toolkit;
@@ -65,6 +66,9 @@ static Json::Value makeDeviceStatisticJson(const bool &connect, const string &st
     ret["capabilities"]["audioVolumeInfo"]["deviceAudioVolume"] = caps.audioVolumeInfo.deviceAudioVolume;
     ret["capabilities"]["audioVolumeInfo"]["configuredAudioVolume"] = caps.audioVolumeInfo.configuredAudioVolume;
     ret["capabilities"]["supportsAudioBackchannel"] = caps.supportsAudioBackchannel;
+    ret["capabilities"]["vendorApiConnected"] = caps.vendorApiConnected;
+    ret["capabilities"]["vendorApiStatus"] = caps.vendorApiStatus;
+    ret["capabilities"]["supportsAudioFilePlayback"] = caps.supportsAudioFilePlayback;
     return ret;
 }
 
@@ -116,6 +120,9 @@ static DeviceCapabilities getDeviceCapabilities(const Json::Value &data) {
         stats.audioVolumeInfo.configuredAudioVolume    = data["audioVolumeInfo"]["configuredAudioVolume"].asInt();
     }
     stats.supportsAudioBackchannel = !data["supportsAudioBackchannel"].empty() ? data["supportsAudioBackchannel"].asBool() : false;
+    stats.vendorApiConnected = data["vendorApiConnected"].isBool() ? data["vendorApiConnected"].asBool() : false;
+    stats.vendorApiStatus = data["vendorApiStatus"].isString() ? data["vendorApiStatus"].asString() : "";
+    stats.supportsAudioFilePlayback = data["supportsAudioFilePlayback"].isBool() ? data["supportsAudioFilePlayback"].asBool() : false;
     return stats;
 }
 
@@ -588,7 +595,9 @@ void SpeakerStatisticImp::setSyncMode(bool enable) {
 void SpeakerStatisticImp::saveOnvifCredentials() {
     if (connect && device_caps.isOnvifDevice) {
         // Same account SpeakerController::setupDeviceController() logs in with.
-        bool vendor_account = requiresSeparateDeviceCredential(getDeviceBrand(option.manufacturer));
+        VendorPluginInfo plugin;
+        bool vendor_account = DeviceFactory::findPlugin(DeviceType::Speaker, getDeviceBrand(option.manufacturer), plugin) &&
+                              plugin.ownControlAccount;
         GET_CONFIG(std::string, onvif_username, mediakit::Speaker::kOnvifUsername);
         option.onvifUsername = vendor_account ? onvif_username : option.username;
         option.onvifPassword = option.password;

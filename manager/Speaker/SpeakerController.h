@@ -3,6 +3,7 @@
 
 #include "ext-plugin/IDevice.h"
 #include "Control/DeviceControl.h"
+#include "Control/VendorStage.h"
 #include "GenericIPSpeaker.h"
 #include "AudioFileManager.h"
 #include "Common/SerialTaskQueue.h"
@@ -29,11 +30,23 @@ public:
 
     void setListener(const std::shared_ptr<DeviceSourceEvent> &listener);
 
+    // The control protocol is connected (backchannel, device information).
     bool isReady() const;
 
     // Owner poller. Error for a command while the speaker is not ready: why the last connect or probe
     // failed (credentials, network, clock) when known, else CODE_DEVICE_OFFLINE.
     toolkit::SockException notReadyError() const;
+
+    // Owner poller. The speaker has a vendor plugin for audio files and volume (vendor API channel).
+    bool hasVendorApi() const { return _audio_playback_ctr != nullptr; }
+    // The vendor API answered its last check or operation: files and volume work, whatever isReady() says.
+    bool isVendorReady() const { return _vendor_ready.load(); }
+    // Owner poller. Error for a vendor operation while !isVendorReady(), as notReadyError().
+    toolkit::SockException vendorNotReadyError() const;
+
+    // Capabilities saved before a restart: reported, merged with the vendor channel, until a control
+    // protocol connects. Call before the first setupController().
+    void restoreCapabilities(const DeviceCapabilities &caps);
 
     // Reads the device clock last measured by a rejected request (for CODE_DEVICE_CLOCK_SKEW responses).
     // Get it on _poller; the returned function may run on any thread. Null without a controller.
@@ -76,12 +89,52 @@ protected:
     virtual DeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &address,
                                                          const std::string &username, const std::string &password);
 
+    // VendorStage::probe() for speakers with the configured account; `cb` runs once, on any thread.
+    // Unit tests override it.
+    virtual void probeVendorApis(const std::string &ip, int port, const std::string &username,
+                                 const std::string &password, const VendorStage::OnProbe &cb);
+
+    // The vendor plugin of `cfg` (null without one). Unit tests override it.
+    virtual IDevice::Ptr createVendorDevice(const SpeakerConfig &cfg);
+
 private:
     friend class SpeakerControllerTestPeer;
 
     void onManager();
 
+    // The connect part of onManager(): connect the controller, or probe the protocols without one.
+    void runControlCycle();
+
+    // ── Manufacturer detection (on _poller), for a speaker configured without one ──
+    // One cycle: the vendor APIs, then the control protocols (runControlCycle()).
+    void startDetect();
+    void onVendorProbeDone(uint64_t generation, const VendorStage::ProbeResult &result);
+    // A control protocol connected while detecting: its device information names the manufacturer.
+    void onProtocolIdentified(const DeviceControl::Ptr &device_ctr, const std::string &manufacturer);
+    // _vendor_stage detected the brand: drive the speaker through its plugin (if any). The name reaches
+    // the backend in the capabilities (vendor channel, or deviceInfo once a control protocol connects).
+    void onBrandDetected();
+    // A detection cycle ended without a controller; `unreachable`: no control protocol answered.
+    void onDetectCycleFailed(bool unreachable);
+    // Seconds between cycles: VendorStage::cycleIntervalSec() with speaker.detect_max_interval_sec.
+    int cycleIntervalSec() const;
+
+    // Publishes the state of the control protocol (`connect`, `status`) with the capabilities of both
+    // channels: `caps` from a control protocol replaces its part, null keeps the last one.
     void onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps);
+
+    // ── Vendor API channel (on _poller), beside the control protocol ──
+    // The last protocol capabilities with the vendor channel's state, device information and volume.
+    DeviceCapabilities currentCaps() const;
+    // Forgets the vendor channel's state; checks or operations started before are dropped.
+    void resetVendorChannel();
+    // Logs in and out with a fresh plugin instance every 60 s (rejected: speaker.control_auth_retry_sec),
+    // a session of its own so it never ends one of a running operation.
+    void checkVendorChannel(uint64_t now);
+    // `ok`: the vendor API answered (a check, or the login of an operation); `device` read when ok.
+    void onVendorResult(uint64_t generation, bool ok, const std::string &msg, DeviceFailure failure,
+                        const IDevice::Ptr &device);
+    SpeakerConfig vendorConfig() const;
 
     // False when the speaker cannot be controlled (vendor plugin missing or broken).
     bool setupDeviceController();
@@ -101,7 +154,8 @@ private:
     void onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
                      ConnectError err, DeviceFailure failure,
                      const DeviceClockReading &clock);
-    void onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err);
+    // `manufacturer`: the device information of a successful connect.
+    void onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err, const std::string &manufacturer = "");
     void onAuthResult(ConnectError err);
     void unlockProtocol(const std::string &reason);
     // Answers the reconnectNow() requests waiting for the attempt that just ended (_poller).
@@ -164,6 +218,22 @@ private:
     ControllerOption _ctrl_option;
     std::string _device_name;
     bool _enableTimeSync = true; // SpeakerOption::enableTimeSync; read on _poller only
+    // Brand and vendor plugin the speaker is driven with: from the manufacturer option, or detected
+    // while it is blank (each cycle then runs startDetect()). _poller only.
+    VendorStage _vendor_stage;
+    // Vendor API channel (_poller only, except _vendor_ready).
+    std::atomic<bool> _vendor_ready { false };
+    ReconnectPacer _vendor_pacer;
+    bool _vendor_checking = false;
+    uint64_t _vendor_generation = 0;   // bumped by resetVendorChannel()
+    std::string _vendor_status;        // why the vendor API did not answer, "" when it did
+    DeviceFailure _vendor_down = DeviceFailure::None; // lastFailure() of that answer (vendorNotReadyError())
+    bool _vendor_seen = false;         // answered once: plays files (kept while it is down)
+    bool _vendor_known = false;        // _vendor_info and _vendor_audio were read
+    IDeviceInfo _vendor_info;
+    AudioSettings _vendor_audio;
+    // Capabilities of the control protocol: the last connect, else the saved ones (restoreCapabilities()).
+    DeviceCapabilities _protocol_caps;
     uint64_t _last_clock_sync = 0; // when the maintenance cycle last checked the clock; _poller only
 };
 

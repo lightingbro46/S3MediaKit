@@ -776,6 +776,7 @@ const string kControlAutoOrder = SPEAKER_FIELD "control_auto_order";
 const string kControlReprobeFailures = SPEAKER_FIELD "control_reprobe_failures";
 const string kControlAuthRetrySec = SPEAKER_FIELD "control_auth_retry_sec";
 const string kSyncConfigToDb = SPEAKER_FIELD "sync_config_to_db";
+const string kDetectMaxIntervalSec = SPEAKER_FIELD "detect_max_interval_sec";
 
 static onceToken token([]() {
     mINI::Instance()[kSpeakerSavePath] = "./www";
@@ -788,6 +789,9 @@ static onceToken token([]() {
     mINI::Instance()[kControlReprobeFailures] = 5;
     mINI::Instance()[kControlAuthRetrySec] = 300;
     mINI::Instance()[kSyncConfigToDb] = 1;
+    // Speaker without a manufacturer that nothing answered (no vendor API, no control protocol): the
+    // detection cycle doubles from 60 s up to this; 0 keeps it at 60 s.
+    mINI::Instance()[kDetectMaxIntervalSec] = 600;
 });
 } // namespace Speaker
 

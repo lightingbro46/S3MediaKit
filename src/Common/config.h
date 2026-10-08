@@ -1041,6 +1041,9 @@ extern const std::string kControlAuthRetrySec;
 // Write the speaker config (vms_resource + vms_kvpair) to the cluster ESC database. 0 keeps it in
 // info.txt only; turning it back on publishes the pending config on the next change or save.
 extern const std::string kSyncConfigToDb;
+// Speaker without a manufacturer: while neither a vendor API nor a control protocol answers, the
+// detection cycle doubles from 60 s up to this many seconds (0 = stay at 60 s)
+extern const std::string kDetectMaxIntervalSec;
 } // namespace Speaker
 
 ////////////Camera configuration///////////

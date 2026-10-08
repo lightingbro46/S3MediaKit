@@ -69,7 +69,9 @@ void GenericIPSpeakerImp::setupController() {
         _controller->createTimer();
         // An AUTO speaker keeps the protocol it was controlled with instead of probing again.
         if (auto strong_statistic = _statistic.lock()) {
-            _controller->setLastControlProtocol(strong_statistic->getParams().device_caps.controlProtocol);
+            const DeviceCapabilities saved = strong_statistic->getParams().device_caps;
+            _controller->setLastControlProtocol(saved.controlProtocol);
+            _controller->restoreCapabilities(saved);
         }
     }
     _controller->setupController(_option);
@@ -95,10 +97,6 @@ void GenericIPSpeakerImp::playAudioFile(const std::string& speakerId, const std:
     if (!_controller) {
         WarnL << "Speaker " << _src->getUrl() << " controller is not ready. Ignoring play audio request";
         cb(SockException(Err_other, "Speaker controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
-        return;
-    }
-    if (!_controller->isReady()) {
-        cb(_controller->notReadyError());
         return;
     }
 
@@ -142,31 +140,40 @@ void GenericIPSpeakerImp::playAudioFile(const std::string& speakerId, const std:
             });
     };
 
-    typedef std::function<void()> ModeHandler;
-    typedef std::pair<int, ModeHandler> ModeHandlerPair;
-
-    const std::vector<ModeHandlerPair> kModeHandlers = {
-        { SpeakerOption::kAudioPlaybackModeAuto, supportsBackchannel ? ModeHandler(playByBackchannel) : ModeHandler(playByVendorApi) },
-        { SpeakerOption::kAudioPlaybackModeOnvifBackchannel, ModeHandler(playByBackchannel) },
-        { SpeakerOption::kAudioPlaybackModeVendorAudioFile, ModeHandler(playByVendorApi) },
-    };
-
-    if (_option.audioPlaybackMode == SpeakerOption::kAudioPlaybackModeOnvifBackchannel && !supportsBackchannel) {
-        cb(SockException(Err_other, "Device does not support backchannel playback mode", ApiErrCode::CODE_FEATURE_NOT_SUPPORTED));
-        return;
-    }
-
-    int mode = _option.audioPlaybackMode;
-    std::vector<ModeHandlerPair>::const_iterator it = std::find_if(
-        kModeHandlers.begin(), kModeHandlers.end(),
-        [mode](const ModeHandlerPair& entry) { return entry.first == mode; });
-
-    if (it == kModeHandlers.end()) {
+    // Each mode needs its own channel: the backchannel the control protocol, files the vendor API.
+    // AUTO takes the backchannel when it can, else the vendor API when that one answers.
+    const int mode = _option.audioPlaybackMode;
+    bool backchannel = false;
+    if (mode == SpeakerOption::kAudioPlaybackModeOnvifBackchannel) {
+        backchannel = true;
+    } else if (mode == SpeakerOption::kAudioPlaybackModeAuto) {
+        backchannel = supportsBackchannel && (controller->isReady() || !controller->isVendorReady());
+    } else if (mode != SpeakerOption::kAudioPlaybackModeVendorAudioFile) {
         cb(SockException(Err_other, "Playback mode is not supported", ApiErrCode::CODE_FEATURE_NOT_SUPPORTED));
         return;
     }
 
-    it->second();
+    if (backchannel) {
+        if (!supportsBackchannel) {
+            cb(SockException(Err_other, "Device does not support backchannel playback mode", ApiErrCode::CODE_FEATURE_NOT_SUPPORTED));
+            return;
+        }
+        if (!controller->isReady()) {
+            cb(controller->notReadyError());
+            return;
+        }
+        playByBackchannel();
+        return;
+    }
+    if (!controller->hasVendorApi()) {
+        cb(SockException(Err_other, "Device has no vendor API to play audio files", ApiErrCode::CODE_FEATURE_NOT_SUPPORTED));
+        return;
+    }
+    if (!controller->isVendorReady()) {
+        cb(controller->vendorNotReadyError());
+        return;
+    }
+    playByVendorApi();
 }
 
 void GenericIPSpeakerImp::reconnectController(const ReconnectCallback &cb) {
@@ -193,8 +200,13 @@ void GenericIPSpeakerImp::setAudioVolume(int volume, const std::function<void(co
         cb(SockException(Err_other, "Speaker controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
         return;
     }
-    if (!_controller->isReady()) {
-        cb(_controller->notReadyError());
+    // The volume only goes through the vendor API.
+    if (!_controller->hasVendorApi()) {
+        cb(SockException(Err_other, "The device is not support audio volume configuration", ApiErrCode::CODE_FEATURE_NOT_SUPPORTED));
+        return;
+    }
+    if (!_controller->isVendorReady()) {
+        cb(_controller->vendorNotReadyError());
         return;
     }
 

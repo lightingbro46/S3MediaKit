@@ -25,6 +25,21 @@ enum class DeviceBrand {
     TOA,
 };
 
+// What a vendor plugin is and what it needs from the control protocol layer (DeviceFactory::plugins()).
+struct VendorPluginInfo {
+    DeviceType  type = DeviceType::Speaker;
+    DeviceBrand brand = DeviceBrand::UNKNOWN;
+    // Manufacturer written back when the brand is detected through the plugin's API.
+    std::string name;
+    // The plugin provisions the account the control protocol logs in with (speaker.onvifUsername)
+    // instead of the configured one.
+    bool ownControlAccount = false;
+    // Control protocol the plugin needs ("ONVIF"); "" = the configured one.
+    std::string requiredProtocol;
+    // Backchannel audio and the plugin's audio files share the device's DSP.
+    bool sharedDsp = false;
+};
+
 struct IDeviceInfo {
     std::string manufacturer;
     std::string model;
@@ -62,16 +77,10 @@ static DeviceBrand getDeviceBrand(const std::string& manufacturer) {
     return DeviceBrand::UNKNOWN;
 }
 
-static bool requiresSeparateDeviceCredential(DeviceBrand brand) {
-    switch (brand) {
-    case DeviceBrand::BOSCH:
-        return true;
-
-    case DeviceBrand::TOA:
-    case DeviceBrand::UNKNOWN:
-    default:
-        return false;
-    }
+// No manufacturer configured (blank): the speaker's brand is detected on connect, then written back.
+// A non-blank name without a plugin (e.g. "Hikvision") is known: such a device only probes the protocols.
+static bool isManufacturerUnset(const std::string& manufacturer) {
+    return std::all_of(manufacturer.begin(), manufacturer.end(), [](char c) { return ::isspace(static_cast<unsigned char>(c)) != 0; });
 }
 
 class IDevice {

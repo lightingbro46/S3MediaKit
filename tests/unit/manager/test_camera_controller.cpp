@@ -1292,6 +1292,43 @@ public:
         return static_cast<DeviceFailure>(_failures[static_cast<int>(protocol)].load());
     }
 
+    // Manufacturer in the device information of every fake.
+    void setManufacturer(const std::string &manufacturer) {
+        std::lock_guard<std::mutex> lck(_mtx);
+        _manufacturer = manufacturer;
+    }
+    std::string manufacturer() {
+        std::lock_guard<std::mutex> lck(_mtx);
+        return _manufacturer;
+    }
+
+    // What the vendor APIs answer a speaker without manufacturer (ProtocolTestSpeaker). Default: a
+    // device that is not of any plugin brand (HTTP 404).
+    std::atomic<int> vendor_brand{static_cast<int>(DeviceBrand::UNKNOWN)};
+    std::atomic<bool> vendor_rejected{false};
+    std::atomic<bool> vendor_answered{true};
+
+    // The vendor API of a speaker with a plugin (FakeVendorDevice): whether its login succeeds, why not,
+    // and how long it takes to answer.
+    std::atomic<bool> vendor_api_ok{true};
+    std::atomic<int> vendor_api_failure{static_cast<int>(DeviceFailure::Unreachable)};
+    std::atomic<int> vendor_api_delay_ms{0};
+
+    // Capabilities of the last controller-ready event.
+    void setCaps(const DeviceCapabilities &caps) {
+        std::lock_guard<std::mutex> lck(_mtx);
+        _caps = caps;
+        ++_caps_count;
+    }
+    DeviceCapabilities caps() {
+        std::lock_guard<std::mutex> lck(_mtx);
+        return _caps;
+    }
+    int capsCount() {
+        std::lock_guard<std::mutex> lck(_mtx);
+        return _caps_count;
+    }
+
     std::atomic<int> live{0};
     // takeClockSyncWanted() of the fakes: a command found the device clock off.
     std::atomic<bool> sync_wanted{false};
@@ -1301,6 +1338,9 @@ public:
 private:
     std::mutex _mtx;
     std::vector<std::string> _events;
+    std::string _manufacturer;
+    DeviceCapabilities _caps;
+    int _caps_count = 0;
     // Indexed by ControlProtocol. Not a Hikvision camera unless a test says so: ISAPI is not spoken.
     std::atomic<int> _results[4] = {{static_cast<int>(ConnectError::NONE)},
                                     {static_cast<int>(ConnectError::NONE)},
@@ -1340,7 +1380,11 @@ public:
     DeviceFailure lastFailure() const override { return _world->failure(_protocol); }
     bool takeClockSyncWanted() override { return _world->sync_wanted.exchange(false); }
     void setCameraTimeManual() override { _world->log(std::string("settime ") + controlProtocolToString(_protocol)); }
-    OnvifDeviceInfo getDeviceInfo() override { return OnvifDeviceInfo(); }
+    OnvifDeviceInfo getDeviceInfo() override {
+        OnvifDeviceInfo info;
+        info.manufacturer = _world->manufacturer();
+        return info;
+    }
     OnvifMediaProfileMap getMediaProfilesInfo() override { return OnvifMediaProfileMap(); }
     bool refreshMediaProfiles() override { return true; }
     bool getVideoEncoderConfigByToken(const std::string &, VideoEncoderConfig &) override { return false; }
@@ -1399,8 +1443,11 @@ class ReadyRecorder : public DeviceSourceEvent {
 public:
     ReadyRecorder(std::shared_ptr<ProtocolWorld> world, EventPoller::Ptr poller)
         : _world(std::move(world)), _poller(std::move(poller)) {}
-    void onControllerReady(DeviceSource &, bool connect, const std::string &status, const Any &) override {
+    void onControllerReady(DeviceSource &, bool connect, const std::string &status, const Any &data) override {
         _world->log(std::string("ready ") + (connect ? "1 " : "0 ") + status);
+        if (data.is<DeviceCapabilities>()) {
+            _world->setCaps(data.get<DeviceCapabilities>());
+        }
     }
     EventPoller::Ptr getOwnerPoller(DeviceSource &) override { return _poller; }
 
@@ -1888,10 +1935,70 @@ public:
     }
     static bool authRejected(SpeakerController &c) { return c._pacer.authFailed(); }
     static int notReadyCode(SpeakerController &c) { return c.notReadyError().getCustomCode(); }
+    static bool detecting(SpeakerController &c) { return c._vendor_stage.detecting(); }
+    static std::string detectedName(SpeakerController &c) { return c._vendor_stage.name(); }
+    // The next cycle checks the vendor channel again (its own pacer, 60 s otherwise).
+    static void skipVendorWait(SpeakerController &c) { c._vendor_pacer.skipWait(); }
+    static bool vendorAuthRejected(SpeakerController &c) { return c._vendor_pacer.authFailed(); }
+    static int cycleIntervalSec(SpeakerController &c) { return c.cycleIntervalSec(); }
 };
 } // namespace managerkit
 
 namespace {
+// Vendor plugin of a speaker (a Bosch one): login and logout answer from another thread, as the HTTP
+// poller of a plugin does, after ProtocolWorld::vendor_api_delay_ms. Logs "api login".
+class FakeVendorDevice : public IDevice, public IAudioPlayback {
+public:
+    FakeVendorDevice(const SpeakerConfig &cfg, std::shared_ptr<ProtocolWorld> world) : _cfg(cfg), _world(std::move(world)) {}
+
+    void connect(OnDeviceResult cb) override {
+        _world->log("api login");
+        const bool ok = _world->vendor_api_ok;
+        _failure = ok ? static_cast<int>(DeviceFailure::None) : _world->vendor_api_failure.load();
+        const int delay_ms = _world->vendor_api_delay_ms;
+        std::thread([cb, ok, delay_ms]() {
+            if (delay_ms > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+            }
+            cb(ok, ok ? "Connect success" : "Login HTTP 401");
+        }).detach();
+    }
+    void disconnect(OnDeviceResult cb) override { cb(true, "logout"); }
+    void createOnvifUser(const std::string &, const std::string &, OnDeviceResult cb) override { cb(true, ""); }
+    IDeviceInfo getDeviceInfo() const override {
+        IDeviceInfo info;
+        info.manufacturer = "Bosch";
+        info.model = "LBB 1";
+        return info;
+    }
+    DeviceType getDeviceType() const override { return DeviceType::Speaker; }
+    DeviceBrand getBrand() const override { return DeviceBrand::BOSCH; }
+    IDeviceConfig getConfig() const override { return _cfg; }
+    DeviceFailure lastFailure() const override { return static_cast<DeviceFailure>(_failure.load()); }
+
+    void uploadAudio(const AudioFile &, OnDeviceResult cb) override { cb(true, "remote"); }
+    void playAudio(const std::string &, OnDeviceResult cb) override {
+        _world->log("api play");
+        cb(true, "");
+    }
+    void stopAudio(const std::string &, OnDeviceResult cb) override { cb(true, ""); }
+    void deleteAudio(const std::string &, OnDeviceResult cb) override { cb(true, ""); }
+    void listAudio(OnDeviceResult cb) override { cb(true, "[]"); }
+    void setAudioVolume(int, OnDeviceResult cb) override { cb(true, ""); }
+    AudioSettings getAudioSettings() const override {
+        AudioSettings settings;
+        settings.minAudioVolume = -80;
+        settings.maxAudioVolume = 20;
+        settings.deviceAudioVolume = -10;
+        return settings;
+    }
+
+private:
+    SpeakerConfig _cfg;
+    std::shared_ptr<ProtocolWorld> _world;
+    std::atomic<int> _failure{0};
+};
+
 class ProtocolTestSpeaker : public SpeakerController {
 public:
     ProtocolTestSpeaker(const DeviceTuple &tuple, const EventPoller::Ptr &poller, std::shared_ptr<ProtocolWorld> world)
@@ -1901,6 +2008,21 @@ protected:
     DeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &, const std::string &,
                                                  const std::string &) override {
         return std::make_shared<FakeProtocolControl>(protocol, _world);
+    }
+
+    void probeVendorApis(const std::string &, int, const std::string &, const std::string &,
+                         const VendorStage::OnProbe &cb) override {
+        _world->log("vendor");
+        VendorStage::ProbeResult result;
+        result.brand = static_cast<DeviceBrand>(_world->vendor_brand.load());
+        result.rejected = _world->vendor_rejected;
+        result.answered = _world->vendor_answered || result.brand != DeviceBrand::UNKNOWN;
+        // Answers from another thread, as the HTTP poller of a plugin does.
+        std::thread([cb, result]() { cb(result); }).detach();
+    }
+
+    IDevice::Ptr createVendorDevice(const SpeakerConfig &cfg) override {
+        return std::make_shared<FakeVendorDevice>(cfg, _world);
     }
 
 private:
@@ -1939,6 +2061,33 @@ protected:
             if (!last.empty()) speaker->setLastControlProtocol(last);
             speaker->setupController(option);
         });
+    }
+
+    // Manufacturer the speaker detected (blank: none yet).
+    std::string detected() {
+        std::string ret;
+        auto speaker = _speaker;
+        _poller->sync([&]() { ret = SpeakerControllerTestPeer::detectedName(*speaker); });
+        return ret;
+    }
+
+    void skipVendorWait() {
+        auto speaker = _speaker;
+        _poller->sync([speaker]() { SpeakerControllerTestPeer::skipVendorWait(*speaker); });
+    }
+
+    bool detecting() {
+        bool ret = false;
+        auto speaker = _speaker;
+        _poller->sync([&]() { ret = SpeakerControllerTestPeer::detecting(*speaker); });
+        return ret;
+    }
+
+    int interval() {
+        int ret = 0;
+        auto speaker = _speaker;
+        _poller->sync([&]() { ret = SpeakerControllerTestPeer::cycleIntervalSec(*speaker); });
+        return ret;
     }
 
     void cycle() {
@@ -2057,6 +2206,276 @@ TEST_F(SpeakerProtocolTest, BoschSpeakerIsAlwaysOnvif) {
     cycle();
     EXPECT_FALSE(contains(_world->events(), "create ISAPI"));
     EXPECT_EQ(1, _world->count("connect ONVIF live=1"));
+}
+
+// ── Speaker without manufacturer: the vendor APIs, then the control protocols name it ──────────
+
+TEST_F(SpeakerProtocolTest, EmptyManufacturerDetectedThroughVendorApi) {
+    _world->vendor_brand = static_cast<int>(DeviceBrand::BOSCH);
+    setup("AUTO", "", "");
+    EXPECT_TRUE(detecting());
+    cycle();
+    auto events = _world->events();
+    EXPECT_TRUE(contains(events, "vendor"));
+    EXPECT_EQ("Bosch", detected());
+    // The plugin provisions its ONVIF account meanwhile: connected by the next cycle, over ONVIF only.
+    EXPECT_FALSE(contains(events, "connect"));
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+    EXPECT_FALSE(detecting());
+
+    _world->clear();
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "vendor"));
+    EXPECT_EQ(1, _world->count("connect ONVIF live=1"));
+}
+
+// ── Vendor API channel beside the control protocol: files and volume while the protocol is down ──
+
+TEST_F(SpeakerProtocolTest, VendorChannelUpWhileTheProtocolFails) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::UNREACHABLE);
+    setup("AUTO", "", "Bosch");
+    cycle();
+    EXPECT_TRUE(contains(_world->events(), "api login"));
+    EXPECT_TRUE(contains(_world->events(), "connect ONVIF"));
+    EXPECT_FALSE(_speaker->isReady());
+    EXPECT_TRUE(_speaker->isVendorReady());
+    auto caps = _world->caps();
+    EXPECT_TRUE(caps.vendorApiConnected);
+    EXPECT_TRUE(caps.supportsAudioFilePlayback);
+    EXPECT_FALSE(caps.supportsAudioBackchannel);
+    EXPECT_TRUE(caps.supportsAudioVolumeControl) << "the volume comes from the vendor API";
+    EXPECT_EQ("Bosch", caps.onvifProfile.deviceInfo.manufacturer);
+    EXPECT_EQ("LBB 1", caps.onvifProfile.deviceInfo.model);
+}
+
+TEST_F(SpeakerProtocolTest, VendorChannelRejectedWhileTheProtocolIsUp) {
+    _world->vendor_api_ok = false;
+    _world->vendor_api_failure = static_cast<int>(DeviceFailure::Unauthorized);
+    setup("AUTO", "", "Bosch");
+    cycle();
+    EXPECT_TRUE(_speaker->isReady());
+    EXPECT_FALSE(_speaker->isVendorReady());
+    auto caps = _world->caps();
+    EXPECT_FALSE(caps.vendorApiConnected);
+    EXPECT_FALSE(caps.supportsAudioFilePlayback);
+    EXPECT_EQ("Login HTTP 401", caps.vendorApiStatus);
+    bool rejected = false;
+    int code = 0;
+    auto speaker = _speaker;
+    _poller->sync([&]() {
+        rejected = SpeakerControllerTestPeer::vendorAuthRejected(*speaker);
+        code = speaker->vendorNotReadyError().getCustomCode();
+    });
+    EXPECT_TRUE(rejected) << "speaker.control_auth_retry_sec paces the next login";
+    EXPECT_EQ(static_cast<int>(ApiErrCode::CODE_DEVICE_UNAUTHORIZED), code);
+
+    // The control protocol keeps its own pace: the vendor check is not due again yet.
+    _world->clear();
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "api login"));
+    EXPECT_TRUE(_speaker->isReady());
+}
+
+TEST_F(SpeakerProtocolTest, VendorChannelDownAndUpRepublishesOnlyChanges) {
+    _world->probe_ok = true;
+    setup("AUTO", "", "Bosch");
+    cycle();
+    ASSERT_TRUE(_speaker->isReady());
+    ASSERT_TRUE(_speaker->isVendorReady());
+
+    // Nothing changed: no event.
+    const int published = _world->capsCount();
+    skipVendorWait();
+    cycle();
+    EXPECT_TRUE(contains(_world->events(), "api login"));
+    EXPECT_EQ(published, _world->capsCount());
+
+    _world->vendor_api_ok = false;
+    skipVendorWait();
+    cycle();
+    EXPECT_FALSE(_speaker->isVendorReady());
+    auto caps = _world->caps();
+    EXPECT_FALSE(caps.vendorApiConnected);
+    EXPECT_TRUE(caps.supportsAudioFilePlayback) << "kept while the vendor API is down";
+    EXPECT_TRUE(_speaker->isReady());
+
+    _world->vendor_api_ok = true;
+    skipVendorWait();
+    cycle();
+    EXPECT_TRUE(_speaker->isVendorReady());
+    EXPECT_TRUE(_world->caps().vendorApiConnected);
+    EXPECT_TRUE(_world->caps().vendorApiStatus.empty());
+}
+
+TEST_F(SpeakerProtocolTest, VendorBrandReportedWhenItsProtocolFailsToConnect) {
+    _world->vendor_brand = static_cast<int>(DeviceBrand::BOSCH);
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::UNREACHABLE);
+    setup("AUTO", "", "");
+    cycle();
+    EXPECT_EQ("Bosch", detected());
+    EXPECT_FALSE(_speaker->isVendorReady()) << "checked on the next tick";
+
+    cycle();
+    EXPECT_TRUE(contains(_world->events(), "connect ONVIF"));
+    EXPECT_TRUE(_speaker->isVendorReady());
+    auto caps = _world->caps();
+    EXPECT_EQ("Bosch", caps.onvifProfile.deviceInfo.manufacturer);
+    EXPECT_TRUE(caps.vendorApiConnected);
+    EXPECT_FALSE(caps.isOnvifDevice);
+    EXPECT_FALSE(caps.supportsAudioBackchannel);
+}
+
+TEST_F(SpeakerProtocolTest, SpeakerWithoutPluginHasNoVendorChannel) {
+    setup("AUTO", "", "Hikvision");
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "api login"));
+    EXPECT_TRUE(_speaker->isReady());
+    EXPECT_FALSE(_speaker->isVendorReady());
+    bool has_vendor = true;
+    auto speaker = _speaker;
+    _poller->sync([&]() { has_vendor = speaker->hasVendorApi(); });
+    EXPECT_FALSE(has_vendor);
+    auto caps = _world->caps();
+    EXPECT_FALSE(caps.supportsAudioFilePlayback);
+    EXPECT_FALSE(caps.vendorApiConnected);
+}
+
+TEST_F(SpeakerProtocolTest, VendorCheckOfOldSettingsIsDropped) {
+    _world->vendor_api_delay_ms = 300;
+    setup("AUTO", "", "Bosch");
+    auto speaker = _speaker;
+    _poller->sync([speaker]() { SpeakerControllerTestPeer::cycle(*speaker); });
+    // New settings while the login is in flight: its answer belongs to the old ones.
+    setup("AUTO", "", "Bosch");
+    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    _poller->sync([]() {});
+    EXPECT_FALSE(_speaker->isVendorReady());
+
+    _world->vendor_api_delay_ms = 0;
+    cycle();
+    EXPECT_TRUE(_speaker->isVendorReady());
+}
+
+TEST_F(SpeakerProtocolTest, SavedCapabilitiesAreKeptUntilTheChannelsReport) {
+    DeviceCapabilities saved;
+    saved.controlProtocol = "ONVIF";
+    saved.isOnvifDevice = true;
+    saved.supportsAudioBackchannel = true;
+    saved.supportsAudioFilePlayback = true;
+    saved.onvifProfile.deviceInfo.manufacturer = "Bosch Security Systems";
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::UNREACHABLE);
+    _world->vendor_api_ok = false;
+    auto speaker = _speaker;
+    _poller->sync([speaker, saved]() { speaker->restoreCapabilities(saved); });
+    setup("AUTO", "", "Bosch");
+    cycle();
+    auto caps = _world->caps();
+    EXPECT_TRUE(caps.supportsAudioBackchannel);
+    EXPECT_TRUE(caps.supportsAudioFilePlayback);
+    EXPECT_FALSE(caps.vendorApiConnected);
+    EXPECT_EQ("Bosch Security Systems", caps.onvifProfile.deviceInfo.manufacturer);
+}
+
+TEST_F(SpeakerProtocolTest, EmptyManufacturerNamedOverAControlProtocol) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NOT_THIS_PROTOCOL);
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::NONE);
+    _world->setManufacturer("Hikvision");
+    setup("AUTO", "", " ");
+    cycle();
+    auto events = _world->events();
+    EXPECT_LT(indexOf(events, "vendor"), indexOf(events, "create ONVIF"));
+    EXPECT_EQ("Hikvision", detected());
+    EXPECT_EQ(ControlProtocol::ISAPI, current());
+    EXPECT_TRUE(_speaker->isReady());
+    EXPECT_FALSE(detecting());
+
+    _world->clear();
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "vendor"));
+    EXPECT_EQ(1, _world->count("connect ISAPI live=1"));
+}
+
+TEST_F(SpeakerProtocolTest, ProtocolNamingAPluginBrandSwitchesToThePlugin) {
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::NONE);
+    _world->setManufacturer("BOSCH Security Systems");
+    setup("ISAPI", "", ""); // the vendor API did not answer: connected with the configured account first
+    cycle();
+    auto events = _world->events();
+    EXPECT_TRUE(contains(events, "connect ISAPI"));
+    EXPECT_EQ("BOSCH Security Systems", detected());
+    EXPECT_TRUE(contains(events, "ready 0 Manufacturer detected"));
+    // The connected state of the replaced controller is published before the switch, not after.
+    EXPECT_LT(indexOf(events, "ready 1 connected"), indexOf(events, "ready 0 Manufacturer detected"));
+    EXPECT_FALSE(_speaker->isReady());
+    EXPECT_EQ(ControlProtocol::ONVIF, current()) << "the plugin brand is always ONVIF";
+    EXPECT_FALSE(detecting());
+
+    _world->clear();
+    cycle();
+    EXPECT_EQ(1, _world->count("connect ONVIF live=1"));
+    EXPECT_FALSE(contains(_world->events(), "vendor"));
+}
+
+TEST_F(SpeakerProtocolTest, ManufacturerWithoutPluginOnlyProbesTheProtocols) {
+    _world->setManufacturer("Axis");
+    setup("AUTO", "", "Hikvision");
+    EXPECT_FALSE(detecting());
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "vendor"));
+    EXPECT_TRUE(detected().empty());
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+}
+
+TEST_F(SpeakerProtocolTest, SpeakerWithoutManufacturerInfoStaysGeneric) {
+    setup("AUTO", "", "");
+    cycle();
+    EXPECT_TRUE(detected().empty());
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+    EXPECT_FALSE(detecting());
+    _world->clear();
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "vendor"));
+}
+
+TEST_F(SpeakerProtocolTest, RejectedVendorLoginIsNotTakenAsTheBrand) {
+    _world->vendor_rejected = true;
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    setup("ONVIF", "", "");
+    cycle();
+    EXPECT_TRUE(detected().empty());
+    EXPECT_TRUE(detecting());
+    EXPECT_EQ(60, interval()) << "the device answered: no back-off";
+    _world->clear();
+    cycle();
+    EXPECT_EQ(1, _world->count("vendor"));
+}
+
+TEST_F(SpeakerProtocolTest, UnreachableSpeakerWithoutManufacturerBacksOff) {
+    _world->vendor_answered = false;
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::UNREACHABLE);
+    setup("AUTO", "", "");
+    EXPECT_EQ(60, interval());
+    const int expected[] = {120, 240, 480, 600, 600};
+    for (int want : expected) {
+        cycle();
+        EXPECT_EQ(want, interval());
+    }
+    EXPECT_TRUE(detecting());
+
+    // Answering again (HTTP 404 from the vendor API) restores the normal cycle.
+    _world->vendor_answered = true;
+    cycle();
+    EXPECT_EQ(60, interval());
+
+    _world->vendor_answered = false;
+    cycle();
+    EXPECT_EQ(120, interval());
+    ReconnectWait wait;
+    auto speaker = _speaker;
+    _poller->sync([&]() { speaker->reconnectNow(wait.callback()); });
+    ASSERT_TRUE(wait.wait());
+    EXPECT_FALSE(wait.result.connected);
+    EXPECT_EQ(120, interval()) << "the requested attempt did not answer either";
 }
 
 // A command sent while the speaker is not ready says why the last attempt failed.

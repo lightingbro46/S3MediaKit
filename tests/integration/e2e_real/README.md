@@ -80,6 +80,9 @@ với `E2E_SPEAKER_HTTP_PORT` (80), `E2E_SPEAKER_USER`, `E2E_SPEAKER_PASS`, `E2E
 Các biến được đọc lại mỗi lần ghi cấu hình: đổi biến rồi chạy `camera` để nạp lại. Chỉ cần loa thì
 `camera --present 0`, URL RTSP có thể là giá trị giả. Ví dụ mock: `onvif_mock.py --wsse-check --clock-offset-sec 900`
 (loa ONVIF lệch giờ), `psia_mock.py --dialect isapi --onvif-401` (loa ISAPI), MediaServer chạy với `TZ=UTC`.
+Loa Bosch: `bosch_api_mock.py --port P --onvif-upstream 127.0.0.1:<cổng onvif_mock> --control F` với
+`E2E_SPEAKER_HTTP_PORT=P`, `E2E_SPEAKER_MANUFACTURER=Bosch` (hoặc rỗng để nhận hãng), user/pass `admin`;
+`F` bật `api_down` / `reject` / `onvif_down` lúc đang chạy.
 
 `kill9` dùng cho REC-13 (`$H $W kill9 && $H $W start`).
 

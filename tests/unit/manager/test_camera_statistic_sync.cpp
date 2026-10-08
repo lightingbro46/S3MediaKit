@@ -514,6 +514,38 @@ protected:
 
 } // namespace
 
+// The vendor API channel of the capabilities survives info.txt; a file written before it has none.
+TEST(SpeakerStatisticJson, VendorChannelCapabilitiesRoundTrip) {
+    SpeakerStatistic stats;
+    stats.tuple.vhost = DEFAULT_VHOST;
+    stats.tuple.device_id = "spk-json";
+    stats.device_caps.vendorApiConnected = true;
+    stats.device_caps.vendorApiStatus = "Login HTTP 401";
+    stats.device_caps.supportsAudioFilePlayback = true;
+    const std::string json = SpeakerStatisticHelper::getParamsString(stats);
+
+    SpeakerStatistic loaded;
+    ASSERT_TRUE(SpeakerStatisticHelper::getParams(json, loaded));
+    EXPECT_TRUE(loaded.device_caps.vendorApiConnected);
+    EXPECT_EQ("Login HTTP 401", loaded.device_caps.vendorApiStatus);
+    EXPECT_TRUE(loaded.device_caps.supportsAudioFilePlayback);
+
+    // A file written before the keys existed: rename them (the capabilities are a JSON string nested
+    // in addParams, so edit the text).
+    std::string legacy = json;
+    for (const char *key : {"vendorApiConnected", "vendorApiStatus", "supportsAudioFilePlayback"}) {
+        const std::string name(key);
+        for (size_t pos = legacy.find(name); pos != std::string::npos; pos = legacy.find(name, pos)) {
+            legacy.replace(pos, name.size(), "legacy" + name.substr(1));
+        }
+    }
+    SpeakerStatistic old;
+    ASSERT_TRUE(SpeakerStatisticHelper::getParams(legacy, old));
+    EXPECT_FALSE(old.device_caps.vendorApiConnected);
+    EXPECT_TRUE(old.device_caps.vendorApiStatus.empty());
+    EXPECT_FALSE(old.device_caps.supportsAudioFilePlayback);
+}
+
 TEST_F(SpeakerStatisticSyncTest, ConfigIsSyncedAndRemoved) {
     const std::string guid = "spk-stat-config";
     auto stats = makeSpeaker(guid, ResourceManager::Instance().getSelfNodeId());
