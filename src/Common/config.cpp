@@ -571,6 +571,10 @@ const string kDecode = HWCODEC_FIELD "decode";
 const string kEncode = HWCODEC_FIELD "encode";
 const string kMaxDecodeSessions = HWCODEC_FIELD "maxDecodeSessions";
 const string kMaxEncodeSessions = HWCODEC_FIELD "maxEncodeSessions";
+const string kDecodeBudget = HWCODEC_FIELD "decodeBudget";
+const string kEncodeBudget = HWCODEC_FIELD "encodeBudget";
+const string kOfflineCost = HWCODEC_FIELD "offlineCost";
+const string kOfflineHeadroom = HWCODEC_FIELD "offlineHeadroom";
 const string kFailThreshold = HWCODEC_FIELD "failThreshold";
 const string kCooldownSec = HWCODEC_FIELD "cooldownSec";
 
@@ -591,6 +595,10 @@ static onceToken token([]() {
     mINI::Instance()[kEncode] = 1;
     mINI::Instance()[kMaxDecodeSessions] = 0;
     mINI::Instance()[kMaxEncodeSessions] = 0;
+    mINI::Instance()[kDecodeBudget] = "";
+    mINI::Instance()[kEncodeBudget] = "";
+    mINI::Instance()[kOfflineCost] = 60;
+    mINI::Instance()[kOfflineHeadroom] = 0.8;
     mINI::Instance()[kFailThreshold] = 3;
     mINI::Instance()[kCooldownSec] = 300;
 });

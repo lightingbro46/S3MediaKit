@@ -105,11 +105,39 @@ Probe mất thêm khoảng 1–3 s cho mỗi backend có GPU; backend không có
 - Mỗi phiên lỗi được tính một lần cho backend. Sau `hwcodec.failThreshold` phiên lỗi liên tiếp,
   backend bị bỏ qua `hwcodec.cooldownSec` giây (log `GPU backend cuda disabled for 300s`). Hết thời gian
   cho đúng một phiên thử; phiên thử chạy được thì bật lại (`works again, re-enabled`), lỗi thì khoá tiếp.
-- `hwcodec.maxDecodeSessions` / `hwcodec.maxEncodeSessions` giới hạn số phiên GPU; vượt thì phiên mới
-  thử backend kế tiếp rồi về CPU.
+- `hwcodec.maxDecodeSessions` / `hwcodec.maxEncodeSessions` giới hạn số phiên GPU của **mỗi** device;
+  vượt thì phiên mới thử backend kế tiếp rồi về CPU.
+- `hwcodec.decodeBudget` / `hwcodec.encodeBudget` giới hạn theo **tải**, riêng cho từng backend
+  (`cuda:720,vaapi:450`), áp cho mỗi device. Đơn vị là fps quy về 1080p: `rộng × cao × fps / (1920 × 1080)`,
+  một luồng 1080p30 tốn 30, một luồng 360p15 tốn khoảng 1,7. Luồng không vừa phần còn lại thì sang backend
+  kế tiếp, rồi CPU. Decoder mở trước khi có SPS được tính 1080p25, rồi sửa theo khung giải mã đầu tiên (và
+  khi đổi độ phân giải). Hạ budget lúc đang chạy thì phiên cũ giữ nguyên, chỉ phiên mới bị chặn.
+  Đặt budget theo thông lượng **H.264** của engine (NVDEC HEVC nhanh gần gấp đôi, đặt theo HEVC thì camera
+  H.264 sẽ quá tải). Đo trên máy thật: chạy song song N lệnh `ffmpeg -hwaccel cuda|vaapi -i <rtsp 1080p30>
+  -f null -`, tăng N tới khi fps < 30, theo dõi `nvidia-smi dmon -s u` (cột dec/enc) và `intel_gpu_top`;
+  budget ≈ N × 30. NVDEC/NVENC Ampere/Ada khoảng 750–900 fps 1080p H.264 mỗi engine; iGPU Intel phải đo.
 - Encoder mở lỗi trong khi các encoder khác của backend vẫn chạy được coi là chạm giới hạn phiên của
-  thiết bị (card NVIDIA dòng consumer chỉ cho vài phiên NVENC), không tính vào breaker: số encoder GPU
-  bị chặn ở mức đang chạy trong `cooldownSec` giây.
+  thiết bị (card NVIDIA dòng consumer chỉ cho vài phiên NVENC, tính chung **mọi card** của hệ thống), không
+  tính vào breaker: số encoder GPU của backend (cộng mọi device) bị chặn ở mức đang chạy trong `cooldownSec`
+  giây.
+
+### Nhiều GPU
+
+- **Nhiều card một backend:** `hwcodec.device=cuda:0;1` (ngăn device trong một backend bằng `;`). Mỗi card
+  được probe riêng, có breaker và budget riêng; phiên mới vào card có tỉ lệ tải/budget thấp nhất (không đặt
+  budget thì card tải thấp nhất). Chỉ số card theo thứ tự của CUDA, khác thứ tự `nvidia-smi`: đặt
+  `CUDA_DEVICE_ORDER=PCI_BUS_ID` trong môi trường chạy MediaServer để hai bên khớp. Luôn viết tiền tố
+  `cuda:`; mục không có tiền tố áp cho mọi backend.
+- **NVIDIA + iGPU Intel:** khi `hwcodec.device` không có mục `vaapi`, MediaServer tự chọn render node theo
+  driver trong `/sys/class/drm/renderD*/device/driver`: ưu tiên `i915`/`xe`, rồi `amdgpu`, rồi driver khác,
+  **không bao giờ** node `nvidia` (log `GPU backend vaapi: using /dev/dri/renderD129 (i915)`). Máy chỉ có node
+  NVIDIA thì bỏ vaapi (cuda đã phủ card đó, kể cả khi có `nvidia-vaapi-driver`). FFmpeg tự chọn thì lấy node
+  đầu tiên mở được, mà số node theo thứ tự nạp driver nên có thể là card NVIDIA.
+- Để iGPU nhận phần tràn decode từ cuda, đặt `hwcodec.decodeBudget` cho cuda; không có budget thì NVDEC
+  không bao giờ báo đầy và mọi decoder đều vào cuda.
+- `vaapi` và `qsv` trên Linux là **cùng một iGPU**: budget của hai backend tính trùng. Đặt `encodeBudget`
+  của qsv nhỏ hoặc bỏ qsv khỏi `hwcodec.backends`. Với qsv, `hwcodec.device` là tên implementation
+  (`hw`, `auto`), không phải đường dẫn `/dev/dri`; FFmpeg tự tìm iGPU Intel cho qsv.
 
 ## 2. Cấu hình
 
@@ -119,11 +147,15 @@ Mặc định đã an toàn (production sinh config từ default trong code):
 |---|---|---|
 | `hwcodec.enable` | `1` | `0` = luôn CPU, không tạo device GPU (đọc lúc probe và mỗi lần mở phiên) |
 | `hwcodec.backends` | theo nền tảng (bảng đầu trang) | Thứ tự thử; đổi nóng được thứ tự/bỏ backend, thêm backend mới cần khởi động lại |
-| `hwcodec.device` | rỗng | `cuda:1,vaapi:/dev/dri/renderD129`; mục không có `backend:` áp cho mọi backend; rỗng = device mặc định của FFmpeg |
+| `hwcodec.device` | rỗng | `cuda:1,vaapi:/dev/dri/renderD129`; nhiều card: `cuda:0;1`; mục không có `backend:` áp cho mọi backend; rỗng = device mặc định của FFmpeg, riêng vaapi trên Linux tự chọn node Intel/AMD (mục "Nhiều GPU") |
 | `hwcodec.decode` | `1` | Dùng GPU để giải mã |
 | `hwcodec.encode` | `1` | Dùng GPU để mã hoá transcode |
 | `hwcodec.maxDecodeSessions` | `0` | Số phiên giải mã GPU tối đa, `0` = không giới hạn |
 | `hwcodec.maxEncodeSessions` | `0` | Số phiên mã hoá GPU tối đa, `0` = không giới hạn (tự học giới hạn khi mở lỗi) |
+| `hwcodec.decodeBudget` | rỗng | Tải giải mã tối đa mỗi device, `cuda:720,vaapi:450` (fps quy 1080p); rỗng/thiếu backend/`<= 0` = không giới hạn |
+| `hwcodec.encodeBudget` | rỗng | Như trên cho mã hoá |
+| `hwcodec.offlineCost` | `60` | Tải tính cho một việc mã hoá chạy nhanh hơn thời gian thực (trích xuất overlay); chỉ có tác dụng khi có budget |
+| `hwcodec.offlineHeadroom` | `0.8` | Việc offline chỉ được nhận khi tải sau đó không vượt `budget × hệ số` này, chừa phần còn lại cho luồng live |
 | `hwcodec.failThreshold` | `3` | Lỗi liên tiếp để một phiên về CPU, và số phiên lỗi để khoá backend |
 | `hwcodec.cooldownSec` | `300` | Thời gian khoá backend / giữ giới hạn phiên đã học |
 | `general.check_nvidia_dev` | `1` | Giữ nghĩa cũ: `0` = không bao giờ dùng `cuda` |
@@ -138,6 +170,7 @@ Mặc định đã an toàn (production sinh config từ default trong code):
 | `HwVideoDecoder`, `HwVideoEncoder` | Số phiên đang chạy trên GPU |
 | `HwCodecFallback` | Số decoder/encoder đã bắt đầu trên GPU rồi về CPU kể từ khi khởi động |
 | `HwCodecBackends` | Backend probe thành công, ví dụ `cuda`; rỗng = toàn bộ chạy CPU |
+| `HwCodecLoad` | Tải từng device, ví dụ `cuda:0 dec=120/720 enc=30,vaapi:/dev/dri/renderD129 dec=12`; số sau `/` là budget khi có đặt |
 
 Mỗi phiên ghi một dòng log: `Open the decoder successfully:h264 on GPU cuda`,
 `FFmpegEncoder opened: h264_nvenc (GPU cuda) 1280x720 @15fps ...`, hoặc lý do về CPU.
@@ -352,8 +385,9 @@ Sửa xong driver thì **khởi động lại MediaServer**, vì probe chỉ ch�
 
 Trích xuất của camera có watermark/privacy mask (`ffmpeg.extract_overlay`) phải giải mã, vẽ overlay rồi
 mã hoá lại. Bước mã hoá dùng GPU: khi template còn nguyên phần `-c:v libx264 -preset veryfast -pix_fmt
-yuv420p` mặc định, `FFmpegExtractor` xin một phiên mã hoá H264 của `HwCodecManager` (tính vào
-`hwcodec.maxEncodeSessions`, giữ đến khi tiến trình ffmpeg xong) và thay phần đó theo backend:
+yuv420p` mặc định, `FFmpegExtractor` xin một phiên mã hoá H264 **offline** của `HwCodecManager` (tính vào
+`hwcodec.maxEncodeSessions`; khi có `hwcodec.encodeBudget` thì tính `hwcodec.offlineCost` và chỉ nhận khi
+còn dưới `budget × hwcodec.offlineHeadroom`; giữ đến khi tiến trình ffmpeg xong) và thay phần đó theo backend:
 
 | Backend | Tham số mã hoá |
 |---|---|

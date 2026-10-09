@@ -28,8 +28,9 @@ namespace mediakit {
  * GPU decode/encode for the in-process FFmpeg pipeline (motion, transcode, video stack).
  *
  * HwCodecManager probes the configured backends once (hwcodec.backends), keeps one shared FFmpeg
- * device context per working backend and hands out HwCodecSession objects: a session is one GPU
- * decoder or encoder and holds a slot of the backend's session budget until it is destroyed.
+ * device context per working device (hwcodec.device may list several per backend, "cuda:0;1") and
+ * hands out HwCodecSession objects: a session is one GPU decoder or encoder and holds a slot of the
+ * device's session limit and its load (hwcodec.decodeBudget/encodeBudget) until it is destroyed.
  * Until the probe has finished, or when no backend works, acquire*() returns null and the caller
  * uses the CPU exactly as before.
  *
@@ -61,11 +62,17 @@ struct HwBackendCaps {
 
 struct HwBackendState;
 
+/**
+ * Load of one stream in 1080p frames per second: width*height*fps / (1920*1080). 1080p30 = 30,
+ * 360p15 ~ 1.7. Unknown values (0, before the SPS) count as 1080p25.
+ */
+double hwStreamCost(int width, int height, float fps);
+
 class HwCodecSession {
 public:
     using Ptr = std::shared_ptr<HwCodecSession>;
 
-    HwCodecSession(std::shared_ptr<HwBackendState> state, bool encode, bool trial);
+    HwCodecSession(std::shared_ptr<HwBackendState> state, bool encode, bool trial, double cost);
     ~HwCodecSession();
 
     HwBackend backend() const;
@@ -85,11 +92,22 @@ public:
      *        are capped at the running count for hwcodec.cooldownSec.
      */
     void reportFailure(bool open_failure = false);
+    /**
+     * The stream turned out to have another size or frame rate than assumed at acquire (decoder
+     * opened before the SPS, resolution change): moves the device load by the difference. The budget
+     * is not checked again, a running session stays on the GPU.
+     */
+    void updateCost(int width, int height, float fps);
+    double cost() const;
 
 private:
     std::shared_ptr<HwBackendState> _state;
     bool _encode;
     bool _trial;
+    double _cost;
+    int _width = -1;
+    int _height = -1;
+    float _fps = -1;
     bool _succeeded = false;
     bool _failed = false;
 };
@@ -117,12 +135,26 @@ public:
      * sessions already handed out keep their old device.
      */
     void probe();
-    void probe(const ProbeFunc &func);
+    /**
+     * @param pick_vaapi_node without a vaapi device in hwcodec.device, choose the render node from sysfs
+     *        (Intel/AMD, never NVIDIA) instead of FFmpeg's first node. Off for tests: it reads the host.
+     */
+    void probe(const ProbeFunc &func, bool pick_vaapi_node = false);
     bool probed() const;
 
-    // A GPU session for decoding/encoding codec (H264/H265 only), or null to use the CPU.
-    HwCodecSession::Ptr acquireDecode(CodecId codec);
-    HwCodecSession::Ptr acquireEncode(CodecId codec);
+    /**
+     * A GPU session for decoding/encoding a codec (H264/H265 only) stream of that size and frame rate,
+     * or null to use the CPU. Backends are tried in hwcodec.backends order; a device is skipped when the
+     * stream does not fit its budget. Unknown size/fps (0) count as 1080p25.
+     */
+    HwCodecSession::Ptr acquireDecode(CodecId codec, int width = 0, int height = 0, float fps = 0);
+    HwCodecSession::Ptr acquireEncode(CodecId codec, int width = 0, int height = 0, float fps = 0);
+    /**
+     * An encoder for a job that runs faster than real time (overlay extract): costs
+     * hwcodec.offlineCost and only fits while the load stays under budget * hwcodec.offlineHeadroom,
+     * so live streams keep their room.
+     */
+    HwCodecSession::Ptr acquireEncodeOffline(CodecId codec);
 
     // A decoder/encoder that had a GPU session went back to the CPU.
     void addFallback();
@@ -132,9 +164,11 @@ public:
     uint64_t fallbackCount() const;
     // Comma separated names of the probed, working backends (empty before the probe or without GPU).
     std::string backends() const;
+    // Load per device, "cuda:0 dec=120/720 enc=30,vaapi dec=12" (budget after '/' when one is set).
+    std::string loads() const;
 
 private:
-    HwCodecSession::Ptr acquire(CodecId codec, bool encode);
+    HwCodecSession::Ptr acquire(CodecId codec, bool encode, double cost, bool offline);
 
 private:
     mutable std::mutex _mtx;

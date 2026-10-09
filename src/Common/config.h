@@ -830,7 +830,10 @@ extern const std::string kEnable;
 // macOS "videotoolbox", Android "mediacodec". qsv/amf/mediacodec only encode, d3d11va/dxva2 only decode.
 extern const std::string kBackends;
 // Device per backend, comma separated "backend:device" (e.g. "cuda:0,vaapi:/dev/dri/renderD129");
-// an entry without "backend:" applies to every backend. Empty = FFmpeg default device.
+// an entry without "backend:" applies to every backend. Several devices of one backend are separated
+// by ';' ("cuda:0;1"); new sessions go to the least loaded one. Empty = FFmpeg default device, except
+// vaapi on Linux: the first Intel (i915/xe) render node, else AMD, never an NVIDIA one.
+// qsv takes an implementation name here ("hw", "auto"), not a /dev/dri path.
 extern const std::string kDevice;
 // Whether to use the GPU for decoding / encoding.
 extern const std::string kDecode;
@@ -839,6 +842,15 @@ extern const std::string kEncode;
 // (an encoder that fails to open while others run lowers the limit to the running count for cooldownSec).
 extern const std::string kMaxDecodeSessions;
 extern const std::string kMaxEncodeSessions;
+// Load budget per device, "backend:value" comma separated like kDevice (e.g. "cuda:720,vaapi:450").
+// Unit: 1080p frames per second (width*height*fps / (1920*1080)): 1080p30 = 30. A stream that does not
+// fit goes to the next backend, then the CPU. Empty, missing backend or <= 0 = no load limit.
+extern const std::string kDecodeBudget;
+extern const std::string kEncodeBudget;
+// Load counted for an encoder that runs faster than real time (overlay extract), and the share of the
+// encode budget such jobs may fill (0.8 = keep 20% for live streams). Only applies with a budget.
+extern const std::string kOfflineCost;
+extern const std::string kOfflineHeadroom;
 // Consecutive failures that make one session drop to CPU, and failed sessions that disable a backend
 // for cooldownSec; after it one trial session is allowed again.
 extern const std::string kFailThreshold;

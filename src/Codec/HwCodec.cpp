@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 // Probe tests run in forked children on Linux only: macOS CoreFoundation/VideoToolbox abort in a
 // forked child that did not exec, and an Android app process (ART, JNI for MediaCodec) must not fork.
@@ -20,6 +22,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <climits>
+#include <unistd.h>
+#endif
 #include "HwCodec.h"
 #include "Common/config.h"
 #include "Util/util.h"
@@ -36,17 +42,28 @@ enum {
     kBreakerHalfOpen,
 };
 
+// Shared by the devices of one backend: the NVENC session limit of consumer cards counts every card.
+struct HwBackendGroup {
+    std::mutex mtx;
+    size_t encode_sessions = 0;
+    // Encoder session limit learned from an open failure, valid until encode_cap_until.
+    size_t encode_cap = 0;
+    uint64_t encode_cap_until = 0;
+};
+
+// One device of a backend. Lock order: HwBackendState::mtx, then HwBackendGroup::mtx.
 struct HwBackendState {
     std::mutex mtx;
     HwBackend backend = HwBackend::None;
     HwBackendCaps caps;
     AVBufferRef *device = nullptr;
     std::string device_name;
+    std::shared_ptr<HwBackendGroup> group;
     size_t decode_sessions = 0;
     size_t encode_sessions = 0;
-    // Encoder session limit learned from an open failure, valid until encode_cap_until.
-    size_t encode_cap = 0;
-    uint64_t encode_cap_until = 0;
+    // Sum of the sessions' hwStreamCost.
+    double decode_load = 0;
+    double encode_load = 0;
     // Consecutive failed sessions.
     int failures = 0;
     int breaker = kBreakerClosed;
@@ -157,16 +174,47 @@ static string deviceFor(HwBackend backend, const string &cfg) {
     return all;
 }
 
+// Load budget of backend from "cuda:720,vaapi:450"; 0 = no limit.
+static double budgetFor(HwBackend backend, const string &cfg) {
+    auto value = deviceFor(backend, cfg);
+    return value.empty() ? 0 : std::max(0.0, atof(value.data()));
+}
+
+// Label of a device in logs and loads(): "cuda", "cuda:1", "vaapi:/dev/dri/renderD129".
+static string stateLabel(const HwBackendState &state) {
+    return state.device_name.empty() ? string(hwBackendName(state.backend))
+                                     : string(hwBackendName(state.backend)) + ":" + state.device_name;
+}
+
+double hwStreamCost(int width, int height, float fps) {
+    if (width <= 0 || height <= 0) {
+        width = 1920;
+        height = 1080;
+    }
+    if (fps <= 0) {
+        fps = 25;
+    }
+    return (double)width * height * fps / (1920.0 * 1080.0);
+}
+
 //////////////////////////////////////////// HwCodecSession ////////////////////////////////////////////
 
-HwCodecSession::HwCodecSession(std::shared_ptr<HwBackendState> state, bool encode, bool trial)
-    : _state(std::move(state)), _encode(encode), _trial(trial) {}
+HwCodecSession::HwCodecSession(std::shared_ptr<HwBackendState> state, bool encode, bool trial, double cost)
+    : _state(std::move(state)), _encode(encode), _trial(trial), _cost(cost) {}
 
 HwCodecSession::~HwCodecSession() {
     lock_guard<mutex> lck(_state->mtx);
     auto &count = _encode ? _state->encode_sessions : _state->decode_sessions;
     if (count > 0) {
         --count;
+    }
+    auto &load = _encode ? _state->encode_load : _state->decode_load;
+    load = std::max(0.0, load - _cost);
+    if (_encode && _state->group) {
+        lock_guard<mutex> lck2(_state->group->mtx);
+        if (_state->group->encode_sessions > 0) {
+            --_state->group->encode_sessions;
+        }
     }
     if (_trial && !_succeeded && !_failed && _state->breaker == kBreakerHalfOpen) {
         // The trial ended without a verdict (stream closed early): let the next session try.
@@ -190,6 +238,26 @@ const string &HwCodecSession::deviceName() const {
     return _state->device_name;
 }
 
+double HwCodecSession::cost() const {
+    lock_guard<mutex> lck(_state->mtx);
+    return _cost;
+}
+
+void HwCodecSession::updateCost(int width, int height, float fps) {
+    // Called per decoded frame by the owner thread: only take the lock when something changed.
+    if (width == _width && height == _height && fps == _fps) {
+        return;
+    }
+    _width = width;
+    _height = height;
+    _fps = fps;
+    auto cost = hwStreamCost(width, height, fps);
+    lock_guard<mutex> lck(_state->mtx);
+    auto &load = _encode ? _state->encode_load : _state->decode_load;
+    load = std::max(0.0, load + cost - _cost);
+    _cost = cost;
+}
+
 AVPixelFormat HwCodecSession::hwPixFmt() const {
     return _state->caps.hw_pix_fmt;
 }
@@ -202,7 +270,7 @@ void HwCodecSession::reportSuccess() {
     _succeeded = true;
     _state->failures = 0;
     if (_state->breaker != kBreakerClosed) {
-        InfoL << "GPU backend " << hwBackendName(_state->backend) << " works again, re-enabled";
+        InfoL << "GPU backend " << stateLabel(*_state) << " works again, re-enabled";
     }
     _state->breaker = kBreakerClosed;
     _state->trial_in_flight = false;
@@ -222,19 +290,23 @@ void HwCodecSession::reportFailure(bool open_failure) {
     if (_trial) {
         _state->trial_in_flight = false;
     }
-    if (open_failure && _encode && _state->encode_sessions > 1) {
-        // Other encoders of this backend run fine: most likely the device session limit
-        // (consumer NVIDIA cards allow only a few NVENC sessions).
-        _state->encode_cap = _state->encode_sessions - 1;
-        _state->encode_cap_until = now + cooldown_ms;
-        WarnL << "GPU encoder " << hwBackendName(_state->backend) << " failed to open with " << _state->encode_cap
-              << " running, new encoders above that count use the CPU for " << cooldown_sec << "s";
-        return;
+    if (open_failure && _encode && _state->group) {
+        // Other encoders of this backend run fine: most likely the session limit (consumer NVIDIA
+        // cards allow a few NVENC sessions for the whole system, every card together).
+        lock_guard<mutex> lck2(_state->group->mtx);
+        auto &group = *_state->group;
+        if (group.encode_sessions > 1) {
+            group.encode_cap = group.encode_sessions - 1;
+            group.encode_cap_until = now + cooldown_ms;
+            WarnL << "GPU encoder " << stateLabel(*_state) << " failed to open with " << group.encode_cap
+                  << " running, new encoders above that count use the CPU for " << cooldown_sec << "s";
+            return;
+        }
     }
     ++_state->failures;
     if (_state->breaker == kBreakerHalfOpen || _state->failures >= std::max(1, fail_threshold)) {
         if (_state->breaker != kBreakerOpen) {
-            WarnL << "GPU backend " << hwBackendName(_state->backend) << " disabled for " << cooldown_sec << "s after "
+            WarnL << "GPU backend " << stateLabel(*_state) << " disabled for " << cooldown_sec << "s after "
                   << _state->failures << " failed session(s)";
         }
         _state->breaker = kBreakerOpen;
@@ -992,27 +1064,90 @@ HwCodecManager &HwCodecManager::Instance() {
 HwCodecManager::HwCodecManager() = default;
 HwCodecManager::~HwCodecManager() = default;
 
+#if defined(__linux__) && !defined(__ANDROID__)
+/**
+ * vaapi without a configured device: FFmpeg opens the first render node that opens, whatever its
+ * driver, and the node numbers follow the driver load order. With an NVIDIA card next to an Intel iGPU
+ * that is often the NVIDIA node: the probe fails (or, with nvidia-vaapi-driver, vaapi runs on the same
+ * NVDEC as cuda) and the iGPU stays idle. Picks the first i915/xe node, else amdgpu, else any other
+ * driver but nvidia. Returns false when render nodes exist but all are NVIDIA: vaapi is not used then.
+ * node stays empty when sysfs tells nothing (FFmpeg default).
+ */
+static bool pickVaapiNode(string &node) {
+    node.clear();
+    string node_driver;
+    bool any = false;
+    int best = INT_MAX;
+    for (int i = 128; i < 136; ++i) {
+        char link[64];
+        snprintf(link, sizeof(link), "/sys/class/drm/renderD%d/device/driver", i);
+        char target[PATH_MAX];
+        auto len = readlink(link, target, sizeof(target) - 1);
+        if (len <= 0) {
+            continue;
+        }
+        target[len] = '\0';
+        any = true;
+        auto slash = strrchr(target, '/');
+        string driver = slash ? slash + 1 : target;
+        int rank = driver == "i915" || driver == "xe" ? 0 : driver == "amdgpu" ? 1 : driver == "nvidia" ? -1 : 2;
+        if (rank >= 0 && rank < best) {
+            best = rank;
+            node = "/dev/dri/renderD" + to_string(i);
+            node_driver = driver;
+        }
+    }
+    if (!node.empty()) {
+        InfoL << "GPU backend vaapi: using " << node << " (" << node_driver << ")";
+        return true;
+    }
+    if (any) {
+        InfoL << "GPU backend vaapi: only NVIDIA render nodes, vaapi not used (cuda covers them)";
+        return false;
+    }
+    return true;
+}
+#endif
+
 void HwCodecManager::probe() {
-    probe(ffmpegProbe);
+    probe(ffmpegProbe, true);
 }
 
-void HwCodecManager::probe(const ProbeFunc &func) {
+void HwCodecManager::probe(const ProbeFunc &func, bool pick_vaapi_node) {
     GET_CONFIG(bool, enable, HwCodec::kEnable);
     GET_CONFIG(string, device_cfg, HwCodec::kDevice);
     vector<std::shared_ptr<HwBackendState>> states;
     if (enable) {
         for (auto backend : configuredBackends()) {
-            auto state = std::make_shared<HwBackendState>();
-            state->backend = backend;
-            state->device_name = deviceFor(backend, device_cfg);
-            if (!func(backend, state->device_name, state->caps, state->device)) {
-                continue;
+            auto devices = split(deviceFor(backend, device_cfg), ";");
+            for (auto &device : devices) {
+                trim(device);
             }
-            auto &caps = state->caps;
-            InfoL << "GPU backend " << hwBackendName(backend) << ": decode h264=" << caps.decode[0] << " h265=" << caps.decode[1]
-                  << ", encode h264=" << caps.encode[0] << " h265=" << caps.encode[1];
-            if (caps.decode[0] || caps.decode[1] || caps.encode[0] || caps.encode[1]) {
-                states.emplace_back(std::move(state));
+            devices.erase(std::remove(devices.begin(), devices.end(), string()), devices.end());
+            if (devices.empty()) {
+                string device;
+#if defined(__linux__) && !defined(__ANDROID__)
+                if (backend == HwBackend::Vaapi && pick_vaapi_node && !pickVaapiNode(device)) {
+                    continue;
+                }
+#endif
+                devices.emplace_back(device);
+            }
+            auto group = std::make_shared<HwBackendGroup>();
+            for (auto &device : devices) {
+                auto state = std::make_shared<HwBackendState>();
+                state->backend = backend;
+                state->device_name = device;
+                state->group = group;
+                if (!func(backend, state->device_name, state->caps, state->device)) {
+                    continue;
+                }
+                auto &caps = state->caps;
+                InfoL << "GPU backend " << stateLabel(*state) << ": decode h264=" << caps.decode[0] << " h265=" << caps.decode[1]
+                      << ", encode h264=" << caps.encode[0] << " h265=" << caps.encode[1];
+                if (caps.decode[0] || caps.decode[1] || caps.encode[0] || caps.encode[1]) {
+                    states.emplace_back(std::move(state));
+                }
             }
         }
     }
@@ -1029,20 +1164,28 @@ bool HwCodecManager::probed() const {
     return _probed;
 }
 
-HwCodecSession::Ptr HwCodecManager::acquireDecode(CodecId codec) {
-    return acquire(codec, false);
+HwCodecSession::Ptr HwCodecManager::acquireDecode(CodecId codec, int width, int height, float fps) {
+    return acquire(codec, false, hwStreamCost(width, height, fps), false);
 }
 
-HwCodecSession::Ptr HwCodecManager::acquireEncode(CodecId codec) {
-    return acquire(codec, true);
+HwCodecSession::Ptr HwCodecManager::acquireEncode(CodecId codec, int width, int height, float fps) {
+    return acquire(codec, true, hwStreamCost(width, height, fps), false);
 }
 
-HwCodecSession::Ptr HwCodecManager::acquire(CodecId codec, bool encode) {
+HwCodecSession::Ptr HwCodecManager::acquireEncodeOffline(CodecId codec) {
+    GET_CONFIG(float, offline_cost, HwCodec::kOfflineCost);
+    return acquire(codec, true, std::max(0.0f, offline_cost), true);
+}
+
+HwCodecSession::Ptr HwCodecManager::acquire(CodecId codec, bool encode, double cost, bool offline) {
     GET_CONFIG(bool, enable, HwCodec::kEnable);
     GET_CONFIG(bool, decode_on, HwCodec::kDecode);
     GET_CONFIG(bool, encode_on, HwCodec::kEncode);
     GET_CONFIG(int, max_decode, HwCodec::kMaxDecodeSessions);
     GET_CONFIG(int, max_encode, HwCodec::kMaxEncodeSessions);
+    GET_CONFIG(string, decode_budget_cfg, HwCodec::kDecodeBudget);
+    GET_CONFIG(string, encode_budget_cfg, HwCodec::kEncodeBudget);
+    GET_CONFIG(float, offline_headroom, HwCodec::kOfflineHeadroom);
 
     auto idx = codecIndex(codec);
     if (idx < 0 || !enable || !(encode ? encode_on : decode_on)) {
@@ -1060,41 +1203,70 @@ HwCodecSession::Ptr HwCodecManager::acquire(CodecId codec, bool encode) {
     auto now = getCurrentMillisecond();
     // Walk the configured order again so a hot reload of hwcodec.backends can reorder or drop backends.
     for (auto backend : configuredBackends()) {
-        auto it = std::find_if(states.begin(), states.end(), [backend](const std::shared_ptr<HwBackendState> &state) {
-            return state->backend == backend;
-        });
-        if (it == states.end()) {
-            continue;
-        }
-        auto &state = *it;
-        lock_guard<mutex> lck(state->mtx);
-        if (!(encode ? state->caps.encode[idx] : state->caps.decode[idx])) {
-            continue;
-        }
-        auto &count = encode ? state->encode_sessions : state->decode_sessions;
-        auto max = encode ? max_encode : max_decode;
-        if (max > 0 && count >= (size_t)max) {
-            continue;
-        }
-        if (encode && state->encode_cap && now < state->encode_cap_until && count >= state->encode_cap) {
-            continue;
-        }
-        bool trial = false;
-        if (state->breaker == kBreakerOpen) {
-            if (now < state->open_until) {
+        auto budget = budgetFor(backend, encode ? encode_budget_cfg : decode_budget_cfg);
+        auto limit = offline ? budget * std::max(0.0f, std::min(1.0f, offline_headroom)) : budget;
+        // Devices of the backend that can take the stream, least loaded first.
+        vector<std::pair<double, std::shared_ptr<HwBackendState>>> candidates;
+        for (auto &state : states) {
+            if (state->backend != backend) {
                 continue;
             }
-            state->breaker = kBreakerHalfOpen;
-            state->trial_in_flight = false;
-        }
-        if (state->breaker == kBreakerHalfOpen) {
-            if (state->trial_in_flight) {
+            lock_guard<mutex> lck(state->mtx);
+            if (!(encode ? state->caps.encode[idx] : state->caps.decode[idx])) {
                 continue;
             }
-            trial = state->trial_in_flight = true;
+            auto load = encode ? state->encode_load : state->decode_load;
+            if (budget > 0 && load + cost > limit) {
+                continue;
+            }
+            candidates.emplace_back(budget > 0 ? load / budget : load, state);
         }
-        ++count;
-        return std::make_shared<HwCodecSession>(state, encode, trial);
+        std::stable_sort(candidates.begin(), candidates.end(),
+                         [](const std::pair<double, std::shared_ptr<HwBackendState>> &a,
+                            const std::pair<double, std::shared_ptr<HwBackendState>> &b) { return a.first < b.first; });
+
+        for (auto &candidate : candidates) {
+            auto &state = candidate.second;
+            lock_guard<mutex> lck(state->mtx);
+            auto &count = encode ? state->encode_sessions : state->decode_sessions;
+            auto &load = encode ? state->encode_load : state->decode_load;
+            auto max = encode ? max_encode : max_decode;
+            if (max > 0 && count >= (size_t)max) {
+                continue;
+            }
+            // Re-checked under the lock: another thread may have taken the room since the sort.
+            if (budget > 0 && load + cost > limit) {
+                continue;
+            }
+            if (encode) {
+                lock_guard<mutex> lck2(state->group->mtx);
+                auto &group = *state->group;
+                if (group.encode_cap && now < group.encode_cap_until && group.encode_sessions >= group.encode_cap) {
+                    continue;
+                }
+            }
+            bool trial = false;
+            if (state->breaker == kBreakerOpen) {
+                if (now < state->open_until) {
+                    continue;
+                }
+                state->breaker = kBreakerHalfOpen;
+                state->trial_in_flight = false;
+            }
+            if (state->breaker == kBreakerHalfOpen) {
+                if (state->trial_in_flight) {
+                    continue;
+                }
+                trial = state->trial_in_flight = true;
+            }
+            ++count;
+            load += cost;
+            if (encode) {
+                lock_guard<mutex> lck2(state->group->mtx);
+                ++state->group->encode_sessions;
+            }
+            return std::make_shared<HwCodecSession>(state, encode, trial, cost);
+        }
     }
     return nullptr;
 }
@@ -1129,12 +1301,38 @@ uint64_t HwCodecManager::fallbackCount() const {
 
 string HwCodecManager::backends() const {
     string ret;
+    HwBackend last = HwBackend::None;
     lock_guard<mutex> lck(_mtx);
     for (auto &state : _states) {
+        // Devices of one backend are adjacent: list the backend once.
+        if (state->backend == last) {
+            continue;
+        }
+        last = state->backend;
         if (!ret.empty()) {
             ret += ",";
         }
         ret += hwBackendName(state->backend);
+    }
+    return ret;
+}
+
+string HwCodecManager::loads() const {
+    GET_CONFIG(string, decode_budget_cfg, HwCodec::kDecodeBudget);
+    GET_CONFIG(string, encode_budget_cfg, HwCodec::kEncodeBudget);
+    auto format = [](double load, double budget) {
+        auto ret = to_string((int)(load + 0.5));
+        return budget > 0 ? ret + "/" + to_string((int)(budget + 0.5)) : ret;
+    };
+    string ret;
+    lock_guard<mutex> lck(_mtx);
+    for (auto &state : _states) {
+        lock_guard<mutex> lck2(state->mtx);
+        if (!ret.empty()) {
+            ret += ",";
+        }
+        ret += stateLabel(*state) + " dec=" + format(state->decode_load, budgetFor(state->backend, decode_budget_cfg))
+            + " enc=" + format(state->encode_load, budgetFor(state->backend, encode_budget_cfg));
     }
     return ret;
 }

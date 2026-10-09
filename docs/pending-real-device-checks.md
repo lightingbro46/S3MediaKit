@@ -15,6 +15,7 @@ File này chỉ giữ phần chưa kiểm được vì thiếu thiết bị ho�
 | `onvif-http-digest-auth-plan.md` | Camera thật đặt chế độ `digest` (rủi ro camera từ chối WS-Security đi kèm); `/index/api/getStreamUrl` trên camera thật |
 | `video-config-rule-fix-plan.md` | Checklist kịch bản `videorule` ([tests/integration/stress_vms/README.md](../tests/integration/stress_vms/README.md)) với ít nhất một camera ONVIF thật: xem stream đổi độ phân giải/bitrate thật và cách camera phản hồi `SetVideoEncoderConfiguration` |
 | `mjpeg-ingest-transcode-plan.md` | Camera MJPEG thật, GPU encode, nhiều camera MJPEG cùng lúc; `sourceVcodec` trong thống kê camera end-to-end qua VMS |
+| GPU budget + nhiều GPU (`hwcodec.decodeBudget/encodeBudget`, `cuda:0;1`, chọn render node vaapi) | Đo sức chứa NVDEC/NVENC và iGPU Intel để đặt budget mặc định cho máy đích; máy NVIDIA + Intel: vaapi chọn node `i915`/`xe` (log `GPU backend vaapi: using ...`), decode tràn từ cuda sang vaapi khi đặt budget; máy 2 card NVIDIA: chia tải theo `HwCodecLoad`, giới hạn 8 phiên NVENC GeForce đếm chung hai card; trích xuất overlay không lấn encoder live; build + `test_hw_codec` với FFmpeg 7.x, qsv trên iGPU driver `xe` |
 
 ## E2E và môi trường
 

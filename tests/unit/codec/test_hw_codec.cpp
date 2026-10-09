@@ -76,6 +76,11 @@ protected:
     ConfigGuard _max_enc { HwCodec::kMaxEncodeSessions, "0" };
     ConfigGuard _threshold { HwCodec::kFailThreshold, "2" };
     ConfigGuard _cooldown { HwCodec::kCooldownSec, "300" };
+    ConfigGuard _device { HwCodec::kDevice, "" };
+    ConfigGuard _dec_budget { HwCodec::kDecodeBudget, "" };
+    ConfigGuard _enc_budget { HwCodec::kEncodeBudget, "" };
+    ConfigGuard _offline_cost { HwCodec::kOfflineCost, "60" };
+    ConfigGuard _offline_headroom { HwCodec::kOfflineHeadroom, "0.8" };
 };
 
 } // namespace
@@ -245,6 +250,181 @@ TEST_F(HwCodecManagerTest, EncoderOpenFailureWithOthersRunningLearnsSessionLimit
     manager.acquireEncode(CodecH264)->reportFailure(true);
     manager.acquireEncode(CodecH264)->reportFailure(true);
     EXPECT_FALSE(manager.acquireEncode(CodecH264));
+}
+
+TEST_F(HwCodecManagerTest, LoadBudgetSpillsToNextBackendThenCpu) {
+    ConfigGuard budget(HwCodec::kDecodeBudget, "cuda:60,vaapi:30");
+    HwCodecManager manager;
+    manager.probe(fakeProbe({ { HwBackend::Cuda, makeCaps(true, true, false, false) },
+                              { HwBackend::Vaapi, makeCaps(true, true, false, false) } }));
+    auto a = manager.acquireDecode(CodecH264, 1920, 1080, 30);
+    auto b = manager.acquireDecode(CodecH264, 1920, 1080, 30);
+    auto c = manager.acquireDecode(CodecH264, 1920, 1080, 30);
+    ASSERT_TRUE(a && b && c);
+    EXPECT_EQ(HwBackend::Cuda, a->backend());
+    EXPECT_EQ(HwBackend::Cuda, b->backend());
+    EXPECT_EQ(HwBackend::Vaapi, c->backend());
+    EXPECT_FALSE(manager.acquireDecode(CodecH264, 1920, 1080, 30));
+    EXPECT_EQ("cuda dec=60/60 enc=0,vaapi dec=30/30 enc=0", manager.loads());
+    // A closed session gives its load back.
+    a.reset();
+    auto d = manager.acquireDecode(CodecH264, 1920, 1080, 30);
+    ASSERT_TRUE(d);
+    EXPECT_EQ(HwBackend::Cuda, d->backend());
+}
+
+TEST_F(HwCodecManagerTest, SmallStreamCostsLessThan1080p) {
+    ConfigGuard budget(HwCodec::kDecodeBudget, "cuda:30");
+    HwCodecManager manager;
+    manager.probe(fakeProbe({ { HwBackend::Cuda, makeCaps(true, true, false, false) } }));
+    auto sub = manager.acquireDecode(CodecH264, 640, 360, 15);
+    ASSERT_TRUE(sub);
+    EXPECT_NEAR(640.0 * 360 * 15 / (1920 * 1080), sub->cost(), 1e-9);
+    // 1.67 + 30 > 30: a 1080p30 stream no longer fits, more Sub streams do.
+    EXPECT_FALSE(manager.acquireDecode(CodecH264, 1920, 1080, 30));
+    EXPECT_TRUE(manager.acquireDecode(CodecH264, 640, 360, 15));
+}
+
+TEST_F(HwCodecManagerTest, UnknownSizeAssumes1080p25UntilUpdated) {
+    ConfigGuard budget(HwCodec::kDecodeBudget, "cuda:40");
+    HwCodecManager manager;
+    manager.probe(fakeProbe({ { HwBackend::Cuda, makeCaps(true, true, false, false) } }));
+    auto a = manager.acquireDecode(CodecH264);
+    ASSERT_TRUE(a);
+    EXPECT_DOUBLE_EQ(25, a->cost());
+    EXPECT_FALSE(manager.acquireDecode(CodecH264, 1920, 1080, 30));
+    // The first decoded frame tells the real size.
+    a->updateCost(640, 360, 15);
+    auto b = manager.acquireDecode(CodecH264, 1920, 1080, 30);
+    ASSERT_TRUE(b);
+    // A resolution change moves the load again; the running sessions stay even above the budget.
+    a->updateCost(3840, 2160, 30);
+    EXPECT_EQ("cuda dec=150/40 enc=0", manager.loads());
+    EXPECT_FALSE(manager.acquireDecode(CodecH264, 640, 360, 15));
+    a.reset();
+    EXPECT_EQ("cuda dec=30/40 enc=0", manager.loads());
+}
+
+TEST_F(HwCodecManagerTest, BudgetOnlyForListedBackends) {
+    ConfigGuard budget(HwCodec::kDecodeBudget, "vaapi:30");
+    ConfigGuard order(HwCodec::kBackends, "vaapi,cuda");
+    HwCodecManager manager;
+    manager.probe(fakeProbe({ { HwBackend::Cuda, makeCaps(true, true, false, false) },
+                              { HwBackend::Vaapi, makeCaps(true, true, false, false) } }));
+    auto a = manager.acquireDecode(CodecH264, 1920, 1080, 30);
+    ASSERT_TRUE(a);
+    EXPECT_EQ(HwBackend::Vaapi, a->backend());
+    // cuda has no budget: no load limit.
+    for (int i = 0; i < 20; ++i) {
+        auto b = manager.acquireDecode(CodecH264, 3840, 2160, 60);
+        ASSERT_TRUE(b);
+        EXPECT_EQ(HwBackend::Cuda, b->backend());
+    }
+}
+
+TEST_F(HwCodecManagerTest, OfflineEncodeLeavesHeadroomForLive) {
+    ConfigGuard budget(HwCodec::kEncodeBudget, "cuda:100");
+    HwCodecManager manager;
+    manager.probe(fakeProbe({ { HwBackend::Cuda, makeCaps(false, false, true, true) } }));
+    auto extract = manager.acquireEncodeOffline(CodecH264);
+    ASSERT_TRUE(extract);
+    EXPECT_DOUBLE_EQ(60, extract->cost());
+    // 60 + 60 > 100 * 0.8.
+    EXPECT_FALSE(manager.acquireEncodeOffline(CodecH264));
+    // Live may use the full budget.
+    auto live = manager.acquireEncode(CodecH264, 1920, 1080, 30);
+    ASSERT_TRUE(live);
+    EXPECT_FALSE(manager.acquireEncode(CodecH264, 1920, 1080, 30));
+    live.reset();
+    extract.reset();
+    {
+        // Without a budget an offline job is one more session, as before.
+        ConfigGuard none(HwCodec::kEncodeBudget, "");
+        auto x = manager.acquireEncodeOffline(CodecH264);
+        auto y = manager.acquireEncodeOffline(CodecH264);
+        EXPECT_TRUE(x && y);
+    }
+}
+
+TEST_F(HwCodecManagerTest, LoweringBudgetKeepsRunningSessions) {
+    ConfigGuard budget(HwCodec::kDecodeBudget, "cuda:60");
+    HwCodecManager manager;
+    manager.probe(fakeProbe({ { HwBackend::Cuda, makeCaps(true, true, false, false) } }));
+    auto a = manager.acquireDecode(CodecH264, 1920, 1080, 30);
+    auto b = manager.acquireDecode(CodecH264, 1920, 1080, 30);
+    ASSERT_TRUE(a && b);
+    {
+        ConfigGuard lower(HwCodec::kDecodeBudget, "cuda:30");
+        EXPECT_EQ("cuda dec=60/30 enc=0", manager.loads());
+        EXPECT_FALSE(manager.acquireDecode(CodecH264, 640, 360, 15));
+    }
+    a.reset();
+    EXPECT_TRUE(manager.acquireDecode(CodecH264, 1920, 1080, 30));
+}
+
+TEST_F(HwCodecManagerTest, SeveralDevicesOfOneBackend) {
+    ConfigGuard device(HwCodec::kDevice, "cuda:0; 1");
+    HwCodecManager manager;
+    std::vector<std::string> devices;
+    manager.probe(fakeProbe({ { HwBackend::Cuda, makeCaps(true, true, true, true) } }, &devices));
+    EXPECT_EQ((std::vector<std::string> { "cuda=0", "cuda=1", "vaapi=", "qsv=" }), devices);
+    EXPECT_EQ("cuda", manager.backends());
+
+    // Least loaded device first.
+    auto a = manager.acquireDecode(CodecH264, 1920, 1080, 30);
+    auto b = manager.acquireDecode(CodecH264, 640, 360, 15);
+    auto c = manager.acquireDecode(CodecH264, 640, 360, 15);
+    ASSERT_TRUE(a && b && c);
+    EXPECT_EQ("0", a->deviceName());
+    EXPECT_EQ("1", b->deviceName());
+    EXPECT_EQ("1", c->deviceName());
+    EXPECT_EQ("cuda:0 dec=30 enc=0,cuda:1 dec=3 enc=0", manager.loads());
+    {
+        // Budget per device.
+        ConfigGuard budget(HwCodec::kDecodeBudget, "cuda:32");
+        auto d = manager.acquireDecode(CodecH264, 1920, 1080, 25);
+        ASSERT_TRUE(d);
+        EXPECT_EQ("1", d->deviceName());
+        EXPECT_FALSE(manager.acquireDecode(CodecH264, 1920, 1080, 25));
+    }
+    a.reset();
+    b.reset();
+    c.reset();
+
+    // A device whose breaker is open is skipped, the other one keeps working.
+    for (int i = 0; i < 2; ++i) {
+        auto keep = manager.acquireDecode(CodecH264); // device 0, the next one goes to device 1
+        auto other = manager.acquireDecode(CodecH264);
+        ASSERT_TRUE(keep && other);
+        ASSERT_EQ("1", other->deviceName());
+        other->reportFailure();
+    }
+    // Held open: device 1 would be the least loaded from the second session on.
+    std::vector<HwCodecSession::Ptr> held;
+    for (int i = 0; i < 3; ++i) {
+        auto session = manager.acquireDecode(CodecH264);
+        ASSERT_TRUE(session);
+        EXPECT_EQ("0", session->deviceName());
+        held.emplace_back(session);
+    }
+}
+
+TEST_F(HwCodecManagerTest, EncoderSessionLimitCountsEveryDevice) {
+    // Consumer NVIDIA cards limit NVENC sessions for the whole system, not per card.
+    ConfigGuard device(HwCodec::kDevice, "cuda:0;1");
+    HwCodecManager manager;
+    manager.probe(fakeProbe({ { HwBackend::Cuda, makeCaps(false, false, true, true) } }));
+    auto a = manager.acquireEncode(CodecH264);
+    auto b = manager.acquireEncode(CodecH264);
+    auto c = manager.acquireEncode(CodecH264);
+    ASSERT_TRUE(a && b && c);
+    EXPECT_NE(a->deviceName(), b->deviceName());
+    c->reportFailure(true);
+    c.reset();
+    // Capped at the two running, on either device.
+    EXPECT_FALSE(manager.acquireEncode(CodecH264));
+    a.reset();
+    EXPECT_TRUE(manager.acquireEncode(CodecH264));
 }
 
 namespace {

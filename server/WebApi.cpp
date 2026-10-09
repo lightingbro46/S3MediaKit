@@ -578,6 +578,7 @@ void getStatisticJson(const function<void(Value &val)> &cb) {
     val["HwVideoEncoder"] = (Json::UInt64)getHwEncoderCount();
     val["HwCodecFallback"] = (Json::UInt64)getHwFallbackCount();
     val["HwCodecBackends"] = getHwCodecBackends();
+    val["HwCodecLoad"] = getHwCodecLoad();
     val["MjpegIngestTranscode"] = (Json::UInt64)getMjpegIngestTranscodeCount();
 #ifdef ENABLE_MEM_DEBUG
     auto bytes = getTotalMemUsage();

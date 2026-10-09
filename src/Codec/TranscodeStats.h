@@ -43,6 +43,9 @@ uint64_t getHwFallbackCount();
 /** Comma separated GPU backends in use ("cuda", "vaapi", "qsv"); empty when everything runs on the CPU. */
 std::string getHwCodecBackends();
 
+/** GPU load per device, "cuda:0 dec=120/720 enc=30" (1080p fps; budget after '/' when configured). */
+std::string getHwCodecLoad();
+
 } // namespace mediakit
 
 #endif // CODEC_TRANSCODESTATS_H

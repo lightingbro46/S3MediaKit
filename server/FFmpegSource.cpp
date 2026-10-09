@@ -1793,7 +1793,8 @@ void FFmpegExtractor::startFfmpeg() {
 #if defined(ENABLE_FFMPEG)
         // The re-encode is the costly part of an extract: use a GPU encoder when one is free. It holds
         // a session of the hwcodec budget while ffmpeg runs; a failed run is redone with libx264.
-        auto session = HwCodecManager::Instance().acquireEncode(CodecH264);
+        // Offline: ffmpeg encodes as fast as it can, so it gets a fixed cost and leaves room for live.
+        auto session = HwCodecManager::Instance().acquireEncodeOffline(CodecH264);
         string tmpl = ffmpeg_extract_overlay;
         string bin = File::absolutePath("", ffmpeg_bin);
         string filter = filter_complex;

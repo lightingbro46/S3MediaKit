@@ -44,6 +44,10 @@ std::string getHwCodecBackends() {
     return HwCodecManager::Instance().backends();
 }
 
+std::string getHwCodecLoad() {
+    return HwCodecManager::Instance().loads();
+}
+
 #else // ENABLE_FFMPEG
 
 size_t getTranscodeStreamCount() { return 0; }
@@ -53,6 +57,7 @@ size_t getHwDecoderCount() { return 0; }
 size_t getHwEncoderCount() { return 0; }
 uint64_t getHwFallbackCount() { return 0; }
 std::string getHwCodecBackends() { return std::string(); }
+std::string getHwCodecLoad() { return std::string(); }
 
 #endif // ENABLE_FFMPEG
 

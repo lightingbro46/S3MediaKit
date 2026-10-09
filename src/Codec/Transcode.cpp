@@ -468,7 +468,11 @@ FFmpegDecoder::FFmpegDecoder(const Track::Ptr &track, int thread_num, const std:
     if (track->getTrackType() == TrackVideo && (codec->id == AV_CODEC_ID_H264 || codec->id == AV_CODEC_ID_HEVC)) {
         if (!strcmp(codec->name, avcodec_get_name(codec->id))) {
             // Only the native h264/hevc decoders take a hw_device_ctx; null means CPU.
-            _hw = HwCodecManager::Instance().acquireDecode(track->getCodecId());
+            // Size/fps may still be 0 before the SPS: the session then assumes 1080p25 and is corrected
+            // with the first decoded frame (updateCost).
+            auto video = static_pointer_cast<VideoTrack>(track);
+            _hw = HwCodecManager::Instance().acquireDecode(track->getCodecId(), video->getVideoWidth(),
+                                                           video->getVideoHeight(), video->getVideoFps());
         } else {
             _wrapper = codec_default && codec != codec_default;
         }
@@ -699,6 +703,7 @@ bool FFmpegDecoder::decodeFrame(const char *data, size_t size, uint64_t dts, uin
         _hw_errors = 0;
         if (_hw) {
             _hw->reportSuccess();
+            _hw->updateCost(out_frame->get()->width, out_frame->get()->height, static_pointer_cast<VideoTrack>(_track)->getVideoFps());
         }
         onDecode(frame);
     }
@@ -1516,7 +1521,7 @@ bool FFmpegEncoder::openEncoder(const FFmpegFrame::Ptr &frame) {
 }
 
 bool FFmpegEncoder::openHwEncoder() {
-    _hw = HwCodecManager::Instance().acquireEncode(_codec);
+    _hw = HwCodecManager::Instance().acquireEncode(_codec, _width, _height, _fps);
     if (!_hw) {
         return false;
     }
