@@ -33,9 +33,12 @@ RUN apt-get update && \
          nasm \
          pkg-config \
          libfreetype-dev \
+         libharfbuzz-dev \
          librsvg2-dev \
          libva-dev \
          libmfx-dev \
+         libvpl-dev \
+         libvpl2 \
          libx264-dev \
          libx265-dev \
          libfaac-dev \
@@ -93,12 +96,15 @@ RUN apt-get update && \
          libprotobuf23 \
          zlib1g \
          libfreetype6 \
+         libharfbuzz0b \
          librsvg2-2 \
          libx264-163 \
          libx265-199 \
          libva2 \
          libva-drm2 \
-         libmfx1 && \
+         libvpl2 \
+         libmfx1 \
+         libmfx-gen1.2 && \
          apt-get autoremove -y && \
          apt-get clean -y && \
     rm -rf /var/lib/apt/lists/*

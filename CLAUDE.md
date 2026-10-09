@@ -93,7 +93,7 @@ Reuse the configured build when one exists (`build/` is Debug, AWS SDK on, sync 
 cmake --build build -j2                      # incremental; the full build is slow
 ```
 
-Fresh Debug configure. FFmpeg (`3rdpart/FFmpeg`, n4.4.8) and the AWS SDK (`3rdpart/aws-sdk-cpp`) are
+Fresh Debug configure. FFmpeg (`3rdpart/FFmpeg`, n7.1.5; 4.4 still builds — the code guards with `FF_CODEC_VER_7_1`) and the AWS SDK (`3rdpart/aws-sdk-cpp`) are
 submodules that CMake builds once into `release/linux/3rdpart/` (shared by every build dir; the
 first build is long). FFmpeg libraries carry the `_s3` suffix and are copied next to `MediaServer`
 (RUNPATH `$ORIGIN`). `-DENABLE_BUNDLED_FFMPEG=OFF` falls back to the system FFmpeg:

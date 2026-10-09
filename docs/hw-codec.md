@@ -177,13 +177,15 @@ Mỗi phiên ghi một dòng log: `Open the decoder successfully:h264 on GPU cud
 
 ## 4. Triển khai
 
-MediaServer dùng FFmpeg n4.4.8 tự build từ submodule `3rdpart/FFmpeg` (libavcodec 58, tên thư viện
+MediaServer dùng FFmpeg n7.1.5 tự build từ submodule `3rdpart/FFmpeg` (libavcodec 61, tên thư viện
 có hậu tố `_s3`, cấu hình ở `cmake/BundledFFmpeg.cmake`), bật nvenc/nvdec/cuvid, vaapi và qsv
-(`libmfx`). Máy dev: thư viện nằm cạnh `MediaServer` trong `release/linux/<type>/`, `ffmpeg`/`ffprobe`
+(oneVPL, `libvpl`). Code và CMake vẫn hỗ trợ FFmpeg 4.4: checkout `n4.4.8` trong submodule rồi build
+lại, CMake tự chọn cờ theo version (4.4: qsv qua `libmfx`, không có harfbuzz) và dọn bản cũ khỏi
+prefix; `-DENABLE_BUNDLED_FFMPEG=OFF` dùng FFmpeg của hệ thống (4.4 trên Ubuntu 22.04). Máy dev: thư viện nằm cạnh `MediaServer` trong `release/linux/<type>/`, `ffmpeg`/`ffprobe`
 ở `release/linux/3rdpart/ffmpeg/bin/` (default `ffmpeg.bin` tìm ở đó trước, rồi tới `PATH`). Docker:
 thư viện trong `/opt/media/lib` (qua `/etc/ld.so.conf.d/s3media.conf`), `ffmpeg`/`ffprobe` trong
 `/usr/local/bin`; image không còn gói `ffmpeg` của apt. Không đặt `ffmpeg` cạnh `MediaServer`:
-`./ffmpeg/` là thư mục log mặc định (`ffmpeg.log`). Log khởi động `FFmpeg n4.4.8 loaded from ...`
+`./ffmpeg/` là thư mục log mặc định (`ffmpeg.log`). Log khởi động `FFmpeg n7.1.5 loaded from ...`
 cho biết thư viện đang dùng. nvenc/nvdec mở `libcuda`/`libnvidia-encode` lúc chạy nên không nằm trong
 image; driver phải có ở máy chạy:
 
@@ -193,7 +195,8 @@ image; driver phải có ở máy chạy:
 - **Intel/AMD (VAAPI)** — mount `/dev/dri` (`--device /dev/dri`), cài driver VA (`intel-media-va-driver`
   hoặc `i965-va-driver`, `mesa-va-drivers` cho AMD), user chạy MediaServer thuộc group `render`
   (hoặc `video`). Kiểm tra bằng `vainfo`.
-- **Intel QSV (chỉ mã hoá)** — như VAAPI + `libmfx1` (FFmpeg 4.4) hoặc `libvpl2` (FFmpeg 7.x).
+- **Intel QSV (chỉ mã hoá)** — như VAAPI + `libvpl2` và runtime `libmfx-gen1.2` (Gen12+: Tiger Lake, Arc...)
+  hoặc `libmfx1` (đời cũ hơn). Image Docker đã cài cả ba.
 
 docker-compose ví dụ cho NVIDIA:
 
@@ -342,18 +345,19 @@ host, dùng số GID của host (`getent group render`).
 
 **4. Intel QSV (chỉ mã hoá)**
 
-QSV dùng chung driver VAAPI ở bước 3, thêm runtime Media SDK:
+QSV dùng chung driver VAAPI ở bước 3, thêm dispatcher oneVPL và runtime:
 
 ```bash
 ldconfig -p | grep -E 'libmfx|libvpl'
-sudo apt install -y libmfx1                  # FFmpeg 4.4 (Ubuntu 22.04)
-# Intel Gen12+ (Tiger Lake, Arc...) với FFmpeg 7.x: sudo apt install -y libvpl2 libmfx-gen1.2
+sudo apt install -y libvpl2 libmfx-gen1.2    # Intel Gen12+ (Tiger Lake, Arc...)
+sudo apt install -y libvpl2 libmfx1          # Intel đời cũ hơn (runtime Media SDK)
 ```
 
 **5. FFmpeg dùng được GPU chưa**
 
-MediaServer link cùng thư viện FFmpeg hệ thống với lệnh `ffmpeg`. Các lệnh dưới chạy được thì
-MediaServer cũng dùng được GPU đó.
+Dùng lệnh `ffmpeg` đi kèm, cùng thư viện `_s3` với MediaServer (máy dev:
+`release/linux/3rdpart/ffmpeg/bin/ffmpeg`, Docker: `/usr/local/bin/ffmpeg`), không dùng `ffmpeg` của
+apt. Các lệnh dưới chạy được thì MediaServer cũng dùng được GPU đó.
 
 ```bash
 ffmpeg -hide_banner -hwaccels                               # có cuda / vaapi / qsv

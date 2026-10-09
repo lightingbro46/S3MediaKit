@@ -531,14 +531,23 @@ TEST_F(HwCodecManagerTest, BrokenWrapperDecoderFallsBackToNative) {
     auto fallbacks = HwCodecManager::Instance().fallbackCount();
     std::vector<int> formats;
     std::string name;
+#if LIBAVCODEC_VERSION_INT >= FF_CODEC_VER_7_1
+    // Without the qsv backend it is skipped before opening: FFmpeg 7.x with the oneVPL 2022.1
+    // dispatcher never returned from the first packet.
+    auto decoded = encodeThenDecode(30, formats, CodecH265, 10, { "hevc_qsv" }, &name);
+    EXPECT_EQ(30U, decoded);
+    EXPECT_EQ("hevc", name);
+    EXPECT_EQ(fallbacks, HwCodecManager::Instance().fallbackCount());
+#else
     // 30 frames, keyframe every 10: after the switch the native decoder starts at the next keyframe.
     auto decoded = encodeThenDecode(30, formats, CodecH265, 10, { "hevc_qsv" }, &name);
     EXPECT_GE(decoded, 10U);
-    for (auto fmt : formats) {
-        EXPECT_EQ(AV_PIX_FMT_YUV420P, fmt);
-    }
     if (name == "hevc") {
         EXPECT_EQ(fallbacks + 1, HwCodecManager::Instance().fallbackCount());
+    }
+#endif
+    for (auto fmt : formats) {
+        EXPECT_EQ(AV_PIX_FMT_YUV420P, fmt);
     }
 }
 

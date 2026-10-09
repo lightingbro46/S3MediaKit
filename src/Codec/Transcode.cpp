@@ -357,10 +357,30 @@ static AVCodecID toAVCodecId(CodecId codec) {
 
 // First codec of the list that exists and decodes `id`. Callers pass lists such as {"h264", "hevc"}
 // for every track; without the id check an H265 track got the h264 decoder back.
+// h264_qsv/hevc_qsv only when the qsv backend passed the probe: without a working Intel runtime,
+// FFmpeg 7.x with the oneVPL 2022.1 dispatcher (Ubuntu 22.04) never returns from the first packet
+// (qsv_create_mfx_session_from_loader loops while the dispatcher answers MFX_ERR_UNSUPPORTED).
+// FFmpeg 4.4 (libmfx) fails each packet instead, and the decoder falls back to the native one.
+static bool qsvDecoderUsable(const AVCodec *codec) {
+#if LIBAVCODEC_VERSION_INT >= FF_CODEC_VER_7_1
+    if (!codec->wrapper_name || strcmp(codec->wrapper_name, "qsv")) {
+        return true;
+    }
+    auto backends = "," + HwCodecManager::Instance().backends() + ",";
+    return backends.find(",qsv,") != std::string::npos;
+#else
+    return true;
+#endif
+}
+
 template<bool decoder = true>
 static inline const AVCodec *getCodecByName(const std::vector<std::string> &codec_list, AVCodecID id) {
     for (auto &codec : codec_list) {
         auto ret = getCodec_l<decoder>(codec.data());
+        if (ret && decoder && !qsvDecoderUsable(ret)) {
+            WarnL << "Skip decoder " << codec << ": the qsv backend is not available";
+            continue;
+        }
         if (ret && (id == AV_CODEC_ID_NONE || ret->id == id)) {
             return ret;
         }

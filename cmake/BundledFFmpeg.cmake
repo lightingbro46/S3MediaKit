@@ -1,8 +1,8 @@
 # Build FFmpeg from the 3rdpart/FFmpeg submodule as shared libraries.
 #
-# The libraries carry the "_s3" build suffix (libavcodec_s3.so.58 ...) so they can never be
+# The libraries carry the "_s3" build suffix (libavcodec_s3.so.61 ...) so they can never be
 # confused with the distro FFmpeg: a wrong lookup fails with "not found" instead of silently
-# loading /usr/lib/libavcodec.so.58. Every .so gets RUNPATH $ORIGIN because DT_RUNPATH is not
+# loading /usr/lib/libavcodec.so.<n>. Every .so gets RUNPATH $ORIGIN because DT_RUNPATH is not
 # inherited: libavfilter must find libavformat_s3 by itself.
 #
 # The install prefix release/<os>/3rdpart/ffmpeg is shared by every build directory and build
@@ -31,12 +31,41 @@ if(NOT EXISTS "${_ff_src}/configure" OR NOT EXISTS "${_nv_src}/Makefile")
     "or configure with -DENABLE_BUNDLED_FFMPEG=OFF to use the system FFmpeg.")
 endif()
 
-# library name -> soname major of FFmpeg 4.4
-set(_ff_libs avutil:56 avcodec:58 avformat:58 avfilter:7 swscale:5 swresample:3)
+# library name -> soname major, read from the checked-out source so the submodule tag alone
+# selects the FFmpeg version (the major is in version_major.h, or version.h for 4.4 and avutil)
+file(STRINGS "${_ff_src}/RELEASE" _ff_release LIMIT_COUNT 1)
+set(_ff_libs "")
+foreach(_name avutil avcodec avformat avfilter swscale swresample)
+  string(TOUPPER "${_name}" _upper)
+  set(_line "")
+  foreach(_hdr version_major.h version.h)
+    if(NOT _line AND EXISTS "${_ff_src}/lib${_name}/${_hdr}")
+      file(STRINGS "${_ff_src}/lib${_name}/${_hdr}" _line REGEX "#define LIB${_upper}_VERSION_MAJOR +[0-9]+")
+    endif()
+  endforeach()
+  if(NOT _line)
+    message(FATAL_ERROR "Cannot read LIB${_upper}_VERSION_MAJOR from ${_ff_src}/lib${_name}")
+  endif()
+  string(REGEX REPLACE ".*_VERSION_MAJOR +([0-9]+).*" "\\1" _major "${_line}")
+  list(APPEND _ff_libs "${_name}:${_major}")
+endforeach()
+
+# Both 4.4 and 7.x are supported; the submodule tag picks one.
+# 7.x: drawtext also needs harfbuzz; qsv goes through oneVPL (libvpl), since 7.x takes libmfx or
+# libvpl, not both, and the Media SDK behind libmfx does not cover Intel Gen12+.
+# 4.4: qsv through libmfx, and there is no --enable-libharfbuzz.
+string(REGEX MATCH "^[0-9]+" _ff_release_major "${_ff_release}")
+if(_ff_release_major LESS 7)
+  set(_ff_harfbuzz "")
+  set(_ff_qsv --enable-libmfx)
+else()
+  set(_ff_harfbuzz --enable-libharfbuzz)
+  set(_ff_qsv --enable-libvpl)
+endif()
 
 # Only what the code uses: libx264/libx265/aac/mjpeg encoders, nvenc/nvdec/cuvid, vaapi and qsv
-# (libmfx) for HwCodec, drawtext (freetype) and the SVG watermark read by movie= (librsvg) for
-# overlays, https (openssl; GPLv3 via version3).
+# for HwCodec, drawtext (freetype) and the SVG watermark read by movie= (librsvg) for overlays,
+# https (openssl; GPLv3 via version3).
 # --disable-autodetect keeps dev machines and the Docker image on the same feature set.
 set(_ff_configure_args
   "--prefix=${FFMPEG_BUNDLED_PREFIX}"
@@ -44,9 +73,9 @@ set(_ff_configure_args
   --enable-shared --disable-static --enable-pic
   --enable-gpl --enable-version3
   --disable-autodetect --enable-zlib --enable-iconv
-  --enable-libx264 --enable-libx265 --enable-libfreetype --enable-librsvg --enable-openssl
+  --enable-libx264 --enable-libx265 --enable-libfreetype ${_ff_harfbuzz} --enable-librsvg --enable-openssl
   --enable-ffnvcodec --enable-nvenc --enable-nvdec --enable-cuvid
-  --enable-vaapi --enable-libmfx
+  --enable-vaapi ${_ff_qsv}
   --disable-avdevice --disable-postproc --disable-ffplay --disable-doc)
 # Written verbatim into a shell script; configure evaluates each value once more. Executables:
 # config.mak gets \$$ORIGIN, make turns $$ into $, the recipe shell turns \$ into $. Libraries are
@@ -84,14 +113,20 @@ endforeach()
 set(_ff_programs "${FFMPEG_BUNDLED_PREFIX}/bin/ffmpeg" "${FFMPEG_BUNDLED_PREFIX}/bin/ffprobe")
 
 if(_ff_prebuilt_id STREQUAL _ff_build_id)
-  message(STATUS "FFmpeg n4.4 bundled: reusing ${FFMPEG_BUNDLED_PREFIX}")
+  message(STATUS "FFmpeg n${_ff_release} bundled: reusing ${FFMPEG_BUNDLED_PREFIX}")
   add_custom_target(s3_ffmpeg)
 else()
-  message(STATUS "FFmpeg n4.4 bundled: will build into ${FFMPEG_BUNDLED_PREFIX}")
+  message(STATUS "FFmpeg n${_ff_release} bundled: will build into ${FFMPEG_BUNDLED_PREFIX}")
   set(_ff_bin "${CMAKE_BINARY_DIR}/3rdpart/ffmpeg")
   string(REPLACE ";" " " _ff_args_str "--cc=${CMAKE_C_COMPILER};${_ff_configure_args};${_ff_rpath_args}")
   file(WRITE "${CMAKE_BINARY_DIR}/3rdpart/ffmpeg-configure-${_ff_build_id}.sh"
     "#!/bin/sh\nset -e\n"
+    # only runs for a new build id: objects and .d files of another FFmpeg version break make, and
+    # headers/libraries of the other version (4.4 <-> 7.x) must not stay in the shared prefix
+    "rm -rf '${_ff_bin}' && mkdir -p '${_ff_bin}' && cd '${_ff_bin}'\n"
+    "cd '${FFMPEG_BUNDLED_PREFIX}' 2>/dev/null && rm -rf .s3-build-id include/libav* include/libsw* "
+    "lib/libav* lib/libsw* lib/pkgconfig/libav* lib/pkgconfig/libsw* bin/ffmpeg bin/ffprobe share/ffmpeg; "
+    "cd '${_ff_bin}'\n"
     "export PKG_CONFIG_PATH='${FFMPEG_BUNDLED_PREFIX}/lib/pkgconfig'\${PKG_CONFIG_PATH:+:\$PKG_CONFIG_PATH}\n"
     "exec '${_ff_src}/configure' ${_ff_args_str}\n")
   file(WRITE "${CMAKE_BINARY_DIR}/3rdpart/ffmpeg-build-id" "${_ff_build_id}")
@@ -102,7 +137,8 @@ else()
     CONFIGURE_COMMAND ""
     BUILD_COMMAND     ""
     INSTALL_COMMAND   make PREFIX=${FFMPEG_BUNDLED_PREFIX} install
-    STAMP_DIR         ${CMAKE_BINARY_DIR}/3rdpart/nv-codec-headers-stamp)
+    # per build id: a new id means the prefix may be new or wiped, so ffnvcodec.pc goes in again
+    STAMP_DIR         ${CMAKE_BINARY_DIR}/3rdpart/nv-codec-headers-stamp-${_ff_build_id})
 
   ExternalProject_Add(s3_ffmpeg
     DEPENDS           s3_nvcodec_headers
