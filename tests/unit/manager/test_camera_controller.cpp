@@ -14,6 +14,7 @@
 #include "Camera/CameraController.h"
 #include "Speaker/SpeakerController.h"
 #include "ext-plugin/Bosch/BoschIpSpeaker.h"
+#include "ext-plugin/DeviceFactory.h"
 #include "Camera/VideoConfigRuleDecision.h"
 #include "Common/config.h"
 #include "Poller/EventPoller.h"
@@ -54,6 +55,8 @@ public:
     }
 
     static bool hasPendingProfileConfig(CameraController &c) { return c.hasPendingProfileConfig(); }
+
+    static const VendorStage &vendorStage(CameraController &c) { return c._vendor_stage; }
 
     static bool profileConfig(CameraController &c, const std::string &token, VideoEncoderConfig &out) {
         auto it = c._profileConfigMap.find(token);
@@ -1815,6 +1818,51 @@ TEST_F(CameraProtocolTest, CommandsDuringTheProbeReportTheDeviceOffline) {
     ASSERT_TRUE(waitFor([&]() { return !probe.get().empty(); }));
     EXPECT_EQ(std::vector<int>{ApiErrCode::CODE_DEVICE_OFFLINE}, probe.get());
     EXPECT_FALSE(contains(_world->events(), "ptz"));
+}
+
+// No camera plugin is registered (V2 of docs/vendor-stage-plan.md): a camera without manufacturer
+// is not detected through vendor APIs, its first cycle probes the control protocols as before.
+TEST_F(CameraProtocolTest, CameraWithoutPluginNeverDetectsItsBrand) {
+    ASSERT_TRUE(DeviceFactory::plugins(DeviceType::Camera).empty());
+    const char *manufacturers[] = {"", "  ", "Bosch", "Hikvision", GENERIC_RTSP_CAMERA};
+    for (auto manufacturer : manufacturers) {
+        CameraOption option;
+        option.manufacturer = manufacturer;
+        option.ip = "127.0.0.1";
+        option.port = 1;
+        option.controlProtocol = "AUTO";
+        auto controller = _controller;
+        bool detecting = true, has_plugin = true;
+        int interval = 0;
+        onPoller([&]() {
+            controller->setupController(option);
+            const VendorStage &stage = CameraControllerTestPeer::vendorStage(*controller);
+            detecting = stage.detecting();
+            has_plugin = stage.hasPlugin();
+            interval = stage.cycleIntervalSec(600);
+        });
+        EXPECT_FALSE(detecting) << "manufacturer \"" << manufacturer << "\"";
+        EXPECT_FALSE(has_plugin) << "manufacturer \"" << manufacturer << "\"";
+        EXPECT_EQ(60, interval) << "manufacturer \"" << manufacturer << "\"";
+    }
+
+    // Blank manufacturer: the cycle goes straight to the protocols, and stays at 60 s when nothing answers.
+    CameraOption option;
+    option.ip = "127.0.0.2";
+    option.port = 1;
+    option.controlProtocol = "AUTO";
+    auto controller = _controller;
+    onPoller([&]() { controller->setupController(option); });
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::UNREACHABLE);
+    for (int i = 0; i < 3; ++i) cycle();
+    EXPECT_EQ(3, _world->count("create ONVIF"));
+    int interval = 0;
+    onPoller([&]() { interval = CameraControllerTestPeer::vendorStage(*controller).cycleIntervalSec(600); });
+    EXPECT_EQ(60, interval);
+
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::NONE);
+    cycle();
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
 }
 
 TEST(ControlProtocolSettingTest, UnknownValuesMeanAuto) {

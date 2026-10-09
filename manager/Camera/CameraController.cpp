@@ -184,6 +184,7 @@ void CameraController::setupController(const CameraOption &option) {
     _address      = address;
     _ctrl_option  = ControllerOption::from(option);
     _lock.setSetting(option.controlProtocol);
+    _vendor_stage.configure(DeviceType::Camera, option.manufacturer);
     _enablePTZControl = option.enablePTZControl;
     _enableTimeSync   = option.enableTimeSync;
     _reversePanAxis   = option.reversePanAxis;
@@ -196,7 +197,7 @@ void CameraController::setupController(const CameraOption &option) {
 
     // One controller, one protocol: the fixed one, or the one AUTO locked to. An AUTO camera without
     // a lock gets its controller from the probe in onManager().
-    // todo: create plugin from manufactor and model
+    // todo: a camera plugin (_vendor_stage.hasPlugin()) prepares the control and limits the protocol
     ControlProtocol protocol = _lock.fixedOrLocked();
     if (protocol != ControlProtocol::NONE) {
         _device_ctr = createDeviceControl(protocol, address, option.username, option.password);
@@ -245,7 +246,9 @@ void CameraController::onManager() {
 
     GET_CONFIG(int, auth_retry_sec, Camera::kAuthRetrySec);
     const uint64_t now = time(nullptr);
-    if (_probing || !_pacer.due(now, 60, auth_retry_sec)) {
+    // Vendor detection (a blank manufacturer probing the plugin APIs) only exists once a camera
+    // plugin does: until then this is always 60 s.
+    if (_probing || !_pacer.due(now, _vendor_stage.cycleIntervalSec(60), auth_retry_sec)) {
         // avoid reconnecting too frequently, and logging in with a rejected password even less often
         return;
     }

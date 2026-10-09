@@ -65,6 +65,7 @@ target_link_libraries(integration_tier_storage_manager
     S3MediaKit::MediaKit
     S3MediaKit::ManagerKit
     S3MediaKit::ext-codec
+    S3MediaKit::ext-plugin
     -Wl,--end-group)
 target_include_directories(integration_tier_storage_manager PRIVATE
   "${PROJECT_SOURCE_DIR}/manager"

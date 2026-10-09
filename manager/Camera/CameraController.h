@@ -4,6 +4,7 @@
 #include "GenericRtspCamera.h"
 #include "Control/DeviceControl.h"
 #include "Control/OnvifDeviceControl.h"
+#include "Control/VendorStage.h"
 #include "Common/SerialTaskQueue.h"
 
 namespace managerkit {
@@ -205,6 +206,9 @@ private:
     bool _configured = false;
     // Fixed protocol of the option, or the one AUTO locked to (restored by setLastControlProtocol).
     ProtocolLock _lock;
+    // Brand and vendor plugin of the camera (the step before the control protocols). No camera
+    // plugin is registered yet: it never detects nor has a plugin, and the cycle stays at 60 s.
+    VendorStage _vendor_stage;
     bool _probing = false;
     // lastFailure() of the controller the last failed AUTO probe reported; read when there is no controller.
     DeviceFailure _probe_failure = DeviceFailure::None;

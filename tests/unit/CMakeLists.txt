@@ -101,6 +101,7 @@ target_link_libraries(unit_video_config_rule_job PRIVATE
   S3MediaKit::MediaKit
   S3MediaKit::ManagerKit
   S3MediaKit::ext-codec
+  S3MediaKit::ext-plugin
   -Wl,--end-group)
 target_include_directories(unit_video_config_rule_job PRIVATE "${PROJECT_SOURCE_DIR}/server")
 # Codec plugin logs on stdout break gtest discovery: run the whole binary as one test.
@@ -123,6 +124,7 @@ if(ENABLE_SYNC_CHANGES)
     S3MediaKit::MediaKit
     S3MediaKit::ManagerKit
     S3MediaKit::ext-codec
+    S3MediaKit::ext-plugin
     -Wl,--end-group)
   target_include_directories(unit_sync_apply PRIVATE "${PROJECT_SOURCE_DIR}/server")
   target_compile_definitions(unit_sync_apply PRIVATE
@@ -238,6 +240,7 @@ target_link_libraries(unit_camera_manager_status PRIVATE
   S3MediaKit::MediaKit
   S3MediaKit::ManagerKit
   S3MediaKit::ext-codec
+  S3MediaKit::ext-plugin
   -Wl,--end-group)
 target_include_directories(unit_camera_manager_status PRIVATE "${PROJECT_SOURCE_DIR}/server")
 add_test(NAME unit.camera_manager_status_all COMMAND unit_camera_manager_status)
@@ -253,6 +256,7 @@ target_link_libraries(unit_media_gap_fill_threading PRIVATE
   S3MediaKit::MediaKit
   S3MediaKit::ManagerKit
   S3MediaKit::ext-codec
+  S3MediaKit::ext-plugin
   -Wl,--end-group)
 target_include_directories(unit_media_gap_fill_threading PRIVATE "${PROJECT_SOURCE_DIR}/server")
 add_test(NAME unit.media_gap_fill_threading_all COMMAND unit_media_gap_fill_threading)
@@ -268,6 +272,7 @@ target_link_libraries(unit_global_monitor_threading PRIVATE
   S3MediaKit::MediaKit
   S3MediaKit::ManagerKit
   S3MediaKit::ext-codec
+  S3MediaKit::ext-plugin
   -Wl,--end-group)
 target_include_directories(unit_global_monitor_threading PRIVATE "${PROJECT_SOURCE_DIR}/server")
 add_test(NAME unit.global_monitor_threading_all COMMAND unit_global_monitor_threading)
@@ -287,6 +292,7 @@ target_link_libraries(unit_extract_start PRIVATE
   S3MediaKit::MediaKit
   S3MediaKit::ManagerKit
   S3MediaKit::ext-codec
+  S3MediaKit::ext-plugin
   -Wl,--end-group)
 target_include_directories(unit_extract_start PRIVATE "${PROJECT_SOURCE_DIR}/server")
 target_compile_definitions(unit_extract_start PRIVATE

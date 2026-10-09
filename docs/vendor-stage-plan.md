@@ -1,6 +1,6 @@
 # Plan: tầng plugin hãng chạy trước giao thức điều khiển (loa trước, camera sau)
 
-Ngày: 2026-10-08. Trạng thái: V1 (loa) đã làm; V2–V4 (camera) chưa làm.
+Ngày: 2026-10-08. Trạng thái: V1 (loa) đã làm; V2 (camera, no-op) đã làm; V3–V4 chưa làm.
 Tiếp nối V0: loa có `manufacturer` rỗng tự nhận hãng (qua API hãng hoặc deviceInfo của giao thức).
 
 ## 1. Bối cảnh
@@ -158,7 +158,7 @@ applyPlugin(): tạo plugin, provision tài khoản nếu ownControlAccount,
 | **V1.1** | Registry `VendorPluginInfo` + `DeviceFactory::plugins/findPlugin`; bỏ `requiresSeparateDeviceCredential`, `getDeviceBrandName`, `kSupportedBrands` | `ext-plugin/`, `Speaker/` | chỉ loa |
 | **V1.2** | `VendorStage` + unit test riêng | `Control/` (mới) | chưa ai dùng |
 | **V1.3** | `SpeakerController` dùng `VendorStage`: bỏ các biến `_brand/_detecting/_detect_*`; `setupDeviceController` đọc `ownControlAccount`/`requiredProtocol`; `sharedDsp` từ registry; `probe()` của discovery dùng registry; `SpeakerStatistic::saveOnvifCredentials` dùng `findPlugin` | `Speaker/` | chỉ loa, hành vi giữ nguyên |
-| V2 | `CameraController` giữ `VendorStage(Camera)`, chưa có plugin → không đổi hành vi; unit test khẳng định không probe hãng | `Camera/` | camera, no-op |
+| V2 | `CameraController` giữ `VendorStage(Camera)`, chưa có plugin → không đổi hành vi; unit test khẳng định không probe hãng | `Camera/` | xong: camera no-op, test `CameraProtocolTest.CameraWithoutPluginNeverDetectsItsBrand` |
 | V3 | Plugin camera đầu tiên: `DeviceFactory::createCamera`, đăng ký registry, tính năng hãng qua `CameraController` | `ext-plugin/`, `Camera/` | khi có yêu cầu hãng cụ thể |
 | V4 | (tuỳ chọn) Plugin cung cấp `DeviceControl` (`ControlProtocol::VENDOR`) | `Control/` | khi có hãng cần |
 
