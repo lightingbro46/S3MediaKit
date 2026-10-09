@@ -250,7 +250,8 @@ std::vector<std::string> FfmpegTierMediaTransformer::configuredEncoders(
 bool FfmpegTierMediaTransformer::smokeTestEncoder(const std::string &encoder) {
     BlockingProcessRequest request;
     request.executable = mINI::Instance()[mediakit::Storage::kTierTranscodeFfmpegBin];
-    request.argv = {"-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+    // A filter source, not "-f lavfi": the bundled ffmpeg is built without libavdevice.
+    request.argv = {"-hide_banner", "-loglevel", "error", "-filter_complex",
                     "color=size=64x64:rate=1", "-frames:v", "1", "-an", "-c:v",
                     encoder, "-f", "null", "-"};
     request.timeout_seconds = 15;
