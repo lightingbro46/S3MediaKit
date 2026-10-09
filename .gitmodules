@@ -17,3 +17,14 @@
 [submodule "3rdpart/media-server"]
 	path = 3rdpart/media-server
 	url = https://github.com/ireader/media-server.git
+[submodule "3rdpart/nv-codec-headers"]
+	path = 3rdpart/nv-codec-headers
+	url = https://github.com/FFmpeg/nv-codec-headers.git
+[submodule "3rdpart/FFmpeg"]
+	path = 3rdpart/FFmpeg
+	url = https://github.com/FFmpeg/FFmpeg.git
+	shallow = true
+[submodule "3rdpart/aws-sdk-cpp"]
+	path = 3rdpart/aws-sdk-cpp
+	url = https://github.com/aws/aws-sdk-cpp.git
+	shallow = true
