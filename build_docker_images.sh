@@ -76,6 +76,14 @@ packagename="3spro-mserver"
 
 case $type in
 	'build')
+	# FFmpeg and the AWS SDK are built from submodules inside the image (COPY . takes the checkout)
+	for f in 3rdpart/FFmpeg/configure 3rdpart/nv-codec-headers/Makefile \
+		3rdpart/aws-sdk-cpp/crt/aws-crt-cpp/crt/aws-c-common/CMakeLists.txt; do
+		if [[ ! -f $f ]]; then
+			echo "missing $f, run: git submodule update --init --recursive --depth 1"
+			exit 1
+		fi
+	done
 	rm -rf ./build/CMakeCache.txt
 	# Take Tencent Cloud Account as an example
 	docker buildx build --platform=$platform --network=host --build-arg MODEL=$model -t $namespace/$packagename:$model.$version .

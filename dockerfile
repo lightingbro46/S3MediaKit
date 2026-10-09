@@ -30,13 +30,12 @@ RUN apt-get update && \
          libsqlite3-dev \
          libcurl4-openssl-dev \
          libsrtp2-dev  \
-         libavcodec-dev \
-         libavformat-dev \
-         libavutil-dev \
-         libswscale-dev \
-         libswresample-dev \
-         libavfilter-dev \
-         libfreetype6-dev \
+         nasm \
+         pkg-config \
+         libfreetype-dev \
+         librsvg2-dev \
+         libva-dev \
+         libmfx-dev \
          libx264-dev \
          libx265-dev \
          libfaac-dev \
@@ -52,42 +51,27 @@ RUN mkdir -p /opt/media
 COPY . /opt/media/S3MediaKit
 WORKDIR /opt/media/S3MediaKit
 
-# # 3rdpart init
-# WORKDIR /opt/media/ZLMediaKit/3rdpart
-# RUN wget https://github.com/cisco/libsrtp/archive/v2.3.0.tar.gz -O libsrtp-2.3.0.tar.gz && \
-#     tar xfv libsrtp-2.3.0.tar.gz && \
-#     mv libsrtp-2.3.0 libsrtp && \
-#     cd libsrtp && CFLAGS="-fcommon" ./configure --enable-openssl && \
-#     make -j$(nproc) && make install
-
-# 3rdpart init
-# WORKDIR /opt/media/S3MediaKit/3rdpart
-# RUN wget --no-check-certificate https://github.com/cisco/libsrtp/archive/v2.3.0.tar.gz -O libsrtp-2.3.0.tar.gz && \
-#     tar xfv libsrtp-2.3.0.tar.gz && \
-#     mv libsrtp-2.3.0 libsrtp && \
-#     cd libsrtp && ./configure --enable-openssl && make -j $(nproc) && make install
-# 3rdpart aws-sdk
-# RUN apt-get install -y --no-install-recommends zlib1g-dev
-# WORKDIR /opt/media/S3MediaKit/3rdpart
-# RUN git clone --branch main --single-branch --recurse-submodules https://github.com/aws/aws-sdk-cpp.git aws-sdk-cpp && \
-#     cd aws-sdk-cpp && mkdir build && mkdir -p ../aws-sdk/bin && \
-#     cd build && \
-#     cmake ..    \ 
-#     -DCMAKE_BUILD_TYPE=Release \
-#     -DBUILD_SHARED_LIBS=ON \
-#     -DBUILD_ONLY="s3;core" \
-#     -DENABLE_TESTING=OFF \
-#     -DAUTORUN_UNIT_TESTS=OFF \
-#     -DCMAKE_INSTALL_PREFIX="../../aws-sdk/bin"  \
-#     && make -j$(nproc) && make install
-
-#RUN git submodule update --init --recursive && \
-
+# FFmpeg (3rdpart/FFmpeg) and the AWS SDK (3rdpart/aws-sdk-cpp) are git submodules built by CMake
+# into release/linux/3rdpart. The submodules must be checked out before docker build
+# (build_docker_images.sh checks it).
 RUN mkdir -p build release/linux/${MODEL}/
 
 WORKDIR /opt/media/S3MediaKit/build
-RUN cmake -DCMAKE_BUILD_TYPE=${MODEL} -DENABLE_WEBRTC=false -DENABLE_FFMPEG=true -DENABLE_MOTION=true -DENABLE_AWS_SDK=true -DENABLE_TESTS=false -DENABLE_API=false .. && \
+RUN cmake -DCMAKE_BUILD_TYPE=${MODEL} -DENABLE_WEBRTC=false -DENABLE_FFMPEG=true -DENABLE_MOTION=true -DENABLE_AWS_SDK=true -DENABLE_TESTS=false -DENABLE_API=false -DS3_DEPS_JOBS=$(nproc) .. && \
     make -j $(nproc)
+
+# /opt/media/lib holds only the libraries built here (FFmpeg *_s3, AWS SDK); system libraries come
+# from apt runtime packages in the final image. ffmpeg/ffprobe go to /usr/local/bin (found through
+# PATH): /opt/media/bin/ffmpeg/ is the default ffmpeg log directory.
+RUN mkdir -p /opt/media/bin /opt/media/lib /opt/media/ffmpeg-bin && \
+    cp /opt/media/S3MediaKit/release/linux/${MODEL}/MediaServer /opt/media/bin/ && \
+    cp /opt/media/S3MediaKit/release/linux/3rdpart/ffmpeg/bin/ffmpeg \
+       /opt/media/S3MediaKit/release/linux/3rdpart/ffmpeg/bin/ffprobe /opt/media/ffmpeg-bin/ && \
+    cp -a /opt/media/S3MediaKit/release/linux/3rdpart/ffmpeg/lib/*.so* \
+          /opt/media/S3MediaKit/release/linux/3rdpart/aws-sdk/lib/*.so* /opt/media/lib/ && \
+    echo "apt packages needed at runtime:" && \
+    /opt/media/S3MediaKit/tools/package/check_runtime_libs.sh --apt-packages \
+        /opt/media/lib /opt/media/bin/MediaServer /opt/media/ffmpeg-bin/ffmpeg /opt/media/ffmpeg-bin/ffprobe
 
 FROM ubuntu:22.04
 ARG MODEL
@@ -103,7 +87,18 @@ RUN apt-get update && \
          tzdata \
          curl \
          sqlite3 \
-         ffmpeg && \
+         libssl3 \
+         libcurl4 \
+         libsqlite3-0 \
+         libprotobuf23 \
+         zlib1g \
+         libfreetype6 \
+         librsvg2-2 \
+         libx264-163 \
+         libx265-199 \
+         libva2 \
+         libva-drm2 \
+         libmfx1 && \
          apt-get autoremove -y && \
          apt-get clean -y && \
     rm -rf /var/lib/apt/lists/*
@@ -114,12 +109,19 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
         mkdir -p /opt/media/bin/www
 
 WORKDIR /opt/media/bin/
-COPY --from=build /opt/media/S3MediaKit/release/linux/${MODEL}/MediaServer /opt/media/S3MediaKit/default.pem /opt/media/bin/
+COPY --from=build /opt/media/bin/ /opt/media/bin/
+COPY --from=build /opt/media/lib/ /opt/media/lib/
+COPY --from=build /opt/media/ffmpeg-bin/ /usr/local/bin/
+COPY --from=build /opt/media/S3MediaKit/default.pem /opt/media/bin/
 # COPY --from=build /opt/media/S3MediaKit/release/linux/${MODEL}/config.ini /opt/media/conf/
 COPY --from=build /opt/media/S3MediaKit/www/console/ /opt/media/bin/www/console/
 COPY --from=build /opt/media/S3MediaKit/migration/mserver_updates/ /opt/media/bin/mserver_updates/
 COPY --from=build /opt/media/S3MediaKit/migration/updates/ /opt/media/bin/updates/
-# Copy AWS SDK shared libraries alongside the binary so RPATH=$ORIGIN resolves them
-COPY --from=build /opt/media/S3MediaKit/3rdpart/aws-sdk/bin/lib/* /opt/media/bin/
+COPY --from=build /opt/media/S3MediaKit/tools/package/check_runtime_libs.sh /opt/media/tools/
+# Standard loader lookup for /opt/media/lib; RUNPATH $ORIGIN/../lib in the binaries is the fallback.
+# The image build fails here, not at run time, when a runtime package is missing.
+RUN echo /opt/media/lib > /etc/ld.so.conf.d/s3media.conf && ldconfig && \
+    /opt/media/tools/check_runtime_libs.sh --strict /opt/media/lib \
+        /opt/media/bin/MediaServer /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
 ENV PATH=/opt/media/bin:$PATH
 CMD ["./MediaServer","-s", "default.pem", "-c", "../conf/config.ini", "-l", "2", "-d"]

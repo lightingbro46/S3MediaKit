@@ -1,0 +1,6 @@
+# The image builds FFmpeg/AWS SDK from the submodules itself; never ship dev build output.
+/build*/
+/release/
+/cmake-build-*/
+/3rdpart/aws-sdk/
+/tests/integration/**/out/
