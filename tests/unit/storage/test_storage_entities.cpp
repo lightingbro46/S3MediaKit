@@ -46,10 +46,25 @@ TEST(StoragePolicyTest, RoundTripsNestedConfiguration) {
     tier.enabled = true;
     tier.pool_id = "pool-1";
     tier.retain_until_days = 90;
+    tier.quality_reduction.enabled = true;
+    tier.quality_reduction.video_codec = "H265";
+    tier.quality_reduction.max_width = 1280;
+    tier.quality_reduction.max_height = 720;
+    tier.quality_reduction.max_fps = 15;
+    tier.quality_reduction.max_video_bitrate_kbps = 1200;
     const Json::Value tier_json = tier.toJson();
     PolicyTierConfig tier_copy = PolicyTierConfig::fromJson(tier_json);
     EXPECT_EQ("COLD", tier_copy.tier);
     EXPECT_EQ(90, tier_copy.retain_until_days);
+    EXPECT_TRUE(tier_copy.quality_reduction.enabled);
+    EXPECT_EQ("H265", tier_copy.quality_reduction.video_codec);
+    EXPECT_EQ(1280, tier_copy.quality_reduction.max_width);
+    EXPECT_EQ(720, tier_copy.quality_reduction.max_height);
+    EXPECT_EQ(15, tier_copy.quality_reduction.max_fps);
+    EXPECT_EQ(1200, tier_copy.quality_reduction.max_video_bitrate_kbps);
+
+    PolicyTierConfig legacy = PolicyTierConfig::fromJson(Json::Value(Json::objectValue));
+    EXPECT_FALSE(legacy.quality_reduction.enabled);
 
     StoragePolicy policy;
     policy.id = "p1";

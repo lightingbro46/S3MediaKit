@@ -17,6 +17,14 @@ struct TimeBlockIdentity {
     std::string segment_path;
 };
 
+struct TimeBlockSizePatch {
+    std::string camera_id;
+    std::string stream_id;
+    uint64_t start_time = 0;
+    std::string segment_path;
+    uint64_t new_size = 0;
+};
+
 class TimeRebuilder final {
 public:
     using Ptr = std::shared_ptr<TimeRebuilder>;
@@ -33,9 +41,12 @@ public:
 
     // Remove only the durable catalog entries whose exact identities are supplied.
     size_t removeTimeBlocks(const std::vector<TimeBlockIdentity> &blocks);
+    size_t patchTimeBlocks(const std::vector<TimeBlockSizePatch> &patches);
+    size_t verifyTimeBlocks(const std::vector<TimeBlockSizePatch> &patches) const;
 
     // Rewrite the file keeping the blocks `keep_block` accepts, in start-time order.
-    size_t rebuildTimeLineWithPredicate(const std::function<bool(const TimeBlock &)> &keep_block);
+    // `keep_block` may modify a block it keeps.
+    size_t rebuildTimeLineWithPredicate(const std::function<bool(TimeBlock &)> &keep_block);
 
     // Invoked on the swap thread after the rebuilt file replaced the source.
     // Not invoked when the swap is discarded because the source changed.
@@ -89,6 +100,8 @@ public:
     size_t rebuildTimeLine(const KeepTimeMap &map);
 
     size_t removeTimeBlocks(const std::vector<TimeBlockIdentity> &blocks);
+    size_t patchTimeBlocks(const std::vector<TimeBlockSizePatch> &patches);
+    size_t verifyTimeBlocks(const std::vector<TimeBlockSizePatch> &patches) const;
 
     /**
      * Rewrite in start-time order the files holding a block appended after newer ones (gap fill,

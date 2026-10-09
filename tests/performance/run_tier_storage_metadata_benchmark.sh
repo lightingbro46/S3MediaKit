@@ -57,6 +57,25 @@ CREATE INDEX idx_segment_tier_ranges_status_camera
 CREATE INDEX idx_segment_tier_ranges_status_updated
   ON segment_tier_ranges(status, updated_at);
 
+CREATE TABLE tiering_job_segments (
+  job_id TEXT NOT NULL, range_id TEXT NOT NULL, camera_id TEXT NOT NULL,
+  stream_id TEXT NOT NULL, segment_path TEXT NOT NULL, storage_key TEXT NOT NULL,
+  status TEXT NOT NULL, updated_at INTEGER NOT NULL,
+  PRIMARY KEY(job_id, stream_id, segment_path)
+);
+CREATE INDEX idx_tiering_job_segments_job_status
+  ON tiering_job_segments(job_id, status);
+CREATE INDEX idx_tiering_job_segments_status_updated
+  ON tiering_job_segments(status, updated_at);
+CREATE TABLE tier_timefile_size_updates (
+  job_id TEXT NOT NULL, range_id TEXT NOT NULL, camera_id TEXT NOT NULL,
+  stream_id TEXT NOT NULL, segment_path TEXT NOT NULL, status TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(camera_id, stream_id, segment_path)
+);
+CREATE INDEX idx_tier_timefile_size_updates_status_updated
+  ON tier_timefile_size_updates(status, updated_at);
+
 BEGIN;
 WITH RECURSIVE ranges(value) AS (
   VALUES(0)
@@ -71,6 +90,22 @@ SELECT printf('range-%08d', value),
        1700086400 + (value / ${STREAM_COUNT}) * 86400,
        1440, 1509949440, 1700000000, 1700000000
   FROM ranges;
+COMMIT;
+
+BEGIN;
+WITH RECURSIVE children(value) AS (
+  VALUES(0) UNION ALL SELECT value + 1 FROM children WHERE value + 1 < 10000
+)
+INSERT INTO tiering_job_segments
+SELECT printf('job-%04d', value / 100), printf('range-%08d', value),
+       printf('camera-%03d', value % ${CAMERA_COUNT}), 'main',
+       printf('segment-%08d', value), printf('key-%08d', value),
+       CASE WHEN value % 10 = 0 THEN 'PENDING' ELSE 'STORED' END, 1700000000
+  FROM children;
+INSERT INTO tier_timefile_size_updates
+SELECT job_id, range_id, camera_id, stream_id, segment_path,
+       CASE WHEN rowid % 10 = 0 THEN 'PENDING' ELSE 'DONE' END, updated_at
+  FROM tiering_job_segments;
 COMMIT;
 SQL
 
@@ -91,6 +126,14 @@ SELECT 'eligible_page', count(*) FROM (
   WHERE camera_id = 'camera-000' AND tier = 'HOT'
     AND status = 'AVAILABLE' AND start_time < 1800000000
   ORDER BY start_time ASC LIMIT 64
+);
+SELECT 'pending_job_segments', count(*) FROM (
+  SELECT segment_path FROM tiering_job_segments
+   WHERE job_id = 'job-0000' AND status = 'PENDING' LIMIT 100
+);
+SELECT 'pending_timefile_patches', count(*) FROM (
+  SELECT segment_path FROM tier_timefile_size_updates
+   WHERE status = 'PENDING' ORDER BY updated_at LIMIT 100
 );
 BEGIN;
 UPDATE segment_tier_ranges SET tier = 'WARM', pool_id = 'warm-pool'

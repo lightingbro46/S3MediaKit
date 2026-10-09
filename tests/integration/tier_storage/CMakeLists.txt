@@ -1,9 +1,29 @@
-if(NOT ENABLE_TIER_STORAGE OR NOT ENABLE_AWS_SDK)
+if(NOT ENABLE_TIER_STORAGE)
   return()
 endif()
 
 find_package(GTest 1.10 REQUIRED)
 include(GoogleTest)
+
+add_executable(integration_tier_transcode_ffmpeg
+  test_tier_media_transformer.cpp)
+target_compile_options(integration_tier_transcode_ffmpeg PRIVATE ${COMPILE_OPTIONS_DEFAULT})
+target_compile_definitions(integration_tier_transcode_ffmpeg PRIVATE ${MK_COMPILE_DEFINITIONS})
+target_link_libraries(integration_tier_transcode_ffmpeg
+  PRIVATE GTest::gtest GTest::gtest_main S3MediaKit::ManagerKit)
+target_include_directories(integration_tier_transcode_ffmpeg PRIVATE
+  "${PROJECT_SOURCE_DIR}/manager")
+gtest_discover_tests(integration_tier_transcode_ffmpeg
+  TEST_PREFIX "integration.tier-transcode."
+  PROPERTIES LABELS "integration;tier-storage;tier-transcode" TIMEOUT 90)
+add_test(NAME integration.tier_transcode_ffmpeg_all
+  COMMAND integration_tier_transcode_ffmpeg)
+set_tests_properties(integration.tier_transcode_ffmpeg_all PROPERTIES
+  LABELS "integration;tier-storage;tier-transcode" TIMEOUT 180)
+
+if(NOT ENABLE_AWS_SDK)
+  return()
+endif()
 
 add_executable(integration_tier_storage_minio
   test_tier_object_storage.cpp

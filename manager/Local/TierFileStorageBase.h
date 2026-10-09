@@ -34,6 +34,11 @@ public:
                        const std::string &local_path,
                        const std::string &storage_key);
 
+    bool uploadSegmentAtomic(const std::string &pool_id,
+                             const std::string &local_path,
+                             const std::string &storage_key,
+                             const std::string &job_id);
+
     bool downloadSegment(const std::string &pool_id,
                          const std::string &storage_key,
                          const std::string &local_path);

@@ -33,6 +33,8 @@
 #include "Storage/Bookmark.h"
 #include "Storage/TierBackfillTask.h"
 #include "Extension/Resource.h"
+#include "Storage/TierQualityJob.h"
+#include "Local/TierMediaTransformer.h"
 
 #include "TierStorageManager.h"
 #include "TierStorageBase.h"
@@ -61,6 +63,11 @@ std::string appendStoragePath(const std::string &root, const std::string &child)
 std::string configuredPoolDataRoot(const StoragePool &pool) {
     GET_CONFIG(std::string, app_name, Record::kAppName);
     return TierStorageManager::resolveFilePoolDataRoot(pool, app_name);
+}
+
+std::string tierJournalIdentity(const std::string &stream_id,
+                                const std::string &segment_path) {
+    return stream_id + "\n" + segment_path;
 }
 
 } // namespace
@@ -204,6 +211,18 @@ static int countMissingSegmentFailures(const std::string &range_id) {
         range_id, kMissingSourceAndTargetError, getMissingSegmentMaxAttempts()).size());
 }
 
+// Exponential backoff after failed jobs (newest first): base, 2x base, ... capped at a day.
+static int64_t failedJobRetryAt(const std::vector<TieringJob> &failed) {
+    GET_CONFIG(int64_t, base_seconds, Storage::kTieringMissingSegmentRetryBaseSeconds);
+    const int64_t max_delay = 86400;
+    if (base_seconds <= 0)
+        base_seconds = 3600;
+    base_seconds = std::min(base_seconds, max_delay);
+    const int shift = std::min<int>(static_cast<int>(failed.size()) - 1, 16);
+    const int64_t delay = std::min(base_seconds << shift, max_delay);
+    return failed.front().updated_at + delay;
+}
+
 // Earliest time a range whose previous jobs hit missing segments may be
 // queued again. Returns false when the range has no such failures.
 static bool missingSegmentRetryAt(const std::string &range_id, int64_t &retry_at) {
@@ -212,15 +231,30 @@ static bool missingSegmentRetryAt(const std::string &range_id, int64_t &retry_at
         range_id, kMissingSourceAndTargetError, getMissingSegmentMaxAttempts());
     if (failed.empty())
         return false;
-    GET_CONFIG(int64_t, base_seconds, Storage::kTieringMissingSegmentRetryBaseSeconds);
-    const int64_t max_delay = 86400;
-    if (base_seconds <= 0)
-        base_seconds = 3600;
-    base_seconds = std::min(base_seconds, max_delay);
-    const int shift = std::min<int>(static_cast<int>(failed.size()) - 1, 16);
-    const int64_t delay = std::min(base_seconds << shift, max_delay);
-    retry_at = failed.front().updated_at + delay;
+    retry_at = failedJobRetryAt(failed);
     return true;
+}
+
+// Transform failures that repeat for the same input (bad file, unsupported media), unlike
+// TIER_TRANSCODE_CANCELLED/STAGING_FAILED. Newest first, at most kTranscodeFailureAttempts.
+static const size_t kTranscodeFailureAttempts = 3;
+
+static std::vector<TieringJob> recentTranscodeFailures(const std::string &range_id) {
+    static const char *const kErrors[] = {"TIER_TRANSCODE_PROBE_FAILED",
+                                          "TIER_TRANSCODE_ENCODER_FAILED",
+                                          "TIER_TRANSCODE_INVALID_PROFILE"};
+    std::vector<TieringJob> failed;
+    TieringJobImp job_imp;
+    for (const char *error : kErrors) {
+        auto jobs = job_imp.findRecentFailedByRange(range_id, error, kTranscodeFailureAttempts);
+        failed.insert(failed.end(), jobs.begin(), jobs.end());
+    }
+    std::sort(failed.begin(), failed.end(), [](const TieringJob &a, const TieringJob &b) {
+        return a.updated_at > b.updated_at;
+    });
+    if (failed.size() > kTranscodeFailureAttempts)
+        failed.resize(kTranscodeFailureAttempts);
+    return failed;
 }
 
 static uint64_t nextLocalDayStart(uint64_t day_start) {
@@ -985,8 +1019,29 @@ void TierStorageManager::start() {
 
     _stopping = false;
 
+    if (mINI::Instance()[Storage::kTierTranscodeEnabled].as<bool>()) {
+        std::shared_ptr<TransferDispatchState> state = _transfer_dispatch_state;
+        {
+            std::lock_guard<std::mutex> lk(state->mutex);
+            ++state->callbacks_in_flight;
+        }
+        BlockingExecutors::tierTransfer()->async([state]() {
+            try {
+                TierEncoderCapabilityRegistry::Instance().probe();
+            } catch (const std::exception &ex) {
+                WarnL << "Tier encoder capability probe failed: " << ex.what();
+            } catch (...) {
+                WarnL << "Tier encoder capability probe failed";
+            }
+            std::lock_guard<std::mutex> lk(state->mutex);
+            --state->callbacks_in_flight;
+            state->completed.notify_all();
+        }, false);
+    }
+
     // Jobs left RUNNING by a crash are safe to claim again from durable state.
     TieringJobImp().recoverRunning();
+    TieringJobSegmentImp().recoverTransforming();
     RestoreJobSegmentImp().recoverRunning();
     TierBackfillTaskImp().recoverRunning();
 
@@ -1075,6 +1130,11 @@ void TierStorageManager::stop() {
     _timer.reset();
     _backfill_timer.reset();
     _health_timer.reset();
+    {
+        std::lock_guard<std::mutex> lk(_tiering_cancellation_mtx);
+        for (const auto &entry : _tiering_cancellations)
+            entry.second->cancel();
+    }
     // Object storage calls in flight (reconcile, upload, download) must finish before shutdown()
     // tears down the AWS SDK.
     waitForBackgroundWork();
@@ -1774,6 +1834,27 @@ bool TierStorageManager::collectSegmentFilesForRange(const SegmentTierRange &ran
             return a.start_time < b.start_time;
         return a.segment_path < b.segment_path;
     });
+
+    // A successful transcode commits the compact range before the TimeFile is
+    // rewritten. Overlay its durable outbox so retention, pressure and quota
+    // calculations never temporarily fall back to the old source sizes.
+    const std::vector<TierTimefileSizeUpdate> pending_sizes =
+        TierTimefileSizeUpdateImp().findPendingByRangeId(range.range_id);
+    if (!pending_sizes.empty()) {
+        std::map<std::string, int64_t> size_by_identity;
+        for (const auto &update : pending_sizes) {
+            const std::string key = update.stream_id + "\n" +
+                std::to_string(update.start_time) + "\n" + update.segment_path;
+            size_by_identity[key] = update.new_size;
+        }
+        for (auto &segment : out) {
+            const std::string key = segment.stream_id + "\n" +
+                std::to_string(segment.start_time) + "\n" + segment.segment_path;
+            auto it = size_by_identity.find(key);
+            if (it != size_by_identity.end())
+                segment.file_size = std::max<int64_t>(0, it->second);
+        }
+    }
     return true;
 }
 
@@ -3494,6 +3575,8 @@ void TierStorageManager::runTieringCycle() {
             self->runRangeFileReconcile();
             self->runObjectRangeReconcile();
             self->processMetadataCleanupJobs();
+            self->processTimefileSizeUpdates();
+            self->processCommittedSourceCleanup();
             // Gap fill appends past blocks after newer ones; rewrite those files in order so the
             // ranges of the filled segments can be listed (and moved, and expired).
             TimeRecorderManager::Instance().sortUnsortedTimeFiles();
@@ -3501,6 +3584,7 @@ void TierStorageManager::runTieringCycle() {
             self->pruneOldMetrics();
             self->cleanupRestoreTempFiles();
             TierEncryptionManager::Instance().sweepDecryptCache();
+            self->cleanupOrphanTranscodeStaging();
             self->cleanupOrphanTemporarySegments();
             self->sweepStaleTimeBlocks();
             self->dispatchPendingTieringJobs();
@@ -3511,6 +3595,148 @@ void TierStorageManager::runTieringCycle() {
             WarnL << "Tier storage maintenance cycle failed with unknown error";
         }
     });
+}
+
+void TierStorageManager::processTimefileSizeUpdates() {
+    TierTimefileSizeUpdateImp updates;
+    const std::vector<TierTimefileSizeUpdate> pending = updates.findPending(1000);
+    std::map<std::string, std::vector<TierTimefileSizeUpdate>> by_camera;
+    for (const auto &update : pending) by_camera[update.camera_id].push_back(update);
+    for (const auto &entry : by_camera) {
+        std::vector<TimeBlockSizePatch> patches;
+        for (const auto &update : entry.second) {
+            TimeBlockSizePatch patch;
+            patch.camera_id = update.camera_id;
+            patch.stream_id = update.stream_id;
+            patch.start_time = static_cast<uint64_t>(update.start_time);
+            patch.segment_path = update.segment_path;
+            patch.new_size = static_cast<uint64_t>(std::max<int64_t>(0, update.new_size));
+            patches.push_back(patch);
+        }
+        try {
+            if (StorageManager::Instance().verifyCameraTimeBlockSizes(entry.first, patches) ==
+                patches.size()) {
+                for (const auto &update : entry.second) updates.markResult(update, "DONE");
+                continue;
+            }
+            const size_t patched =
+                StorageManager::Instance().patchCameraTimeBlockSizes(entry.first, patches);
+            const std::string result = patched > 0
+                ? "Awaiting TimeFile swap verification"
+                : "No matching TimeFile block patched";
+            for (const auto &update : entry.second)
+                updates.markResult(update, "PENDING", result);
+        } catch (const std::exception &ex) {
+            for (const auto &update : entry.second)
+                updates.markResult(update, "PENDING", ex.what());
+        } catch (...) {
+            for (const auto &update : entry.second)
+                updates.markResult(update, "PENDING", "Unknown TimeFile patch error");
+        }
+    }
+}
+
+void TierStorageManager::processCommittedSourceCleanup() {
+    TieringJobSegmentImp segment_imp;
+    const std::vector<TieringJobSegment> committed =
+        segment_imp.findCommittedForCleanup(1000);
+    for (const auto &segment : committed) {
+        const std::vector<TieringJob> jobs = TieringJobImp().findByJobId(segment.job_id);
+        if (jobs.empty()) continue;
+        StoragePool source_pool;
+        {
+            std::lock_guard<std::mutex> lk(_pool_cache_mtx);
+            auto it = _pool_cache.find(jobs.front().source_pool_id);
+            if (it == _pool_cache.end()) continue;
+            source_pool = it->second;
+        }
+        if (poolTypeIsObjectStorage(source_pool.type))
+            continue;
+        TierFileStorageBase *storage = fileStorageForPoolType(source_pool.type);
+        if (!storage || (!storage->isRegistered(source_pool.id) &&
+                         !registerPoolFileStorage(source_pool)))
+            continue;
+        if (!storage->segmentExists(source_pool.id, segment.storage_key) ||
+            storage->deleteSegment(source_pool.id, segment.storage_key)) {
+            segment_imp.markCleaned(segment);
+        }
+    }
+}
+
+void TierStorageManager::cleanupOrphanTranscodeStaging() {
+    GET_CONFIG(std::string, root_value, Storage::kTierTranscodeStagingPath);
+    GET_CONFIG(int64_t, timeout_seconds, Storage::kTierTranscodeTimeoutSeconds);
+    const std::string root = normalizeStoragePath(root_value);
+    struct stat root_stat{};
+    if (root.empty() || root == "/" || ::lstat(root.c_str(), &root_stat) != 0 ||
+        !S_ISDIR(root_stat.st_mode)) {
+        return;
+    }
+
+    std::unordered_set<std::string> active_job_keys;
+    TieringJobImp jobs;
+    const std::vector<std::string> active_statuses = {
+        jobStatusToString(JobStatus::PENDING), jobStatusToString(JobStatus::RUNNING)};
+    for (const auto &status : active_statuses) {
+        const std::vector<TieringJob> active = jobs.findByStatus(status);
+        for (const auto &job : active) {
+            if (job.operation == "TRANSCODE_MOVE")
+                active_job_keys.insert(tierTranscodeStagingJobKey(job.job_id));
+        }
+    }
+
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    const int64_t stale_after = std::max<int64_t>(1, timeout_seconds) * 2;
+    size_t examined = 0;
+    size_t deleted = 0;
+    const size_t max_files = 1000;
+    File::scanDir(root, [&](const std::string &job_path, bool) {
+        if (_stopping || examined >= max_files)
+            return false;
+        struct stat job_stat{};
+        if (::lstat(job_path.c_str(), &job_stat) != 0 || !S_ISDIR(job_stat.st_mode))
+            return true;
+        const size_t slash = job_path.find_last_of('/');
+        const std::string job_key = slash == std::string::npos
+            ? job_path : job_path.substr(slash + 1);
+        if (active_job_keys.count(job_key) != 0)
+            return true;
+
+        File::scanDir(job_path, [&](const std::string &stream_path, bool) {
+            if (_stopping || examined >= max_files)
+                return false;
+            struct stat stream_stat{};
+            if (::lstat(stream_path.c_str(), &stream_stat) != 0 ||
+                !S_ISDIR(stream_stat.st_mode)) {
+                return true;
+            }
+            File::scanDir(stream_path, [&](const std::string &path, bool) {
+                if (_stopping || examined >= max_files)
+                    return false;
+                ++examined;
+                struct stat file_stat{};
+                if (::lstat(path.c_str(), &file_stat) != 0 ||
+                    !S_ISREG(file_stat.st_mode) || !end_with(path, ".mp4.tmp") ||
+                    now - static_cast<int64_t>(file_stat.st_mtime) <= stale_after) {
+                    return true;
+                }
+                if (::unlink(path.c_str()) == 0) {
+                    ++deleted;
+                } else if (errno != ENOENT) {
+                    WarnL << "Cannot remove orphan tier transcode staging file: "
+                          << path << ": " << strerror(errno);
+                }
+                return true;
+            }, false, false);
+            return true;
+        }, false, false);
+        return true;
+    }, false, false);
+
+    if (deleted > 0) {
+        DebugL << "cleanupOrphanTranscodeStaging: examined=" << examined
+               << ", deleted=" << deleted << ", root=" << root;
+    }
 }
 
 void TierStorageManager::processCameraTiering(const std::string &camera_id,
@@ -3603,11 +3829,38 @@ void TierStorageManager::processCameraTiering(const std::string &camera_id,
     }
 }
 
+// The policy tier that asks for quality reduction when moving into `pool_id`. False while the
+// operational switch or the policy master switch is off: moves then behave as plain copies.
+static bool findQualityReductionTier(const StoragePolicy &policy, const std::string &pool_id,
+                                     PolicyTierConfig &out) {
+    GET_CONFIG(bool, transcode_enabled, Storage::kTierTranscodeEnabled);
+    if (!transcode_enabled || !policy.parsedAdvancedRules().enable_tier_quality_reduction)
+        return false;
+    const std::vector<PolicyTierConfig> tiers = policy.parsedTiers();
+    for (const auto &tier : tiers) {
+        if (tier.enabled && tier.pool_id == pool_id &&
+            tier.tier != tierTypeToString(HotTier) && tier.quality_reduction.enabled) {
+            out = tier;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool TierStorageManager::queueTierMoveJob(const SegmentTierRange &range,
                                           const PolicyTierConfig &src_tier_cfg,
                                           const PolicyTierConfig &dst_tier_cfg,
                                           const StoragePolicy &policy,
-                                          TieringJobTrigger trigger) {
+                                          TieringJobTrigger trigger,
+                                          bool force_copy,
+                                          bool shape_protected) {
+    PolicyTierConfig quality_tier;
+    const bool quality_target =
+        findQualityReductionTier(policy, dst_tier_cfg.pool_id, quality_tier);
+    if (quality_target && !force_copy &&
+        SegmentRetentionOverrideImp().isActive(
+            range.range_id, static_cast<int64_t>(time(nullptr))))
+        force_copy = true;
     std::string source_pool_id = range.pool_id.empty() ? src_tier_cfg.pool_id : range.pool_id;
     if (source_pool_id.empty() || dst_tier_cfg.pool_id.empty()) {
         WarnL << "Refuse to queue tiering job with empty pool_id camera=" << range.camera_id
@@ -3620,6 +3873,51 @@ bool TierStorageManager::queueTierMoveJob(const SegmentTierRange &range,
               << " pool_id=" << source_pool_id
               << " range=" << range.range_id;
         return false;
+    }
+
+    // Only a quality move needs protected segments in pieces of their own (copied unchanged).
+    if (shape_protected && quality_target && !force_copy) {
+        const std::vector<ProtectedVideo> protections = ProtectedVideoImp().findOverlapping(
+            range.camera_id, range.start_time, range.end_time);
+        if (!protections.empty()) {
+            std::vector<TierRangeSegmentFile> segments;
+            std::string error;
+            if (!collectSegmentFilesForRange(range, segments, error) || segments.empty()) {
+                WarnL << "Cannot shape tier move around protected segments: " << error;
+                return false;
+            }
+            auto protected_segment = [&protections](int64_t start, int64_t end) {
+                for (const auto &video : protections) {
+                    if (video.start_time <= end && video.end_time >= start)
+                        return true;
+                }
+                return false;
+            };
+            const int kNormal = 1;
+            const int kProtected = 2;
+            std::vector<int> kinds(segments.size(), kNormal);
+            for (size_t i = 0; i < segments.size(); ++i) {
+                if (protected_segment(segments[i].start_time, segments[i].end_time))
+                    kinds[i] = kProtected;
+            }
+            std::vector<ShapedPiece> shaped;
+            if (!shapeRangePieces(range, segments, kinds, protected_segment,
+                                  static_cast<int64_t>(time(nullptr)), shaped))
+                return false;
+            if (shaped.size() > 1 || shaped.front().kind == kProtected) {
+                std::vector<SegmentTierRange> pieces;
+                for (const auto &piece : shaped) pieces.push_back(piece.range);
+                if (!SegmentTierRangeImp().replaceRangeWithPiecesIfUnchanged(range, pieces))
+                    return false;
+                bool queued = false;
+                for (const auto &piece : shaped) {
+                    queued = queueTierMoveJob(piece.range, src_tier_cfg, dst_tier_cfg,
+                                              policy, trigger,
+                                              piece.kind == kProtected, false) || queued;
+                }
+                return queued;
+            }
+        }
     }
 
     TieringJobImp job_imp;
@@ -3664,6 +3962,44 @@ bool TierStorageManager::queueTierMoveJob(const SegmentTierRange &range,
     job.job_trigger        = tieringJobTriggerToString(trigger);
     job.policy_id          = policy.id;
     job.policy_updated_at  = policy.updated_at;
+
+    if (quality_target && !force_copy) {
+        const std::string &codec = quality_tier.quality_reduction.video_codec;
+        const std::vector<TieringJob> failed = recentTranscodeFailures(range.range_id);
+        // Retrying the same input fails the same way: a full source pool moves the
+        // originals, a retention move backs off like missing segments.
+        const bool copy_after_failures = pressure && failed.size() >= kTranscodeFailureAttempts;
+        if (!pressure && failed.size() >= kTranscodeFailureAttempts) {
+            const int64_t transcode_retry_at = failedJobRetryAt(failed);
+            if (now < transcode_retry_at) {
+                DebugL << "Defer quality tier move after " << failed.size()
+                       << " transform failures until "
+                       << getTimeStr("%Y-%m-%d %H:%M:%S", transcode_retry_at)
+                       << " range=" << range.range_id;
+                return false;
+            }
+        }
+        if (copy_after_failures) {
+            WarnL << "Quality reduction failed " << failed.size()
+                  << " times, pressure move copies without it: range=" << range.range_id
+                  << " error=" << failed.front().error_message.value_or("");
+        } else if (TierEncoderCapabilityRegistry::Instance().operational(codec)) {
+            job.operation = "TRANSCODE_MOVE";
+            Json::FastWriter writer;
+            job.quality_profile_json = writer.write(quality_tier.quality_reduction.toJson());
+            if (!job.quality_profile_json.empty() &&
+                job.quality_profile_json[job.quality_profile_json.size() - 1] == '\n')
+                job.quality_profile_json.resize(job.quality_profile_json.size() - 1);
+        } else if (trigger == TieringJobTrigger::PRESSURE) {
+            // A full source pool cannot wait for an encoder: move the originals instead.
+            WarnL << "Encoder capability unavailable, pressure move copies without "
+                     "quality reduction: " << codec << " range=" << range.range_id;
+        } else {
+            DebugL << "Defer quality tier move because encoder capability is unavailable: "
+                   << codec;
+            return false;
+        }
+    }
 
     if (!job_imp.add(job))
         return false;
@@ -3992,10 +4328,16 @@ void TierStorageManager::enforcePolicyDeleteRetention(const std::string &camera_
     SegmentTierRangeImp range_imp;
     const bool move_external =
         delete_policy.delete_mode == deleteModeToString(DeleteMode::MOVE_TO_EXTERNAL_STORAGE);
+    // A quality move to the external pool takes protected ranges too: queueTierMoveJob() splits
+    // them off and copies them unchanged. Any other mode leaves protected ranges in place.
+    PolicyTierConfig external_quality_tier;
+    const bool move_protected = move_external &&
+        findQualityReductionTier(policy, delete_policy.external_pool_id, external_quality_tier);
     auto ranges = collectAgeRetentionPieces(
-        camera_id, cutoff, move_external ? delete_policy.external_pool_id : "");
+        camera_id, cutoff, move_external ? delete_policy.external_pool_id : "",
+        !move_protected);
     for (const auto &range : ranges) {
-        if (isRangeDeletionProtected(range))
+        if (!move_protected && isRangeDeletionProtected(range))
             continue;
 
         if (delete_policy.delete_mode == deleteModeToString(DeleteMode::MARK_EXPIRED_WAIT_APPROVAL) ||
@@ -4043,6 +4385,8 @@ void TierStorageManager::enforcePolicyDeleteRetention(const std::string &camera_
             dst_cfg.tier = target_pool.tier;
             dst_cfg.enabled = true;
             dst_cfg.pool_id = target_pool.id;
+            if (move_protected)
+                dst_cfg = external_quality_tier;
             queueTierMoveJob(range, src_cfg, dst_cfg, policy,
                              TieringJobTrigger::DELETE_POLICY_EXTERNAL);
             continue;
@@ -4349,7 +4693,8 @@ void TierStorageManager::enforceCameraArchiveRetention(const std::string &camera
 std::vector<SegmentTierRange> TierStorageManager::collectAgeRetentionPieces(
         const std::string &camera_id,
         int64_t cutoff,
-        const std::string &exclude_pool_id) {
+        const std::string &exclude_pool_id,
+        bool carve_protected) {
     std::vector<SegmentTierRange> pieces;
     GET_CONFIG(int, max_ranges_per_cycle, Storage::kTieringMaxRangesPerCameraCycle);
     if (max_ranges_per_cycle <= 0)
@@ -4374,6 +4719,12 @@ std::vector<SegmentTierRange> TierStorageManager::collectAgeRetentionPieces(
             SegmentTierRange piece;
             if (!splitRangeForTieringThreshold(range, cutoff, piece))
                 continue;
+            if (!carve_protected) {
+                pieces.push_back(piece);
+                if (static_cast<int>(pieces.size()) >= max_ranges_per_cycle)
+                    return pieces;
+                continue;
+            }
             std::vector<SegmentTierRange> deletable;
             if (!carveDeletablePieces(piece, deletable))
                 continue;
@@ -5539,10 +5890,14 @@ void TierStorageManager::dispatchPendingTieringJobs() {
 
     GET_CONFIG(int, max_concurrent, Storage::kTieringTransferMaxConcurrent);
     GET_CONFIG(int, max_concurrent_per_pool, Storage::kTieringTransferMaxConcurrentPerPool);
+    GET_CONFIG(int, max_transcodes, Storage::kTierTranscodeMaxConcurrent);
+    GET_CONFIG(bool, transcode_enabled, Storage::kTierTranscodeEnabled);
     if (max_concurrent <= 0)
         max_concurrent = 4;
     if (max_concurrent_per_pool <= 0)
         max_concurrent_per_pool = 2;
+    if (max_transcodes <= 0)
+        max_transcodes = 1;
 
     std::unordered_map<std::string, StoragePool> pool_snapshot;
     {
@@ -5653,6 +6008,8 @@ void TierStorageManager::dispatchPendingTieringJobs() {
         for (auto job : eligible_candidates) {
             if (capacity <= 0)
                 break;
+            if (job.operation == "TRANSCODE_MOVE" && !transcode_enabled)
+                continue;
             auto src_it = pool_snapshot.find(job.source_pool_id);
             auto dst_it = pool_snapshot.find(job.target_pool_id);
             if (src_it == pool_snapshot.end() || dst_it == pool_snapshot.end()) {
@@ -5679,6 +6036,9 @@ void TierStorageManager::dispatchPendingTieringJobs() {
                 continue;
             }
             const bool same_pool = job.source_pool_id == job.target_pool_id;
+            const bool transcode = job.operation == "TRANSCODE_MOVE";
+            if (transcode && state->active_transcodes >= max_transcodes)
+                continue;
             if (state->active_by_pool[job.source_pool_id] >= max_concurrent_per_pool ||
                 (!same_pool &&
                  state->active_by_pool[job.target_pool_id] >= max_concurrent_per_pool)) {
@@ -5691,6 +6051,8 @@ void TierStorageManager::dispatchPendingTieringJobs() {
             }
             job.status = jobStatusToString(JobStatus::RUNNING);
             ++state->active_total;
+            if (transcode)
+                ++state->active_transcodes;
             ++state->callbacks_in_flight;
             ++state->active_by_pool[job.source_pool_id];
             if (!same_pool)
@@ -5725,6 +6087,8 @@ void TierStorageManager::dispatchPendingTieringJobs() {
                     {
                         std::lock_guard<std::mutex> lk(state->mutex);
                         --state->active_total;
+                        if (job.operation == "TRANSCODE_MOVE" && state->active_transcodes > 0)
+                            --state->active_transcodes;
                         auto release_pool = [&](const std::string &pool_id) {
                             auto it = state->active_by_pool.find(pool_id);
                             if (it == state->active_by_pool.end())
@@ -5861,10 +6225,19 @@ void TierStorageManager::executePendingJob(TieringJob &job) {
     }
 
     bool ok = false;
+    if (job.operation == "TRANSCODE_MOVE") {
+        std::lock_guard<std::mutex> lk(_tiering_cancellation_mtx);
+        _tiering_cancellations[job.job_id] =
+            std::make_shared<BlockingProcessCancellation>();
+    }
     if (poolTypeIsObjectStorage(dst_pool.type)) {
         ok = executeObjectStorageUpload(job, src_pool, dst_pool);
     } else {
         ok = executeLocalTierMove(job, src_pool, dst_pool);
+    }
+    if (job.operation == "TRANSCODE_MOVE") {
+        std::lock_guard<std::mutex> lk(_tiering_cancellation_mtx);
+        _tiering_cancellations.erase(job.job_id);
     }
 
     if (ok) {
@@ -5929,6 +6302,7 @@ void TierStorageManager::reportMissingSegments(const SegmentTierRange &range,
 bool TierStorageManager::commitTierTransfer(TieringJob &job,
                                             const SegmentTierRange &range,
                                             const std::vector<TierRangeSegmentFile> &segments,
+                                            const std::vector<int64_t> &original_sizes,
                                             const std::vector<char> &missing,
                                             const std::string &target_tier,
                                             const std::string &target_pool_id) {
@@ -5945,21 +6319,50 @@ bool TierStorageManager::commitTierTransfer(TieringJob &job,
     }
 
     const int64_t now = static_cast<int64_t>(time(nullptr));
-    SegmentTierRangeImp range_imp;
     bool updated = false;
     const bool all_missing = kept_count == 0;
-    if (all_missing) {
-        updated = range_imp.updateStatusBySnapshotAt(
-            range, segmentStatusToString(SegmentStatus::MISSING), now);
-    } else if (missing_segments.empty()) {
-        updated = range_imp.updateTierBySnapshotAt(
-            range, target_tier, target_pool_id,
-            segmentStatusToString(SegmentStatus::AVAILABLE), now);
+    if (job.operation == "TRANSCODE_MOVE") {
+        std::vector<TierTimefileSizeUpdate> outbox;
+        for (size_t i = 0; i < segments.size(); ++i) {
+            if (missing[i] || i >= original_sizes.size() ||
+                segments[i].file_size == original_sizes[i])
+                continue;
+            TierTimefileSizeUpdate update;
+            update.job_id = job.job_id;
+            update.range_id = range.range_id;
+            update.camera_id = segments[i].camera_id;
+            update.stream_id = segments[i].stream_id;
+            update.segment_path = segments[i].segment_path;
+            update.start_time = segments[i].start_time;
+            update.old_size = original_sizes[i];
+            update.new_size = segments[i].file_size;
+            update.status = "PENDING";
+            update.created_at = now;
+            update.updated_at = now;
+            outbox.push_back(update);
+        }
+        updated = TierQualityTransferRepository().finalizeTransfer(
+            job, range,
+            all_missing ? range.tier : target_tier,
+            all_missing ? range.pool_id : target_pool_id,
+            all_missing ? segmentStatusToString(SegmentStatus::MISSING)
+                        : segmentStatusToString(SegmentStatus::AVAILABLE),
+            kept_count, kept_size, outbox, now);
     } else {
-        updated = range_imp.updateTierBySnapshotAt(
-            range, target_tier, target_pool_id,
-            segmentStatusToString(SegmentStatus::AVAILABLE), now,
-            kept_count, kept_size);
+        SegmentTierRangeImp range_imp;
+        if (all_missing) {
+            updated = range_imp.updateStatusBySnapshotAt(
+                range, segmentStatusToString(SegmentStatus::MISSING), now);
+        } else if (missing_segments.empty()) {
+            updated = range_imp.updateTierBySnapshotAt(
+                range, target_tier, target_pool_id,
+                segmentStatusToString(SegmentStatus::AVAILABLE), now);
+        } else {
+            updated = range_imp.updateTierBySnapshotAt(
+                range, target_tier, target_pool_id,
+                segmentStatusToString(SegmentStatus::AVAILABLE), now,
+                kept_count, kept_size);
+        }
     }
     if (!updated) {
         job.error_message = Optional<std::string>(
@@ -5968,6 +6371,7 @@ bool TierStorageManager::commitTierTransfer(TieringJob &job,
               << " job=" << job.job_id;
         return false;
     }
+    SegmentTierRangeImp range_imp;
     if (!all_missing && !range_imp.normalizeRangeById(range.range_id, kSegmentMergeGapSeconds, now)) {
         WarnL << "Transferred tier range but could not merge adjacent destination ranges: "
               << range.range_id;
@@ -6027,13 +6431,41 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
     }
 
     const size_t count = segments.size();
+    std::vector<int64_t> original_sizes(count, 0);
+    for (size_t i = 0; i < count; ++i) original_sizes[i] = segments[i].file_size;
     std::vector<std::string> target_paths(count);
     std::vector<char> copied(count, 0);
+    std::vector<char> reused(count, 0);
     std::vector<char> missing(count, 0);
     int64_t moved = 0;
     int missing_count = 0;
     bool drop_missing_checked = false;
     bool drop_missing = false;
+    const bool transcode_move = job.operation == "TRANSCODE_MOVE";
+    TierQualityProfile quality_profile;
+    if (transcode_move) {
+        Json::Value profile_json;
+        Json::Reader reader;
+        if (!reader.parse(job.quality_profile_json, profile_json, false)) {
+            job.error_message = Optional<std::string>(
+                "TIER_TRANSCODE_INVALID_PROFILE: invalid profile snapshot");
+            return false;
+        }
+        quality_profile = TierQualityProfile::fromJson(profile_json);
+    }
+    FfmpegTierMediaTransformer transformer;
+    Json::Value encoder_summary(Json::objectValue);
+    std::map<std::string, TieringJobSegment> stored_segments;
+    const std::string profile_fingerprint =
+        tierQualityProfileFingerprint(job.quality_profile_json);
+    if (transcode_move) {
+        const std::vector<TieringJobSegment> journal_rows =
+            TieringJobSegmentImp().findByJob(job.job_id);
+        for (const auto &row : journal_rows) {
+            if (row.status == "STORED" && row.profile_fingerprint == profile_fingerprint)
+                stored_segments[tierJournalIdentity(row.stream_id, row.segment_path)] = row;
+        }
+    }
 
     auto rollback = [&](const char *reason) {
         for (size_t i = 0; i < count; ++i) {
@@ -6063,10 +6495,35 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
         }
         target_paths[i] = dst_path;
 
+        if (transcode_move) {
+            const auto stored = stored_segments.find(
+                tierJournalIdentity(seg.stream_id, seg.segment_path));
+            struct stat target_st{};
+            if (stored != stored_segments.end() && stored->second.output_bytes > 0 &&
+                ::stat(dst_path.c_str(), &target_st) == 0 &&
+                static_cast<int64_t>(target_st.st_size) == stored->second.output_bytes) {
+                reused[i] = 1;
+                if (!stored->second.encoder_backend.empty())
+                    segments[i].file_size = stored->second.output_bytes;
+                moved += stored->second.output_bytes;
+                job.output_bytes += stored->second.output_bytes;
+                if (stored->second.encoder_backend.empty()) {
+                    ++job.preserved_segment_count;
+                } else {
+                    ++job.transcoded_segment_count;
+                    encoder_summary[stored->second.encoder_backend] =
+                        encoder_summary.get(stored->second.encoder_backend, 0).asInt() + 1;
+                }
+                InfoL << "Reusing validated STORED tier target: " << dst_path;
+                continue;
+            }
+        }
+
         struct stat src_st{};
         if (::stat(seg.full_path.c_str(), &src_st) != 0) {
             const int stat_errno = errno;
-            if (stat_errno == ENOENT && dst_storage->segmentExists(dst_pool.id, seg.storage_key)) {
+            if (!transcode_move && stat_errno == ENOENT &&
+                dst_storage->segmentExists(dst_pool.id, seg.storage_key)) {
                 moved += std::max<int64_t>(0, seg.file_size);
                 InfoL << "Reusing existing tier target for missing source: " << dst_path
                       << " key=" << seg.storage_key;
@@ -6100,31 +6557,135 @@ bool TierStorageManager::executeLocalTierMove(TieringJob &job,
             return false;
         }
 
+        std::string upload_path = seg.full_path;
+        TieringJobSegment journal;
+        TierTransformResult transformed;
+        if (transcode_move) {
+            journal.job_id = job.job_id;
+            journal.range_id = job.range_id;
+            journal.camera_id = seg.camera_id;
+            journal.stream_id = seg.stream_id;
+            journal.segment_path = seg.segment_path;
+            journal.storage_key = seg.storage_key;
+            journal.segment_start_time = seg.start_time;
+            journal.segment_end_time = seg.end_time;
+            journal.operation = "TRANSCODE";
+            journal.profile_fingerprint = profile_fingerprint;
+            journal.source_bytes = src_st.st_size;
+            TieringJobSegmentImp journal_imp;
+            journal_imp.add(journal);
+            journal_imp.updateResult(journal, "TRANSFORMING", 0, "");
+            TierTransformRequest transform_request;
+            transform_request.job_id = job.job_id;
+            transform_request.stream_id = seg.stream_id;
+            transform_request.segment_path = seg.segment_path;
+            transform_request.source_path = seg.full_path;
+            transform_request.profile = quality_profile;
+            {
+                std::lock_guard<std::mutex> lk(_tiering_cancellation_mtx);
+                transform_request.cancellation = _tiering_cancellations[job.job_id];
+            }
+            if (seg.encrypted) {
+                // ffmpeg cannot read the ciphertext; an encrypted segment moves unchanged.
+                transformed.success = true;
+                transformed.copied_without_transcode = true;
+                transformed.output_path = seg.full_path;
+                transformed.output_bytes = static_cast<int64_t>(src_st.st_size);
+            } else {
+                transformed = transformer.transform(transform_request);
+            }
+            if (!transformed.success) {
+                journal_imp.updateResult(journal, "FAILED", 0, "",
+                                         transformed.error_code, transformed.error_message);
+                job.error_message = transformed.error_code + ": " + transformed.error_message;
+                rollback("transform failure");
+                return false;
+            }
+            upload_path = transformed.output_path;
+        }
+
         PoolTransferScope transfer(_throughput, dst_pool.id, src_pool.id);
-        if (!dst_storage->uploadSegment(dst_pool.id, seg.full_path, seg.storage_key)) {
-            WarnL << "File storage upload failed for " << seg.full_path
+        const bool stored = transcode_move
+            ? dst_storage->uploadSegmentAtomic(dst_pool.id, upload_path, seg.storage_key, job.job_id)
+            : dst_storage->uploadSegment(dst_pool.id, upload_path, seg.storage_key);
+        if (!stored) {
+            if (transcode_move && upload_path != seg.full_path) ::unlink(upload_path.c_str());
+            if (transcode_move) {
+                TieringJobSegmentImp().updateResult(
+                    journal, "FAILED", 0, "", "TIER_TRANSCODE_STORE_FAILED",
+                    "File storage upload failed");
+            }
+            WarnL << "File storage upload failed for " << upload_path
                   << " -> " << dst_path
                   << " pool=" << dst_pool.id;
             rollback("upload failure");
             return false;
         }
-        transfer.finish(static_cast<uint64_t>(src_st.st_size));
+        transfer.finish(static_cast<uint64_t>(
+            transcode_move ? transformed.output_bytes : static_cast<int64_t>(src_st.st_size)));
 
         copied[i] = 1;
-        moved += src_st.st_size;
+        if (transcode_move) {
+            if (!transformed.copied_without_transcode)
+                segments[i].file_size = transformed.output_bytes;
+            moved += transformed.output_bytes;
+            job.output_bytes += transformed.output_bytes;
+            if (transformed.copied_without_transcode) {
+                ++job.preserved_segment_count;
+            } else {
+                ++job.transcoded_segment_count;
+                encoder_summary[transformed.encoder_backend] =
+                    encoder_summary.get(transformed.encoder_backend, 0).asInt() + 1;
+                ::unlink(upload_path.c_str());
+            }
+            TieringJobSegmentImp().updateResult(
+                journal, "STORED", transformed.output_bytes, transformed.encoder_backend);
+        } else {
+            moved += src_st.st_size;
+        }
         InfoL << "Copied tier segment: " << seg.full_path
               << " -> " << dst_path
               << " bytes=" << src_st.st_size;
     }
 
     job.bytes_moved = moved;
-    if (!commitTierTransfer(job, job_range, segments, missing, job.target_tier, dst_pool.id)) {
+    if (transcode_move) {
+        Json::FastWriter writer;
+        job.encoder_summary_json = writer.write(encoder_summary);
+    }
+    if (!commitTierTransfer(job, job_range, segments, original_sizes, missing,
+                            job.target_tier, dst_pool.id)) {
         rollback("range update failure");
         return false;
     }
 
+    if (transcode_move) {
+        std::vector<TimeBlockSizePatch> patches;
+        for (size_t i = 0; i < count; ++i) {
+            if (missing[i] || segments[i].file_size == original_sizes[i])
+                continue;
+            TierTimefileSizeUpdate update;
+            update.job_id = job.job_id;
+            update.range_id = job.range_id;
+            update.camera_id = segments[i].camera_id;
+            update.stream_id = segments[i].stream_id;
+            update.segment_path = segments[i].segment_path;
+            update.start_time = segments[i].start_time;
+            update.old_size = original_sizes[i];
+            update.new_size = segments[i].file_size;
+            TimeBlockSizePatch patch;
+            patch.camera_id = update.camera_id;
+            patch.stream_id = update.stream_id;
+            patch.segment_path = update.segment_path;
+            patch.start_time = static_cast<uint64_t>(update.start_time);
+            patch.new_size = static_cast<uint64_t>(update.new_size);
+            patches.push_back(patch);
+        }
+        StorageManager::Instance().patchCameraTimeBlockSizes(job.camera_id, patches);
+    }
+
     for (size_t i = 0; i < count; ++i) {
-        if (!copied[i])
+        if (!copied[i] && !reused[i])
             continue;
         const auto &seg = segments[i];
         if (isSameFileOnDisk(seg.full_path, target_paths[i])) {
@@ -6182,12 +6743,40 @@ bool TierStorageManager::executeObjectStorageUpload(TieringJob &job,
     }
 
     const size_t count = segments.size();
+    std::vector<int64_t> original_sizes(count, 0);
+    for (size_t i = 0; i < count; ++i) original_sizes[i] = segments[i].file_size;
     std::vector<std::string> keys(count);
     std::vector<char> uploaded(count, 0);
+    std::vector<char> reused(count, 0);
     std::vector<char> missing(count, 0);
     int64_t bytes_moved = 0;
     bool drop_missing_checked = false;
     bool drop_missing = false;
+    const bool transcode_move = job.operation == "TRANSCODE_MOVE";
+    TierQualityProfile quality_profile;
+    if (transcode_move) {
+        Json::Value profile_json;
+        Json::Reader reader;
+        if (!reader.parse(job.quality_profile_json, profile_json, false)) {
+            job.error_message = Optional<std::string>(
+                "TIER_TRANSCODE_INVALID_PROFILE: invalid profile snapshot");
+            return false;
+        }
+        quality_profile = TierQualityProfile::fromJson(profile_json);
+    }
+    FfmpegTierMediaTransformer transformer;
+    Json::Value encoder_summary(Json::objectValue);
+    std::map<std::string, TieringJobSegment> stored_segments;
+    const std::string profile_fingerprint =
+        tierQualityProfileFingerprint(job.quality_profile_json);
+    if (transcode_move) {
+        const std::vector<TieringJobSegment> journal_rows =
+            TieringJobSegmentImp().findByJob(job.job_id);
+        for (const auto &row : journal_rows) {
+            if (row.status == "STORED" && row.profile_fingerprint == profile_fingerprint)
+                stored_segments[tierJournalIdentity(row.stream_id, row.segment_path)] = row;
+        }
+    }
 
     auto rollback = [&]() {
         for (size_t i = 0; i < count; ++i) {
@@ -6211,10 +6800,37 @@ bool TierStorageManager::executeObjectStorageUpload(TieringJob &job,
         // the restore path downloads it and opens it as plaintext.
         keys[i] = keyForVariant(keys[i], seg.full_path);
 
+        if (transcode_move) {
+            const auto stored = stored_segments.find(
+                tierJournalIdentity(seg.stream_id, seg.segment_path));
+            if (stored != stored_segments.end() && stored->second.output_bytes > 0) {
+                const TierObjectHeadInfo head =
+                    _obj_storage.headSegmentInfo(dst_pool.id, keys[i]);
+                if (head.presence == TierObjectPresence::PRESENT &&
+                    head.content_length == stored->second.output_bytes) {
+                    reused[i] = 1;
+                    if (!stored->second.encoder_backend.empty())
+                        segments[i].file_size = stored->second.output_bytes;
+                    bytes_moved += stored->second.output_bytes;
+                    job.output_bytes += stored->second.output_bytes;
+                    if (stored->second.encoder_backend.empty()) {
+                        ++job.preserved_segment_count;
+                    } else {
+                        ++job.transcoded_segment_count;
+                        encoder_summary[stored->second.encoder_backend] =
+                            encoder_summary.get(stored->second.encoder_backend, 0).asInt() + 1;
+                    }
+                    InfoL << "Reusing validated STORED object target key=" << keys[i];
+                    continue;
+                }
+            }
+        }
+
         struct stat st{};
         if (::stat(seg.full_path.c_str(), &st) != 0) {
             const int stat_errno = errno;
-            if (stat_errno == ENOENT && _obj_storage.segmentExists(dst_pool.id, keys[i])) {
+            if (!transcode_move && stat_errno == ENOENT &&
+                _obj_storage.segmentExists(dst_pool.id, keys[i])) {
                 bytes_moved += std::max<int64_t>(0, seg.file_size);
                 InfoL << "executeObjectStorageUpload: reuse existing target key=" << keys[i]
                       << " for missing source=" << seg.full_path;
@@ -6239,28 +6855,128 @@ bool TierStorageManager::executeObjectStorageUpload(TieringJob &job,
             return false;
         }
 
+        std::string upload_path = seg.full_path;
+        TieringJobSegment journal;
+        TierTransformResult transformed;
+        if (transcode_move) {
+            journal.job_id = job.job_id;
+            journal.range_id = job.range_id;
+            journal.camera_id = seg.camera_id;
+            journal.stream_id = seg.stream_id;
+            journal.segment_path = seg.segment_path;
+            journal.storage_key = keys[i];
+            journal.segment_start_time = seg.start_time;
+            journal.segment_end_time = seg.end_time;
+            journal.operation = "TRANSCODE";
+            journal.profile_fingerprint = profile_fingerprint;
+            journal.source_bytes = st.st_size;
+            TieringJobSegmentImp journal_imp;
+            journal_imp.add(journal);
+            journal_imp.updateResult(journal, "TRANSFORMING", 0, "");
+            TierTransformRequest transform_request;
+            transform_request.job_id = job.job_id;
+            transform_request.stream_id = seg.stream_id;
+            transform_request.segment_path = seg.segment_path;
+            transform_request.source_path = seg.full_path;
+            transform_request.profile = quality_profile;
+            {
+                std::lock_guard<std::mutex> lk(_tiering_cancellation_mtx);
+                transform_request.cancellation = _tiering_cancellations[job.job_id];
+            }
+            if (seg.encrypted) {
+                // ffmpeg cannot read the ciphertext; an encrypted segment moves unchanged.
+                transformed.success = true;
+                transformed.copied_without_transcode = true;
+                transformed.output_path = seg.full_path;
+                transformed.output_bytes = static_cast<int64_t>(st.st_size);
+            } else {
+                transformed = transformer.transform(transform_request);
+            }
+            if (!transformed.success) {
+                journal_imp.updateResult(journal, "FAILED", 0, "",
+                                         transformed.error_code, transformed.error_message);
+                job.error_message = transformed.error_code + ": " + transformed.error_message;
+                rollback();
+                return false;
+            }
+            upload_path = transformed.output_path;
+        }
+
         PoolTransferScope transfer(_throughput, dst_pool.id, src_pool.id);
-        if (!_obj_storage.uploadSegment(dst_pool.id, seg.full_path, keys[i])) {
-            WarnL << "executeObjectStorageUpload: upload failed for " << seg.full_path;
+        if (!_obj_storage.uploadSegment(dst_pool.id, upload_path, keys[i])) {
+            if (transcode_move && upload_path != seg.full_path) ::unlink(upload_path.c_str());
+            if (transcode_move) {
+                TieringJobSegmentImp().updateResult(
+                    journal, "FAILED", 0, "", "TIER_TRANSCODE_STORE_FAILED",
+                    "Object storage upload failed");
+            }
+            WarnL << "executeObjectStorageUpload: upload failed for " << upload_path;
             rollback();
             return false;
         }
-        transfer.finish(static_cast<uint64_t>(st.st_size));
+        transfer.finish(static_cast<uint64_t>(
+            transcode_move ? transformed.output_bytes : static_cast<int64_t>(st.st_size)));
 
-        bytes_moved += static_cast<int64_t>(st.st_size);
+        if (transcode_move) {
+            if (!transformed.copied_without_transcode)
+                segments[i].file_size = transformed.output_bytes;
+            bytes_moved += transformed.output_bytes;
+            job.output_bytes += transformed.output_bytes;
+            if (transformed.copied_without_transcode) {
+                ++job.preserved_segment_count;
+            } else {
+                ++job.transcoded_segment_count;
+                encoder_summary[transformed.encoder_backend] =
+                    encoder_summary.get(transformed.encoder_backend, 0).asInt() + 1;
+                ::unlink(upload_path.c_str());
+            }
+            TieringJobSegmentImp().updateResult(
+                journal, "STORED", transformed.output_bytes, transformed.encoder_backend);
+        } else {
+            bytes_moved += static_cast<int64_t>(st.st_size);
+        }
         uploaded[i] = 1;
     }
 
     job.bytes_moved = bytes_moved;
-    if (!commitTierTransfer(job, job_range, segments, missing,
+    if (transcode_move) {
+        Json::FastWriter writer;
+        job.encoder_summary_json = writer.write(encoder_summary);
+    }
+    if (!commitTierTransfer(job, job_range, segments, original_sizes, missing,
                             tierTypeToString(tierTypeFromString(job.target_tier)),
                             dst_pool.id)) {
         rollback();
         return false;
     }
 
+    if (transcode_move) {
+        std::vector<TimeBlockSizePatch> patches;
+        for (size_t i = 0; i < count; ++i) {
+            if (missing[i] || segments[i].file_size == original_sizes[i])
+                continue;
+            TierTimefileSizeUpdate update;
+            update.job_id = job.job_id;
+            update.range_id = job.range_id;
+            update.camera_id = segments[i].camera_id;
+            update.stream_id = segments[i].stream_id;
+            update.segment_path = segments[i].segment_path;
+            update.start_time = segments[i].start_time;
+            update.old_size = original_sizes[i];
+            update.new_size = segments[i].file_size;
+            TimeBlockSizePatch patch;
+            patch.camera_id = update.camera_id;
+            patch.stream_id = update.stream_id;
+            patch.segment_path = update.segment_path;
+            patch.start_time = static_cast<uint64_t>(update.start_time);
+            patch.new_size = static_cast<uint64_t>(update.new_size);
+            patches.push_back(patch);
+        }
+        StorageManager::Instance().patchCameraTimeBlockSizes(job.camera_id, patches);
+    }
+
     for (size_t i = 0; i < count; ++i) {
-        if (!uploaded[i])
+        if (!uploaded[i] && !reused[i])
             continue;
         if (::unlink(segments[i].full_path.c_str()) != 0) {
             WarnL << "executeObjectStorageUpload: could not remove old local file "
@@ -7221,6 +7937,7 @@ bool TierStorageManager::retryTieringJob(const std::string &job_id) {
     if (status != jobStatusToString(JobStatus::FAILED) &&
         status != jobStatusToString(JobStatus::CANCELLED))
         return false;
+    TieringJobSegmentImp().resetFailedForRetry(job_id);
     bool queued = imp.transitionStatus(job_id, status, jobStatusToString(JobStatus::PENDING), 0);
     if (queued)
         dispatchPendingTieringJobs();

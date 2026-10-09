@@ -257,10 +257,63 @@ size_t TimeRebuilder::removeTimeBlocks(const vector<TimeBlockIdentity> &blocks) 
     return rebuildTimeLineWithPredicate(keepUnlessListed(blocks));
 }
 
-size_t TimeRebuilder::rebuildTimeLineWithPredicate(const function<bool(const TimeBlock &)> &keep_predicate) {
+size_t TimeRebuilder::patchTimeBlocks(const vector<TimeBlockSizePatch> &patches) {
+    size_t patched = 0;
+    auto patch_block = [&patches, &patched](TimeBlock &block) -> bool {
+        for (const auto &patch : patches) {
+            if (patch.camera_id != block.app() || patch.stream_id != block.stream() ||
+                patch.start_time != block.start_time())
+                continue;
+            if (!patch.segment_path.empty() && !block.file_path().empty()) {
+                const string decoded = decodeBase64(block.file_path());
+                const string suffix = patch.segment_path + ".mp4";
+                if (decoded.size() < suffix.size() ||
+                    decoded.compare(decoded.size() - suffix.size(), suffix.size(), suffix) != 0)
+                    continue;
+            }
+            if (block.file_size() != patch.new_size) {
+                block.set_file_size(patch.new_size);
+                ++patched;
+            }
+            break;
+        }
+        return true;
+    };
+    rebuildTimeLineWithPredicate(patch_block);
+    return patched;
+}
+
+size_t TimeRebuilder::verifyTimeBlocks(const vector<TimeBlockSizePatch> &patches) const {
+    size_t verified = 0;
+    TimeDemuxer demuxer;
+    demuxer.openFile(_src_path);
+    bool eof = false;
+    while (!eof) {
+        TimeBlock block;
+        demuxer.readBlock(block, eof);
+        if (eof) break;
+        for (const auto &patch : patches) {
+            if (patch.camera_id != block.app() || patch.stream_id != block.stream() ||
+                patch.start_time != block.start_time() || patch.new_size != block.file_size())
+                continue;
+            if (!patch.segment_path.empty() && !block.file_path().empty()) {
+                const string decoded = decodeBase64(block.file_path());
+                const string suffix = patch.segment_path + ".mp4";
+                if (decoded.size() < suffix.size() ||
+                    decoded.compare(decoded.size() - suffix.size(), suffix.size(), suffix) != 0)
+                    continue;
+            }
+            ++verified;
+            break;
+        }
+    }
+    return verified;
+}
+
+size_t TimeRebuilder::rebuildTimeLineWithPredicate(const function<bool(TimeBlock &)> &keep_predicate) {
     Ticker ticket;
     size_t removed_bytes = 0;
-    auto keep_block = [&removed_bytes, &keep_predicate](const TimeBlock &block) -> bool {
+    auto keep_block = [&removed_bytes, &keep_predicate](TimeBlock &block) -> bool {
         if (keep_predicate(block))
             return true;
         removed_bytes += block.file_size();
@@ -516,6 +569,44 @@ size_t MultiTimeRebuilder::sortTimeFiles(size_t max_files) {
         [](const TimeBlock &) { return true; },
         max_files);
     return max_files ? std::min(started, max_files) : started;
+}
+
+size_t MultiTimeRebuilder::patchTimeBlocks(const vector<TimeBlockSizePatch> &patches) {
+    size_t total_patched = 0;
+    if (patches.empty())
+        return 0;
+    std::set<uint64_t> block_days;
+    for (const auto &patch : patches)
+        block_days.insert(StampUtils::getStartOfDay(patch.start_time));
+    for (const auto &it : _timefiles_map) {
+        if (it.first != 0 && block_days.count(it.first) == 0)
+            continue;
+        try {
+            TimeRebuilder rebuilder(it.second);
+            total_patched += rebuilder.patchTimeBlocks(patches);
+        } catch (const std::exception &ex) {
+            WarnL << "Failed to patch TimeFile sizes in " << it.second << ": " << ex.what();
+        }
+    }
+    return total_patched;
+}
+
+size_t MultiTimeRebuilder::verifyTimeBlocks(const vector<TimeBlockSizePatch> &patches) const {
+    size_t total_verified = 0;
+    if (patches.empty()) return 0;
+    std::set<uint64_t> block_days;
+    for (const auto &patch : patches)
+        block_days.insert(StampUtils::getStartOfDay(patch.start_time));
+    for (const auto &it : _timefiles_map) {
+        if (it.first != 0 && block_days.count(it.first) == 0)
+            continue;
+        try {
+            total_verified += TimeRebuilder(it.second).verifyTimeBlocks(patches);
+        } catch (const std::exception &ex) {
+            WarnL << "Failed to verify TimeFile sizes in " << it.second << ": " << ex.what();
+        }
+    }
+    return total_verified;
 }
 
 } // namespace managerkit

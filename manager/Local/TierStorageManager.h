@@ -35,6 +35,8 @@
 
 namespace managerkit {
 
+class BlockingProcessCancellation;
+
 struct ColdAccessRestoreResult {
     bool handled = false;
     bool job_created = false;
@@ -453,12 +455,16 @@ private:
 
     void enforcePolicyDeleteRetention(const std::string &camera_id,
                                       const StoragePolicy &policy);
+    void processTimefileSizeUpdates();
+    void processCommittedSourceCleanup();
+    void cleanupOrphanTranscodeStaging();
 
     // Old pieces (split at `cutoff`) of a camera's AVAILABLE ranges that are
     // due for age-based retention, oldest first and bounded per cycle.
     std::vector<SegmentTierRange> collectAgeRetentionPieces(const std::string &camera_id,
                                                             int64_t cutoff,
-                                                            const std::string &exclude_pool_id);
+                                                            const std::string &exclude_pool_id,
+                                                            bool carve_protected = true);
 
     // Splits `range` so segments touching protected videos stay in their own
     // pieces, and returns the pieces that may be deleted (all of `range` when
@@ -616,7 +622,9 @@ private:
                           const PolicyTierConfig &src_tier_cfg,
                           const PolicyTierConfig &dst_tier_cfg,
                           const StoragePolicy &policy,
-                          TieringJobTrigger trigger);
+                          TieringJobTrigger trigger,
+                          bool force_copy = false,
+                          bool shape_protected = true);
 
     struct DestinationPoolCheck {
         bool critical = false;
@@ -702,6 +710,7 @@ private:
     bool commitTierTransfer(TieringJob &job,
                             const SegmentTierRange &range,
                             const std::vector<TierRangeSegmentFile> &segments,
+                            const std::vector<int64_t> &original_sizes,
                             const std::vector<char> &missing,
                             const std::string &target_tier,
                             const std::string &target_pool_id);
@@ -823,6 +832,7 @@ private:
         std::mutex mutex;
         std::condition_variable completed;
         int active_total = 0;
+        int active_transcodes = 0;
         std::unordered_map<std::string, int> active_by_pool;
         // Transfer callbacks not yet finished. Unlike active_total it drops only
         // after the callback released the manager, so stop() never returns while
@@ -880,6 +890,9 @@ private:
     std::shared_ptr<InFlightTasks> _restore_dispatch_state = std::make_shared<InFlightTasks>();
     // Tiering and backfill cycles (BlockingExecutors::tier()); the health cycle has its own state.
     std::shared_ptr<InFlightTasks> _cycle_tasks = std::make_shared<InFlightTasks>();
+    std::mutex _tiering_cancellation_mtx;
+    std::unordered_map<std::string, std::shared_ptr<BlockingProcessCancellation>>
+        _tiering_cancellations;
     std::unordered_map<std::string, TemporaryMp4Observation> _temporary_mp4_observations;
     size_t _temporary_mp4_next_pool_index = 0;
     // Reconciliation sweep cursor (start_time, range_id), descending; maintenance-cycle only.

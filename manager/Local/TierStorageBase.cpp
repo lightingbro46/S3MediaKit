@@ -1,9 +1,12 @@
 #include "TierStorageBase.h"
+#include "TierMediaTransformer.h"
 
 #ifdef ENABLE_TIER_STORAGE
 
 #include "StorageTier.h"
 #include "TierEncryptionManager.h"
+#include "Common/config.h"
+#include "Util/mini.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -244,6 +247,31 @@ bool TierStorageBase::validatePolicyTiers(const std::vector<PolicyTierConfig> &t
     int previous_days = -1;
     std::string previous_tier;
     for (const auto &tier : sorted) {
+        const TierQualityProfile &quality = tier.quality_reduction;
+        if (quality.enabled) {
+            if (tier.tier == tierTypeToString(HotTier)) {
+                error = "HOT tier cannot enable quality_reduction";
+                return false;
+            }
+            if (quality.video_codec != "H264" && quality.video_codec != "H265") {
+                error = tier.tier + ".quality_reduction.video_codec must be H264 or H265";
+                return false;
+            }
+            if (quality.max_width < 0 || quality.max_height < 0 || quality.max_fps < 0 ||
+                quality.max_video_bitrate_kbps < 0) {
+                error = tier.tier + ".quality_reduction caps cannot be negative";
+                return false;
+            }
+            if ((quality.max_width == 0) != (quality.max_height == 0)) {
+                error = tier.tier + ".quality_reduction requires both max_width and max_height";
+                return false;
+            }
+            if (quality.max_width == 0 && quality.max_fps == 0 &&
+                quality.max_video_bitrate_kbps == 0) {
+                error = tier.tier + ".quality_reduction requires at least one positive cap";
+                return false;
+            }
+        }
         if (previous_days >= 0 && previous_days >= tier.retain_until_days) {
             error = previous_tier + ".retain_until_days must be less than " +
                     tier.tier + ".retain_until_days";
@@ -269,6 +297,16 @@ bool TierStorageBase::validateStoragePolicy(const StoragePolicy &policy,
     const auto tiers = policy.parsedTiers();
     if (!validatePolicyTiers(tiers, error))
         return false;
+
+    const PolicyAdvancedRules advanced = policy.parsedAdvancedRules();
+    if (advanced.enable_tier_quality_reduction) {
+        const bool transcode_enabled = toolkit::mINI::Instance()[
+            mediakit::Storage::kTierTranscodeEnabled].as<bool>();
+        if (!transcode_enabled) {
+            error = "Tier quality reduction is disabled by server configuration";
+            return false;
+        }
+    }
 
     int max_retain_days = 0;
     for (const auto &tier : tiers) {
@@ -552,6 +590,12 @@ Json::Value TierStorageBase::tieringJobToJson(const TieringJob &job,
     value["processed_segment_count"] = 0;
     value["total_bytes"] = static_cast<Json::Int64>(job.bytes_total);
     value["processed_bytes"] = static_cast<Json::Int64>(job.bytes_moved);
+    const int64_t saved_bytes = std::max<int64_t>(0, job.bytes_total - job.output_bytes);
+    value["input_bytes"] = static_cast<Json::Int64>(job.bytes_total);
+    value["output_bytes"] = static_cast<Json::Int64>(job.output_bytes);
+    value["saved_bytes"] = static_cast<Json::Int64>(saved_bytes);
+    value["saving_percent"] = job.bytes_total > 0
+        ? static_cast<double>(saved_bytes) * 100.0 / static_cast<double>(job.bytes_total) : 0.0;
     value.removeMember("segment_start_time");
     value.removeMember("segment_end_time");
     value.removeMember("bytes_total");
@@ -560,13 +604,41 @@ Json::Value TierStorageBase::tieringJobToJson(const TieringJob &job,
         const std::string error_message = job.error_message.value_or("");
         const bool policy_changed = job.status == "CANCELLED" &&
             error_message.find("POLICY_CHANGED:") == 0;
-        value["error_code"] = error_message.empty()
-            ? "" : (policy_changed ? "TIERING_JOB_POLICY_CHANGED" : "TIERING_JOB_FAILED");
+        const bool transcode_error = error_message.find("TIER_TRANSCODE_") == 0;
+        std::string transcode_code;
+        if (transcode_error) {
+            const size_t separator = error_message.find(':');
+            transcode_code = error_message.substr(0, separator);
+        }
+        value["error_code"] = error_message.empty() ? "" :
+            (policy_changed ? "TIERING_JOB_POLICY_CHANGED" :
+             (transcode_error ? transcode_code : "TIERING_JOB_FAILED"));
         value["error_message"] = error_message;
         value["retryable"] = (job.status == "FAILED");
     } else {
         value.removeMember("error_message");
     }
+    return value;
+}
+
+Json::Value TierStorageBase::qualityReductionOptionsToJson() {
+    const bool enabled = toolkit::mINI::Instance()[
+        mediakit::Storage::kTierTranscodeEnabled].as<bool>();
+    Json::Value value;
+    value["enabled"] = enabled;
+    const TierTranscodeCapabilities capabilities =
+        TierEncoderCapabilityRegistry::Instance().snapshot();
+    value["state"] = !enabled ? "DISABLED" :
+        (capabilities.probing ? "PROBING" :
+         (capabilities.h264_available || capabilities.h265_available
+              ? "AVAILABLE" : "UNAVAILABLE"));
+    value["codecs"] = Json::arrayValue;
+    if (capabilities.h264_available) value["codecs"].append("H264");
+    if (capabilities.h265_available) value["codecs"].append("H265");
+    value["audio_mode"] = "COPY";
+    value["supports_resolution_cap"] = true;
+    value["supports_fps_cap"] = true;
+    value["supports_bitrate_cap"] = true;
     return value;
 }
 

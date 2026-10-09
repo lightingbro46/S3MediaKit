@@ -584,6 +584,7 @@ void storagePoolOptions(Json::Value &val) {
     data["encryptionSupport"]["HOT"]  = poolEncryptionSupport(TierType::HotTier);
     data["encryptionSupport"]["WARM"] = poolEncryptionSupport(TierType::WarmTier);
     data["encryptionSupport"]["COLD"] = poolEncryptionSupport(TierType::ColdTier);
+    data["qualityReduction"] = TierStorageBase::qualityReductionOptionsToJson();
     val["data"] = data;
 }
 

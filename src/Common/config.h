@@ -955,6 +955,18 @@ extern const std::string kTieringTransferMaxConcurrentPerPool;
 // Maximum number of storage pools (all tiers) that can exist; pool/create is refused beyond it.
 // Every pool adds a health check, transfer slots and a restore source. <= 0 means no limit.
 extern const std::string kTierMaxPools;
+// Operational switch and external ffmpeg settings for quality reduction during tier moves.
+extern const std::string kTierTranscodeEnabled;
+extern const std::string kTierTranscodeFfmpegBin;
+extern const std::string kTierTranscodeFfprobeBin;
+extern const std::string kTierTranscodeStagingPath;
+extern const std::string kTierTranscodeTimeoutSeconds;
+extern const std::string kTierTranscodeMaxConcurrent;
+extern const std::string kTierTranscodeH264Encoders;
+extern const std::string kTierTranscodeH265Encoders;
+// Let tier transcode use a GPU of hwcodec (encode, and decode + scale when both fit one card).
+// The encoder lists above are then the CPU fallback.
+extern const std::string kTierTranscodeHwaccel;
 // Retention for terminal tiering jobs and EXPIRED restore jobs. Zero disables pruning.
 extern const std::string kTieringJobRetentionDays;
 // Retention for DELETED/EXPIRED compact ranges. Zero disables pruning.

@@ -44,6 +44,12 @@ struct TieringJob {
     std::string job_trigger    = tieringJobTriggerToString(TieringJobTrigger::LEGACY);
     std::string policy_id;
     int64_t policy_updated_at  = 0;
+    std::string operation = "COPY_MOVE";
+    std::string quality_profile_json = "{}";
+    int64_t output_bytes = 0;
+    int64_t transcoded_segment_count = 0;
+    int64_t preserved_segment_count = 0;
+    std::string encoder_summary_json = "{}";
 
     Json::Value toJson() const {
         Json::Value v;
@@ -66,6 +72,12 @@ struct TieringJob {
         v["job_trigger"]         = job_trigger;
         v["policy_id"]           = policy_id;
         v["policy_updated_at"]   = static_cast<Json::Int64>(policy_updated_at);
+        v["operation"] = operation;
+        v["quality_profile_json"] = quality_profile_json;
+        v["output_bytes"] = static_cast<Json::Int64>(output_bytes);
+        v["transcoded_segment_count"] = static_cast<Json::Int64>(transcoded_segment_count);
+        v["preserved_segment_count"] = static_cast<Json::Int64>(preserved_segment_count);
+        v["encoder_summary_json"] = encoder_summary_json;
         return v;
     }
 };
@@ -90,7 +102,13 @@ DECLARE_ENTITY(TieringJob, "tiering_jobs",
     &TieringJob::updated_at,          "updated_at",
     &TieringJob::job_trigger,         "job_trigger",
     &TieringJob::policy_id,           "policy_id",
-    &TieringJob::policy_updated_at,   "policy_updated_at"
+    &TieringJob::policy_updated_at,   "policy_updated_at",
+    &TieringJob::operation,           "operation",
+    &TieringJob::quality_profile_json,"quality_profile_json",
+    &TieringJob::output_bytes,        "output_bytes",
+    &TieringJob::transcoded_segment_count, "transcoded_segment_count",
+    &TieringJob::preserved_segment_count, "preserved_segment_count",
+    &TieringJob::encoder_summary_json,"encoder_summary_json"
 )
 
 // ===================================================================
@@ -392,6 +410,17 @@ public:
                 .update(EntityTraits<TieringJob>::tableName())
                 .set(set)
                 .where("job_id = ? AND status = ?", {job_id, from_status}));
+    }
+
+    bool updateQualitySummaryAt(const TieringJob &job, int64_t updated_at) {
+        return _executor->execDML(toolkit::QueryBuilder()
+            .update(EntityTraits<TieringJob>::tableName())
+            .set({{"output_bytes", std::to_string(job.output_bytes)},
+                  {"transcoded_segment_count", std::to_string(job.transcoded_segment_count)},
+                  {"preserved_segment_count", std::to_string(job.preserved_segment_count)},
+                  {"encoder_summary_json", job.encoder_summary_json},
+                  {"updated_at", std::to_string(updated_at)}})
+            .where("job_id = ?", {job.job_id}));
     }
 
     std::vector<TieringJob> claimPendingAt(int limit, int64_t updated_at) {
@@ -1735,6 +1764,10 @@ public:
 
     void recoverRunning() {
         recoverRunningAt(static_cast<int64_t>(time(nullptr)));
+    }
+
+    bool updateQualitySummary(const TieringJob &job) {
+        return updateQualitySummaryAt(job, static_cast<int64_t>(time(nullptr)));
     }
 };
 

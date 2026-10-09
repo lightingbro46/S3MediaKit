@@ -290,6 +290,39 @@ inline std::string segmentStatusToString(SegmentStatus s) {
 // ===================================================================
 // Structured sub-objects for policy
 // ===================================================================
+struct TierQualityProfile {
+    bool        enabled                = false;
+    std::string video_codec            = "H264";
+    int         max_width              = 0;
+    int         max_height             = 0;
+    int         max_fps                = 0;
+    int         max_video_bitrate_kbps = 0;
+
+    Json::Value toJson() const {
+        Json::Value v;
+        v["enabled"] = enabled;
+        v["video_codec"] = video_codec;
+        v["max_width"] = max_width;
+        v["max_height"] = max_height;
+        v["max_fps"] = max_fps;
+        v["max_video_bitrate_kbps"] = max_video_bitrate_kbps;
+        return v;
+    }
+
+    static TierQualityProfile fromJson(const Json::Value &v) {
+        TierQualityProfile p;
+        if (!v.isObject())
+            return p;
+        p.enabled = v.get("enabled", false).asBool();
+        p.video_codec = v.get("video_codec", "H264").asString();
+        p.max_width = v.get("max_width", 0).asInt();
+        p.max_height = v.get("max_height", 0).asInt();
+        p.max_fps = v.get("max_fps", 0).asInt();
+        p.max_video_bitrate_kbps = v.get("max_video_bitrate_kbps", 0).asInt();
+        return p;
+    }
+};
+
 struct PolicyTierConfig {
     std::string tier;                                   // HOT | WARM | COLD
     bool        enabled                  = false;
@@ -300,6 +333,7 @@ struct PolicyTierConfig {
     int         high_watermark_percent   = 80;
     int         critical_watermark_percent = 90;
     std::string priority                 = "NORMAL";   // HIGH | NORMAL | LOW
+    TierQualityProfile quality_reduction;
 
     Json::Value toJson() const {
         Json::Value v;
@@ -312,6 +346,7 @@ struct PolicyTierConfig {
         v["high_watermark_percent"]      = high_watermark_percent;
         v["critical_watermark_percent"]  = critical_watermark_percent;
         v["priority"]                    = priority;
+        v["quality_reduction"]           = quality_reduction.toJson();
         return v;
     }
 
@@ -326,6 +361,7 @@ struct PolicyTierConfig {
         c.high_watermark_percent     = v.get("high_watermark_percent", 80).asInt();
         c.critical_watermark_percent = v.get("critical_watermark_percent", 90).asInt();
         c.priority                   = v.get("priority", "NORMAL").asString();
+        c.quality_reduction          = TierQualityProfile::fromJson(v["quality_reduction"]);
         return c;
     }
 };
@@ -362,6 +398,7 @@ struct PolicyDeleteConfig {
 };
 
 struct PolicyAdvancedRules {
+    bool enable_tier_quality_reduction          = false;
     bool enable_early_move_when_pool_high       = true;
     bool prefer_move_no_event_video_first       = true;
     bool prefer_keep_event_video_longer         = true;
@@ -371,6 +408,7 @@ struct PolicyAdvancedRules {
 
     Json::Value toJson() const {
         Json::Value v;
+        v["enable_tier_quality_reduction"]        = enable_tier_quality_reduction;
         v["enable_early_move_when_pool_high"]     = enable_early_move_when_pool_high;
         v["prefer_move_no_event_video_first"]     = prefer_move_no_event_video_first;
         v["prefer_keep_event_video_longer"]       = prefer_keep_event_video_longer;
@@ -382,6 +420,7 @@ struct PolicyAdvancedRules {
 
     static PolicyAdvancedRules fromJson(const Json::Value &v) {
         PolicyAdvancedRules r;
+        r.enable_tier_quality_reduction       = v.get("enable_tier_quality_reduction", false).asBool();
         r.enable_early_move_when_pool_high    = v.get("enable_early_move_when_pool_high", true).asBool();
         r.prefer_move_no_event_video_first    = v.get("prefer_move_no_event_video_first", true).asBool();
         r.prefer_keep_event_video_longer      = v.get("prefer_keep_event_video_longer", true).asBool();
@@ -419,6 +458,7 @@ inline PolicyDeleteConfig getSystemDefaultPolicyDeleteConfig() {
 
 inline PolicyAdvancedRules getSystemDefaultPolicyAdvancedRules() {
     PolicyAdvancedRules r;
+    r.enable_tier_quality_reduction = false;
     r.enable_early_move_when_pool_high = true;
     r.prefer_move_no_event_video_first = true;
     r.prefer_keep_event_video_longer = true;

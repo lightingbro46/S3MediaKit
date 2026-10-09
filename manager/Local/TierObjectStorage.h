@@ -63,6 +63,11 @@ enum class TierObjectPresence {
     UNKNOWN
 };
 
+struct TierObjectHeadInfo {
+    TierObjectPresence presence = TierObjectPresence::UNKNOWN;
+    int64_t content_length = 0;
+};
+
 // ============================================================================
 // TierObjectStorage
 // ============================================================================
@@ -164,6 +169,7 @@ public:
      * failure, which segmentExists() cannot.
      */
     TierObjectPresence headSegment(const std::string &pool_id, const std::string &s3_key);
+    TierObjectHeadInfo headSegmentInfo(const std::string &pool_id, const std::string &s3_key);
 
     /**
      * List every object under `prefix` (ListObjectsV2, following continuation

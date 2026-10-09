@@ -293,6 +293,36 @@ TEST(StoragePoolApiTest, ValidatesPolicyAgainstProvidedPoolMap) {
     EXPECT_NE(std::string::npos, error.find("must exist and be enabled"));
 }
 
+TEST(StoragePoolApiTest, ValidatesTierQualityProfileShapeAndHotRestriction) {
+    PolicyTierConfig hot;
+    hot.tier = "HOT";
+    hot.enabled = true;
+    hot.pool_id = "hot-pool";
+    hot.retain_until_days = 7;
+    hot.overflow_action = "MOVE_TO_NEXT_TIER";
+    PolicyTierConfig warm;
+    warm.tier = "WARM";
+    warm.enabled = true;
+    warm.pool_id = "warm-pool";
+    warm.retain_until_days = 30;
+    warm.overflow_action = "DELETE_OLDEST";
+    warm.quality_reduction.enabled = true;
+    warm.quality_reduction.video_codec = "H264";
+    warm.quality_reduction.max_width = 1280;
+    warm.quality_reduction.max_height = 720;
+
+    std::string error;
+    EXPECT_TRUE(TierStorageBase::validatePolicyTiers({hot, warm}, error)) << error;
+    warm.quality_reduction.video_codec = "VP9";
+    EXPECT_FALSE(TierStorageBase::validatePolicyTiers({hot, warm}, error));
+    warm.quality_reduction.video_codec = "H264";
+    warm.quality_reduction.max_height = 0;
+    EXPECT_FALSE(TierStorageBase::validatePolicyTiers({hot, warm}, error));
+    warm.quality_reduction.max_height = 720;
+    hot.quality_reduction = warm.quality_reduction;
+    EXPECT_FALSE(TierStorageBase::validatePolicyTiers({hot, warm}, error));
+}
+
 TEST(StoragePoolApiTest, RejectsPoliciesThatWouldNeverDeleteOrDeleteImmediately) {
     StoragePool pool;
     pool.id = "hot-pool";

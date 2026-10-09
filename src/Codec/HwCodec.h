@@ -155,6 +155,8 @@ public:
      * so live streams keep their room.
      */
     HwCodecSession::Ptr acquireEncodeOffline(CodecId codec);
+    // The decoder of such a job (tier transcode decoding on the GPU), same cost and headroom.
+    HwCodecSession::Ptr acquireDecodeOffline(CodecId codec);
 
     // A decoder/encoder that had a GPU session went back to the CPU.
     void addFallback();

@@ -660,6 +660,15 @@ const string kTieringSplitGranularitySeconds = STORAGE_FIELD "tiering_split_gran
 const string kTieringTransferMaxConcurrent = STORAGE_FIELD "tiering_transfer_max_concurrent";
 const string kTieringTransferMaxConcurrentPerPool = STORAGE_FIELD "tiering_transfer_max_concurrent_per_pool";
 const string kTierMaxPools = STORAGE_FIELD "tier_max_pools";
+const string kTierTranscodeEnabled = STORAGE_FIELD "tier_transcode_enabled";
+const string kTierTranscodeFfmpegBin = STORAGE_FIELD "tier_transcode_ffmpeg_bin";
+const string kTierTranscodeFfprobeBin = STORAGE_FIELD "tier_transcode_ffprobe_bin";
+const string kTierTranscodeStagingPath = STORAGE_FIELD "tier_transcode_staging_path";
+const string kTierTranscodeTimeoutSeconds = STORAGE_FIELD "tier_transcode_timeout_seconds";
+const string kTierTranscodeMaxConcurrent = STORAGE_FIELD "tier_transcode_max_concurrent";
+const string kTierTranscodeH264Encoders = STORAGE_FIELD "tier_transcode_h264_encoders";
+const string kTierTranscodeH265Encoders = STORAGE_FIELD "tier_transcode_h265_encoders";
+const string kTierTranscodeHwaccel = STORAGE_FIELD "tier_transcode_hwaccel";
 const string kTieringJobRetentionDays = STORAGE_FIELD "tiering_job_retention_days";
 const string kTieringTerminalRangeRetentionDays = STORAGE_FIELD "tiering_terminal_range_retention_days";
 const string kStorageAlertRetentionDays = STORAGE_FIELD "storage_alert_retention_days";
@@ -735,6 +744,21 @@ static onceToken token([]() {
     mINI::Instance()[kTieringTransferMaxConcurrent] = 8;
     mINI::Instance()[kTieringTransferMaxConcurrentPerPool] = 4;
     mINI::Instance()[kTierMaxPools] = 32;
+    mINI::Instance()[kTierTranscodeEnabled] = 0;
+    mINI::Instance()[kTierTranscodeFfmpegBin] = "ffmpeg";
+    mINI::Instance()[kTierTranscodeFfprobeBin] = "ffprobe";
+    mINI::Instance()[kTierTranscodeStagingPath] = "./tier-transcode";
+    mINI::Instance()[kTierTranscodeTimeoutSeconds] = 600;
+    mINI::Instance()[kTierTranscodeMaxConcurrent] = 1;
+#if defined(ENABLE_FFMPEG)
+    // GPU encoders come from hwcodec (kTierTranscodeHwaccel); these are the CPU fallback.
+    mINI::Instance()[kTierTranscodeH264Encoders] = "libx264";
+    mINI::Instance()[kTierTranscodeH265Encoders] = "libx265";
+#else
+    mINI::Instance()[kTierTranscodeH264Encoders] = "h264_nvenc,h264_qsv,libx264";
+    mINI::Instance()[kTierTranscodeH265Encoders] = "hevc_nvenc,hevc_qsv,libx265";
+#endif
+    mINI::Instance()[kTierTranscodeHwaccel] = 1;
     mINI::Instance()[kTieringJobRetentionDays] = 7;
     mINI::Instance()[kTieringTerminalRangeRetentionDays] = 30;
     mINI::Instance()[kStorageAlertRetentionDays] = 14;

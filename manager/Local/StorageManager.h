@@ -16,6 +16,7 @@
 namespace managerkit {
 
 struct TimeBlockIdentity;
+struct TimeBlockSizePatch;
  
 class StorageManager : public std::enable_shared_from_this<StorageManager> {
 public:
@@ -44,6 +45,10 @@ public:
 
     size_t removeCameraTimeBlocks(const std::string &camera_id,
                                   const std::vector<TimeBlockIdentity> &blocks);
+    size_t patchCameraTimeBlockSizes(const std::string &camera_id,
+                                     const std::vector<TimeBlockSizePatch> &patches);
+    size_t verifyCameraTimeBlockSizes(const std::string &camera_id,
+                                      const std::vector<TimeBlockSizePatch> &patches);
 
 private:
     StorageManager(const toolkit::EventPoller::Ptr &poller = nullptr);
