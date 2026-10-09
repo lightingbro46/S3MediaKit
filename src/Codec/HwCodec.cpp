@@ -1177,6 +1177,11 @@ HwCodecSession::Ptr HwCodecManager::acquireEncodeOffline(CodecId codec) {
     return acquire(codec, true, std::max(0.0f, offline_cost), true);
 }
 
+HwCodecSession::Ptr HwCodecManager::acquireDecodeOffline(CodecId codec) {
+    GET_CONFIG(float, offline_cost, HwCodec::kOfflineCost);
+    return acquire(codec, false, std::max(0.0f, offline_cost), true);
+}
+
 HwCodecSession::Ptr HwCodecManager::acquire(CodecId codec, bool encode, double cost, bool offline) {
     GET_CONFIG(bool, enable, HwCodec::kEnable);
     GET_CONFIG(bool, decode_on, HwCodec::kDecode);

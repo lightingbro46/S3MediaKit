@@ -964,6 +964,9 @@ extern const std::string kTierTranscodeTimeoutSeconds;
 extern const std::string kTierTranscodeMaxConcurrent;
 extern const std::string kTierTranscodeH264Encoders;
 extern const std::string kTierTranscodeH265Encoders;
+// Let tier transcode use a GPU of hwcodec (encode, and decode + scale when both fit one card).
+// The encoder lists above are then the CPU fallback.
+extern const std::string kTierTranscodeHwaccel;
 // Retention for terminal tiering jobs and EXPIRED restore jobs. Zero disables pruning.
 extern const std::string kTieringJobRetentionDays;
 // Retention for DELETED/EXPIRED compact ranges. Zero disables pruning.

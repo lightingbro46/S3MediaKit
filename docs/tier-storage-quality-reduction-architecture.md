@@ -539,8 +539,9 @@ Thêm các key server-side, không expose quyền sửa từ policy API:
 | `storage.tier_transcode_staging_path` | Root chứa artifact tạm theo job/segment. |
 | `storage.tier_transcode_timeout_seconds` | Timeout một segment. |
 | `storage.tier_transcode_max_concurrent` | Số encode đồng thời. |
-| `storage.tier_transcode_h264_encoders` | Preference nội bộ, default NVENC → QSV → software. |
-| `storage.tier_transcode_h265_encoders` | Preference nội bộ, default NVENC → QSV → software. |
+| `storage.tier_transcode_h264_encoders` | Encoder CPU dự phòng, mặc định `libx264` (build không có FFmpeg: NVENC → QSV → software). Chỉ encoder qua smoke test lúc probe được thử. Ghi tên encoder GPU vào đây vẫn chạy nhưng không qua budget của hwcodec, không nên. |
+| `storage.tier_transcode_h265_encoders` | Như trên, mặc định `libx265`. |
+| `storage.tier_transcode_hwaccel` | Mặc định 1: dùng GPU của `hwcodec` trước (mã hoá, và giải mã + scale khi cùng card), xem [hw-codec.md](hw-codec.md) mục "Transcode khi chuyển tầng". 0 = chỉ CPU, không đụng `hwcodec.enable` của live. |
 | `blocking.tieringThreads` | Thread pool cho transfer/tier transform; mặc định kế thừa transfer concurrency. |
 
 Staging root phải là path server quản lý, tạo với quyền hạn chế, không nằm trong cây playback và không nhận từ FE.

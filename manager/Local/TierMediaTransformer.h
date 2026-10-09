@@ -60,6 +60,7 @@ struct TierTransformResult {
 
 struct TierTranscodeCapabilities {
     bool probing = false;
+    bool probed = false; // the encoder lists below come from a finished probe
     bool h264_available = false;
     bool h265_available = false;
     std::vector<std::string> h264_encoders;
@@ -98,6 +99,7 @@ public:
 
 private:
     std::vector<std::string> configuredEncoders(const std::string &codec) const;
+    std::vector<std::string> cpuEncoders(const std::string &codec) const;
     bool smokeTestEncoder(const std::string &encoder);
     std::string stagingPath(const TierTransformRequest &request) const;
 

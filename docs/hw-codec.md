@@ -154,7 +154,7 @@ Mặc định đã an toàn (production sinh config từ default trong code):
 | `hwcodec.maxEncodeSessions` | `0` | Số phiên mã hoá GPU tối đa, `0` = không giới hạn (tự học giới hạn khi mở lỗi) |
 | `hwcodec.decodeBudget` | rỗng | Tải giải mã tối đa mỗi device, `cuda:720,vaapi:450` (fps quy 1080p); rỗng/thiếu backend/`<= 0` = không giới hạn |
 | `hwcodec.encodeBudget` | rỗng | Như trên cho mã hoá |
-| `hwcodec.offlineCost` | `60` | Tải tính cho một việc mã hoá chạy nhanh hơn thời gian thực (trích xuất overlay); chỉ có tác dụng khi có budget |
+| `hwcodec.offlineCost` | `60` | Tải tính cho một việc mã hoá/giải mã chạy nhanh hơn thời gian thực (trích xuất overlay, transcode khi chuyển tầng); chỉ có tác dụng khi có budget |
 | `hwcodec.offlineHeadroom` | `0.8` | Việc offline chỉ được nhận khi tải sau đó không vượt `budget × hệ số` này, chừa phần còn lại cho luồng live |
 | `hwcodec.failThreshold` | `3` | Lỗi liên tiếp để một phiên về CPU, và số phiên lỗi để khoá backend |
 | `hwcodec.cooldownSec` | `300` | Thời gian khoá backend / giữ giới hạn phiên đã học |
@@ -403,6 +403,26 @@ hoặc quá thời gian), job chạy lại ngay bằng lệnh libx264 (log `GPU 
 libx264`, tăng `HwCodecFallback`). Backend đó không dùng cho trích xuất trong `hwcodec.cooldownSec`;
 breaker của pipeline trong tiến trình không bị ảnh hưởng. Template `extract_overlay` đã sửa phần encoder
 thì luôn chạy đúng như template.
+
+### Transcode khi chuyển tầng
+
+Giảm chất lượng khi chuyển tầng (`storage.tier_transcode_enabled`, xem
+[tier-storage-quality-reduction-architecture.md](tier-storage-quality-reduction-architecture.md)) chạy
+binary `storage.tier_transcode_ffmpeg_bin` cho từng segment. Khi `storage.tier_transcode_hwaccel=1`
+(mặc định), mỗi segment xin một phiên mã hoá **offline** của `HwCodecManager`
+(`acquireEncodeOffline`, cùng `hwcodec.offlineCost`/`offlineHeadroom` với trích xuất overlay); nguồn
+H.264/H.265 trên cuda/vaapi xin thêm một phiên giải mã offline (`acquireDecodeOffline`). Thử lần lượt:
+
+| Mức | Khi nào | Lệnh |
+|---|---|---|
+| L1 | có cả phiên giải mã lẫn mã hoá, cùng backend và **cùng card** | cuda: `-hwaccel cuda -hwaccel_output_format cuda [-hwaccel_device N]`, filter `fps=F,scale_cuda=W:H`; vaapi: `-hwaccel vaapi -hwaccel_output_format vaapi -hwaccel_device <node>`, filter `fps=F,scale_vaapi=w=W:h=H:format=nv12` |
+| L2 | có phiên mã hoá | filter CPU như cũ; cuda `h264_nvenc -preset p4 -rc vbr -b:v X -maxrate X -bufsize 2X -pix_fmt yuv420p [-gpu N]`; vaapi `-init_hw_device vaapi=gpu:<node> -filter_hw_device gpu`, cuối filter `format=nv12,hwupload`, `-rc_mode VBR -b:v X -maxrate X`; qsv `-preset veryfast -b:v X -maxrate X -pix_fmt nv12` |
+| L3 | còn lại | các encoder CPU đã qua probe trong `storage.tier_transcode_h264_encoders`/`h265_encoders` (mặc định `libx264`/`libx265`) |
+
+L1 lỗi thì chạy lại ngay ở L2 cùng phiên, và L1 của backend đó nghỉ `hwcodec.cooldownSec`. L2 lỗi thì
+sang CPU, backend đó nghỉ `hwcodec.cooldownSec` cho tier, `HwCodecFallback` tăng. Breaker và giới hạn
+phiên NVENC học được của pipeline trong tiến trình không bị ảnh hưởng. `scale_cuda` của FFmpeg 4.4
+không đổi định dạng điểm ảnh, nên nguồn 10-bit với `h264_nvenc` luôn rơi về L2.
 
 ### ffmpeg ngoài tiến trình khác
 

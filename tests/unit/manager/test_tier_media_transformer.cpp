@@ -2,10 +2,14 @@
 
 #include <algorithm>
 #include <fstream>
+#include <functional>
 #include <unistd.h>
 
 #include "Common/config.h"
 #include "Local/TierMediaTransformer.h"
+#if defined(ENABLE_FFMPEG)
+#include "Codec/HwCodec.h"
+#endif
 #include "Util/File.h"
 #include "Util/mini.h"
 
@@ -26,16 +30,38 @@ public:
             result.standard_output = probeJson(output ? output_probe : source_probe);
             return result;
         }
+        ffmpeg_runs.push_back(request.argv);
+        if (fail_ffmpeg && fail_ffmpeg(request.argv)) {
+            result.exit_code = 1;
+            return result;
+        }
+        if (request.argv.back() == "-") return result; // encoder smoke test of probe()
         ffmpeg_argv = request.argv;
         std::ofstream(request.argv.back().c_str()) << std::string(output_size, 'x');
         return result;
     }
 
     bool hasArgs(const std::string &key, const std::string &value) const {
-        for (size_t i = 0; i + 1 < ffmpeg_argv.size(); ++i) {
-            if (ffmpeg_argv[i] == key && ffmpeg_argv[i + 1] == value) return true;
+        return hasArgs(ffmpeg_argv, key, value);
+    }
+
+    static bool hasArgs(const std::vector<std::string> &argv, const std::string &key,
+                        const std::string &value) {
+        for (size_t i = 0; i + 1 < argv.size(); ++i) {
+            if (argv[i] == key && argv[i + 1] == value) return true;
         }
         return false;
+    }
+
+    static std::string argAfter(const std::vector<std::string> &argv, const std::string &key) {
+        for (size_t i = 0; i + 1 < argv.size(); ++i) {
+            if (argv[i] == key) return argv[i + 1];
+        }
+        return std::string();
+    }
+
+    static size_t indexOf(const std::vector<std::string> &argv, const std::string &value) {
+        return std::find(argv.begin(), argv.end(), value) - argv.begin();
     }
 
     struct Probe {
@@ -52,6 +78,8 @@ public:
     Probe output_probe;
     size_t output_size = 100;
     std::vector<std::string> ffmpeg_argv;
+    std::vector<std::vector<std::string>> ffmpeg_runs;
+    std::function<bool(const std::vector<std::string> &)> fail_ffmpeg;
 
 private:
     static std::string probeJson(const Probe &probe) {
@@ -85,6 +113,11 @@ protected:
 
     TierTransformResult transform(const std::string &codec = "H264") {
         FfmpegTierMediaTransformer transformer(_runner);
+        return transform(transformer, codec);
+    }
+
+    TierTransformResult transform(FfmpegTierMediaTransformer &transformer,
+                                  const std::string &codec = "H264") {
         TierTransformRequest request;
         request.job_id = "unit-job";
         request.stream_id = "sub";
@@ -94,11 +127,15 @@ protected:
         request.profile.video_codec = codec;
         request.profile.max_fps = 10;
         request.profile.max_video_bitrate_kbps = 800;
+        request.profile.max_width = _max_width;
+        request.profile.max_height = _max_height;
         return transformer.transform(request);
     }
 
     std::string _root;
     std::shared_ptr<FakeProcessRunner> _runner;
+    int _max_width = 0;
+    int _max_height = 0;
 };
 
 } // namespace
@@ -243,3 +280,232 @@ TEST_F(TierMediaTransformerFakeRunnerTest, CopiesAacIntoMp4) {
     EXPECT_TRUE(_runner->hasArgs("-c:a", "copy"));
     EXPECT_TRUE(_runner->hasArgs("-f", "mp4"));
 }
+
+TEST_F(TierMediaTransformerFakeRunnerTest, TriesOnlyEncodersThatPassedTheProbe) {
+    mINI::Instance()[mediakit::Storage::kTierTranscodeH264Encoders] = "h264_nvenc,libx264";
+    mINI::Instance()[mediakit::Storage::kTierTranscodeHwaccel] = 0;
+    _runner->fail_ffmpeg = [](const std::vector<std::string> &argv) {
+        return std::find(argv.begin(), argv.end(), "h264_nvenc") != argv.end();
+    };
+    _runner->output_probe.fps = "10/1";
+    FfmpegTierMediaTransformer transformer(_runner);
+    TierTranscodeCapabilities capabilities = transformer.probe();
+    EXPECT_TRUE(capabilities.probed);
+    EXPECT_EQ(std::vector<std::string>{"libx264"}, capabilities.h264_encoders);
+    _runner->ffmpeg_runs.clear();
+
+    TierTransformResult result = transform(transformer);
+    ASSERT_TRUE(result.success) << result.error_code << ": " << result.error_message;
+    ASSERT_EQ(1U, _runner->ffmpeg_runs.size());
+    EXPECT_EQ("libx264", FakeProcessRunner::argAfter(_runner->ffmpeg_runs[0], "-c:v"));
+    EXPECT_EQ("libx264", result.encoder_backend);
+    mINI::Instance()[mediakit::Storage::kTierTranscodeHwaccel] = 1;
+}
+
+#if defined(ENABLE_FFMPEG)
+namespace {
+
+using mediakit::HwBackend;
+using mediakit::HwBackendCaps;
+using mediakit::HwCodecManager;
+using namespace mediakit;
+
+class ConfigGuard {
+public:
+    ConfigGuard(const std::string &key, const std::string &value) : _key(key) {
+        auto &ini = mINI::Instance();
+        auto it = ini.find(key);
+        _old = it == ini.end() ? "" : it->second;
+        ini[key] = value;
+        NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+    }
+    ~ConfigGuard() {
+        mINI::Instance()[_key] = _old;
+        NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+    }
+
+private:
+    std::string _key;
+    std::string _old;
+};
+
+// Backends that probe as working for H.264/H.265: decode when `decode`, always encode.
+void probeBackends(const std::vector<HwBackend> &backends, bool decode) {
+    HwCodecManager::Instance().probe(
+        [backends, decode](HwBackend backend, const std::string &, HwBackendCaps &caps,
+                           AVBufferRef *&) {
+            if (std::find(backends.begin(), backends.end(), backend) == backends.end())
+                return false;
+            caps.decode[0] = caps.decode[1] = decode;
+            caps.encode[0] = caps.encode[1] = true;
+            return true;
+        });
+}
+
+bool usesGpuDecode(const std::vector<std::string> &argv) {
+    return std::find(argv.begin(), argv.end(), "-hwaccel") != argv.end();
+}
+
+class TierTranscodeGpuTest : public TierMediaTransformerFakeRunnerTest {
+protected:
+    void SetUp() override {
+        TierMediaTransformerFakeRunnerTest::SetUp();
+        _runner->output_probe.fps = "10/1";
+    }
+    void TearDown() override {
+        probeBackends({}, false);
+        TierMediaTransformerFakeRunnerTest::TearDown();
+    }
+
+    ConfigGuard _enable { mediakit::HwCodec::kEnable, "1" };
+    ConfigGuard _decode { mediakit::HwCodec::kDecode, "1" };
+    ConfigGuard _encode { mediakit::HwCodec::kEncode, "1" };
+    ConfigGuard _nvidia { mediakit::General::kCheckNvidiaDev, "1" };
+    ConfigGuard _backends { mediakit::HwCodec::kBackends, "cuda,vaapi,qsv" };
+    ConfigGuard _max_dec { mediakit::HwCodec::kMaxDecodeSessions, "0" };
+    ConfigGuard _max_enc { mediakit::HwCodec::kMaxEncodeSessions, "0" };
+    ConfigGuard _device { mediakit::HwCodec::kDevice, "" };
+    ConfigGuard _dec_budget { mediakit::HwCodec::kDecodeBudget, "" };
+    ConfigGuard _enc_budget { mediakit::HwCodec::kEncodeBudget, "" };
+    // A failed GPU run would otherwise keep the backend off for the next tests.
+    ConfigGuard _cooldown { mediakit::HwCodec::kCooldownSec, "0" };
+    ConfigGuard _hwaccel { mediakit::Storage::kTierTranscodeHwaccel, "1" };
+};
+
+} // namespace
+
+TEST_F(TierTranscodeGpuTest, DecodesScalesAndEncodesOnCuda) {
+    _max_width = 320;
+    _max_height = 180;
+    _runner->output_probe.width = 320;
+    _runner->output_probe.height = 180;
+    probeBackends({HwBackend::Cuda}, true);
+    TierTransformResult result = transform();
+    ASSERT_TRUE(result.success) << result.error_code << ": " << result.error_message;
+    ASSERT_EQ(1U, _runner->ffmpeg_runs.size());
+    const std::vector<std::string> &argv = _runner->ffmpeg_argv;
+    EXPECT_TRUE(FakeProcessRunner::hasArgs(argv, "-hwaccel", "cuda"));
+    EXPECT_TRUE(FakeProcessRunner::hasArgs(argv, "-hwaccel_output_format", "cuda"));
+    EXPECT_LT(FakeProcessRunner::indexOf(argv, "-hwaccel"), FakeProcessRunner::indexOf(argv, "-i"));
+    EXPECT_EQ("fps=10,scale_cuda=320:180", FakeProcessRunner::argAfter(argv, "-vf"));
+    EXPECT_EQ("h264_nvenc", FakeProcessRunner::argAfter(argv, "-c:v"));
+    EXPECT_TRUE(FakeProcessRunner::hasArgs(argv, "-maxrate", "600k"));
+    EXPECT_TRUE(FakeProcessRunner::hasArgs(argv, "-bf", "0"));
+    EXPECT_EQ(argv.size(), FakeProcessRunner::indexOf(argv, "-pix_fmt"));
+    EXPECT_EQ("h264_nvenc", result.encoder_backend);
+    EXPECT_EQ(0U, HwCodecManager::Instance().hwEncoderCount());
+    EXPECT_EQ(0U, HwCodecManager::Instance().hwDecoderCount());
+}
+
+TEST_F(TierTranscodeGpuTest, FailedGpuDecodeRetriesWithGpuEncodeOnly) {
+    probeBackends({HwBackend::Cuda}, true);
+    _runner->fail_ffmpeg = usesGpuDecode;
+    TierTransformResult result = transform();
+    ASSERT_TRUE(result.success) << result.error_code << ": " << result.error_message;
+    ASSERT_EQ(2U, _runner->ffmpeg_runs.size());
+    EXPECT_TRUE(usesGpuDecode(_runner->ffmpeg_runs[0]));
+    EXPECT_FALSE(usesGpuDecode(_runner->ffmpeg_runs[1]));
+    EXPECT_EQ("h264_nvenc", FakeProcessRunner::argAfter(_runner->ffmpeg_runs[1], "-c:v"));
+    EXPECT_TRUE(FakeProcessRunner::hasArgs(_runner->ffmpeg_runs[1], "-pix_fmt", "yuv420p"));
+    EXPECT_EQ("fps=10", FakeProcessRunner::argAfter(_runner->ffmpeg_runs[1], "-vf"));
+}
+
+TEST_F(TierTranscodeGpuTest, FailedGpuEncoderFallsBackToCpuAndCoolsDown) {
+    ConfigGuard cooldown(mediakit::HwCodec::kCooldownSec, "300");
+    // qsv: no other test uses it, so its cooldown cannot leak.
+    probeBackends({HwBackend::Qsv}, false);
+    _runner->fail_ffmpeg = [](const std::vector<std::string> &argv) {
+        return FakeProcessRunner::argAfter(argv, "-c:v") == "h264_qsv";
+    };
+    const uint64_t fallbacks = HwCodecManager::Instance().fallbackCount();
+    TierTransformResult result = transform();
+    ASSERT_TRUE(result.success) << result.error_code << ": " << result.error_message;
+    ASSERT_EQ(2U, _runner->ffmpeg_runs.size());
+    EXPECT_TRUE(FakeProcessRunner::hasArgs(_runner->ffmpeg_runs[0], "-pix_fmt", "nv12"));
+    EXPECT_EQ("libx264", FakeProcessRunner::argAfter(_runner->ffmpeg_runs[1], "-c:v"));
+    EXPECT_EQ("libx264", result.encoder_backend);
+    EXPECT_EQ(fallbacks + 1, HwCodecManager::Instance().fallbackCount());
+    EXPECT_EQ(0U, HwCodecManager::Instance().hwEncoderCount());
+
+    // The next segment leaves the backend alone during the cooldown.
+    _runner->ffmpeg_runs.clear();
+    ASSERT_TRUE(transform().success);
+    ASSERT_EQ(1U, _runner->ffmpeg_runs.size());
+    EXPECT_EQ("libx264", FakeProcessRunner::argAfter(_runner->ffmpeg_runs[0], "-c:v"));
+}
+
+TEST_F(TierTranscodeGpuTest, VaapiEncodeUploadsCpuFrames) {
+    probeBackends({HwBackend::Vaapi}, false);
+    TierTransformResult result = transform();
+    ASSERT_TRUE(result.success) << result.error_code << ": " << result.error_message;
+    const std::vector<std::string> &argv = _runner->ffmpeg_argv;
+    EXPECT_TRUE(FakeProcessRunner::hasArgs(argv, "-init_hw_device", "vaapi=gpu"));
+    EXPECT_LT(FakeProcessRunner::indexOf(argv, "-init_hw_device"),
+              FakeProcessRunner::indexOf(argv, "-i"));
+    EXPECT_EQ("fps=10,format=nv12,hwupload", FakeProcessRunner::argAfter(argv, "-vf"));
+    EXPECT_EQ("h264_vaapi", FakeProcessRunner::argAfter(argv, "-c:v"));
+    EXPECT_TRUE(FakeProcessRunner::hasArgs(argv, "-rc_mode", "VBR"));
+}
+
+TEST_F(TierTranscodeGpuTest, VaapiDecodeAlwaysScalesToNv12) {
+    probeBackends({HwBackend::Vaapi}, true);
+    ASSERT_TRUE(transform().success);
+    const std::vector<std::string> &argv = _runner->ffmpeg_argv;
+    EXPECT_TRUE(FakeProcessRunner::hasArgs(argv, "-hwaccel", "vaapi"));
+    EXPECT_EQ("fps=10,scale_vaapi=format=nv12", FakeProcessRunner::argAfter(argv, "-vf"));
+    EXPECT_EQ(argv.size(), FakeProcessRunner::indexOf(argv, "-init_hw_device"));
+}
+
+TEST_F(TierTranscodeGpuTest, MjpegSourceIsNotDecodedOnTheGpu) {
+    _runner->source_probe.video_codec = "mjpeg";
+    probeBackends({HwBackend::Cuda}, true);
+    ASSERT_TRUE(transform().success);
+    EXPECT_FALSE(usesGpuDecode(_runner->ffmpeg_argv));
+    EXPECT_EQ("h264_nvenc", FakeProcessRunner::argAfter(_runner->ffmpeg_argv, "-c:v"));
+}
+
+TEST_F(TierTranscodeGpuTest, PicksTheLessLoadedCard) {
+    ConfigGuard device(mediakit::HwCodec::kDevice, "cuda:0;1");
+    probeBackends({HwBackend::Cuda}, false);
+    auto live = HwCodecManager::Instance().acquireEncode(mediakit::CodecH264, 1920, 1080, 30);
+    ASSERT_TRUE(live);
+    ASSERT_EQ("0", live->deviceName());
+    ASSERT_TRUE(transform().success);
+    EXPECT_TRUE(_runner->hasArgs("-gpu", "1"));
+}
+
+TEST_F(TierTranscodeGpuTest, DecodeOnAnotherCardEncodesOnly) {
+    ConfigGuard device(mediakit::HwCodec::kDevice, "cuda:0;1");
+    probeBackends({HwBackend::Cuda}, true);
+    // Encode lighter on card 1, decode lighter on card 0: the two sessions land on different cards.
+    auto live_encode = HwCodecManager::Instance().acquireEncode(mediakit::CodecH264);
+    auto live_decode0 = HwCodecManager::Instance().acquireDecode(mediakit::CodecH264);
+    auto live_decode1 = HwCodecManager::Instance().acquireDecode(mediakit::CodecH264);
+    ASSERT_EQ("0", live_encode->deviceName());
+    ASSERT_EQ("0", live_decode0->deviceName());
+    ASSERT_EQ("1", live_decode1->deviceName());
+    live_decode0.reset();
+    ASSERT_TRUE(transform().success);
+    EXPECT_FALSE(usesGpuDecode(_runner->ffmpeg_argv));
+    EXPECT_TRUE(_runner->hasArgs("-gpu", "1"));
+}
+
+TEST_F(TierTranscodeGpuTest, FullGpuBudgetUsesTheCpu) {
+    ConfigGuard budget(mediakit::HwCodec::kEncodeBudget, "cuda:100");
+    probeBackends({HwBackend::Cuda}, false);
+    // 30 live + 60 offline > 100 * 0.8.
+    auto live = HwCodecManager::Instance().acquireEncode(mediakit::CodecH264, 1920, 1080, 30);
+    ASSERT_TRUE(live);
+    ASSERT_TRUE(transform().success);
+    ASSERT_EQ(1U, _runner->ffmpeg_runs.size());
+    EXPECT_EQ("libx264", FakeProcessRunner::argAfter(_runner->ffmpeg_argv, "-c:v"));
+}
+
+TEST_F(TierTranscodeGpuTest, HwaccelOffUsesTheCpu) {
+    ConfigGuard off(mediakit::Storage::kTierTranscodeHwaccel, "0");
+    probeBackends({HwBackend::Cuda}, true);
+    ASSERT_TRUE(transform().success);
+    ASSERT_EQ(1U, _runner->ffmpeg_runs.size());
+    EXPECT_EQ("libx264", FakeProcessRunner::argAfter(_runner->ffmpeg_argv, "-c:v"));
+}
+#endif

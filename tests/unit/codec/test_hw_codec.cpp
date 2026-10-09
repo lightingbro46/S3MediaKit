@@ -346,6 +346,19 @@ TEST_F(HwCodecManagerTest, OfflineEncodeLeavesHeadroomForLive) {
     }
 }
 
+TEST_F(HwCodecManagerTest, OfflineDecodeLeavesHeadroomForLive) {
+    ConfigGuard budget(HwCodec::kDecodeBudget, "cuda:100");
+    HwCodecManager manager;
+    manager.probe(fakeProbe({ { HwBackend::Cuda, makeCaps(true, true, false, false) } }));
+    auto tier = manager.acquireDecodeOffline(CodecH265);
+    ASSERT_TRUE(tier);
+    EXPECT_DOUBLE_EQ(60, tier->cost());
+    EXPECT_EQ(1U, manager.hwDecoderCount());
+    EXPECT_FALSE(manager.acquireDecodeOffline(CodecH264));
+    EXPECT_TRUE(manager.acquireDecode(CodecH264, 1920, 1080, 30));
+    EXPECT_FALSE(manager.acquireEncodeOffline(CodecH264));
+}
+
 TEST_F(HwCodecManagerTest, LoweringBudgetKeepsRunningSessions) {
     ConfigGuard budget(HwCodec::kDecodeBudget, "cuda:60");
     HwCodecManager manager;
