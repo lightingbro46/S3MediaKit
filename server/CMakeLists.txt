@@ -33,13 +33,12 @@ else()
   target_link_libraries(MediaServer ${MK_LINK_LIBRARIES})
 endif()
 
-# Set RPATH so MediaServer finds .so files in the same directory as itself
-# ($ORIGIN) — works both in the build output dir and after deployment when
-# the .so files are copied alongside the binary.
+# RUNPATH $ORIGIN:$ORIGIN/../lib (S3_RUNTIME_RPATH): the bundled .so sit next to the binary in
+# release/<os>/<type>/ and in /opt/media/lib beside /opt/media/bin in the Docker image.
 if(UNIX AND NOT APPLE)
   set_target_properties(MediaServer PROPERTIES
     BUILD_WITH_INSTALL_RPATH TRUE
-    INSTALL_RPATH             "$ORIGIN"
+    INSTALL_RPATH             "${S3_RUNTIME_RPATH}"
     INSTALL_RPATH_USE_LINK_PATH FALSE)
 endif()
 

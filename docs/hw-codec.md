@@ -177,8 +177,15 @@ Mỗi phiên ghi một dòng log: `Open the decoder successfully:h264 on GPU cud
 
 ## 4. Triển khai
 
-FFmpeg 4.4 của Ubuntu 22.04 (libavcodec 58) đã có sẵn nvenc/nvdec, vaapi và qsv; driver phải có ở
-máy chạy:
+MediaServer dùng FFmpeg n4.4.8 tự build từ submodule `3rdpart/FFmpeg` (libavcodec 58, tên thư viện
+có hậu tố `_s3`, cấu hình ở `cmake/BundledFFmpeg.cmake`), bật nvenc/nvdec/cuvid, vaapi và qsv
+(`libmfx`). Máy dev: thư viện nằm cạnh `MediaServer` trong `release/linux/<type>/`, `ffmpeg`/`ffprobe`
+ở `release/linux/3rdpart/ffmpeg/bin/` (default `ffmpeg.bin` tìm ở đó trước, rồi tới `PATH`). Docker:
+thư viện trong `/opt/media/lib` (qua `/etc/ld.so.conf.d/s3media.conf`), `ffmpeg`/`ffprobe` trong
+`/usr/local/bin`; image không còn gói `ffmpeg` của apt. Không đặt `ffmpeg` cạnh `MediaServer`:
+`./ffmpeg/` là thư mục log mặc định (`ffmpeg.log`). Log khởi động `FFmpeg n4.4.8 loaded from ...`
+cho biết thư viện đang dùng. nvenc/nvdec mở `libcuda`/`libnvidia-encode` lúc chạy nên không nằm trong
+image; driver phải có ở máy chạy:
 
 - **NVIDIA (Docker)** — NVIDIA Container Toolkit, chạy với `--gpus all` và
   `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility` (thiếu `video` thì không có `libnvcuvid`/

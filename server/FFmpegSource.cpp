@@ -17,6 +17,10 @@
 #include <map>
 #include <iomanip>
 #include <sstream>
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include "Common/StrUtil.h"
 #include "User/UserAuditLog.h"
 #include "Local/StatisticRecorder.h"
@@ -54,10 +58,21 @@ onceToken token([]() {
     string ffmpeg_bin = trim(System::execute("where ffmpeg"));
     string ffprobe_bin = trim(System::execute("where ffprobe"));
 #else
-    string ffmpeg_bin = trim(System::execute("which ffmpeg"));
-    string ffprobe_bin = trim(System::execute("which ffprobe"));
+    // ffmpeg/ffprobe of the bundled FFmpeg build (release/<os>/3rdpart/ffmpeg/bin on dev machines)
+    // use the same libraries as MediaServer; otherwise take the one in PATH (/usr/local/bin in Docker).
+    // Not next to MediaServer: "./ffmpeg/" there is the default ffmpeg log directory.
+    auto find_bin = [](const string &name) {
+        auto bundled = exeDir() + "../3rdpart/ffmpeg/bin/" + name;
+        struct stat st;
+        if (stat(bundled.data(), &st) == 0 && S_ISREG(st.st_mode) && access(bundled.data(), X_OK) == 0) {
+            return bundled;
+        }
+        return trim(System::execute("which " + name));
+    };
+    string ffmpeg_bin = find_bin("ffmpeg");
+    string ffprobe_bin = find_bin("ffprobe");
 #endif
-    // Default ffmpeg command path is the path in the environment variable
+    // Default ffmpeg command path: next to the executable, else the path in the environment variable
     mINI::Instance()[kBin] = ffmpeg_bin.empty() ? "ffmpeg" : ffmpeg_bin;
     mINI::Instance()[kBinP] = ffprobe_bin.empty() ? "ffprobe" : ffprobe_bin;
     // ffmpeg log save path

@@ -16,6 +16,7 @@ option(ENABLE_ASAN "Enable Address Sanitize" OFF)
 option(ENABLE_CXX_API "Enable C++ API SDK" OFF)
 option(ENABLE_FAAC "Enable FAAC" ON)
 option(ENABLE_FFMPEG "Enable FFmpeg" ON)
+option(ENABLE_BUNDLED_FFMPEG "Build FFmpeg from the 3rdpart/FFmpeg submodule instead of using the system one" ON)
 option(ENABLE_HLS "Enable HLS" ON)
 option(ENABLE_JEMALLOC_STATIC "Enable static linking to the jemalloc library" OFF)
 option(ENABLE_JEMALLOC_DUMP "Enable jemalloc to dump malloc statistics" OFF)
@@ -106,6 +107,15 @@ string(TOLOWER ${CMAKE_SYSTEM_NAME} SYSTEM_NAME_LOWER)
 set(OUTPUT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/release/${SYSTEM_NAME_LOWER}/${CMAKE_BUILD_TYPE})
 set(LIBRARY_OUTPUT_PATH    ${OUTPUT_DIR})
 set(EXECUTABLE_OUTPUT_PATH ${OUTPUT_DIR})
+
+# Bundled shared libraries (FFmpeg, AWS SDK) are found next to the binary on dev machines and in
+# ../lib in the Docker layout (/opt/media/bin + /opt/media/lib). No absolute build paths.
+if(UNIX AND NOT APPLE)
+  set(S3_RUNTIME_RPATH "$ORIGIN;$ORIGIN/../lib")
+  set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+  set(CMAKE_INSTALL_RPATH "${S3_RUNTIME_RPATH}")
+  set(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
+endif()
 
 # Add git version information
 set(COMMIT_HASH "Git_Unknown_commit")
@@ -243,7 +253,14 @@ if(CMAKE_SYSTEM_NAME MATCHES "Linux")
 endif()
 
 # Multiple modules depend on ffmpeg related libraries, unified search
-if(ENABLE_FFMPEG)
+if(ENABLE_FFMPEG AND ENABLE_BUNDLED_FFMPEG)
+  include(BundledFFmpeg)
+  foreach(_ff_name AVUTIL AVCODEC SWSCALE SWRESAMPLE AVFILTER)
+    set(${_ff_name}_FOUND TRUE)
+  endforeach()
+  update_cached_list(MK_LINK_LIBRARIES
+    ffmpeg::avutil ffmpeg::avcodec ffmpeg::swscale ffmpeg::swresample ffmpeg::avfilter)
+elseif(ENABLE_FFMPEG)
   find_package(PkgConfig QUIET)
   # find ffmpeg/libavutil installed
   if(PKG_CONFIG_FOUND)
@@ -339,7 +356,9 @@ if(ENABLE_FFMPEG)
       message(STATUS "found library: ${AVFILTER_LIBRARIES}")
     endif()
   endif()
+endif()
 
+if(ENABLE_FFMPEG)
   if(AVUTIL_FOUND AND AVCODEC_FOUND AND SWSCALE_FOUND AND SWRESAMPLE_FOUND AND AVFILTER_FOUND)
     update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_FFMPEG)
     update_cached_list(MK_LINK_LIBRARIES ${CMAKE_DL_LIBS})
@@ -636,32 +655,3 @@ endif ()
 
 file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/migration/" DESTINATION ${EXECUTABLE_OUTPUT_PATH})
 
-# Copy aws sdk library, which is required when ENABLE_AWS_SDK is enabled
-if(ENABLE_AWS_SDK)
-  if(CMAKE_SYSTEM_NAME MATCHES "Linux")
-    file(GLOB AWS_SDK_LIBS
-      "${CMAKE_CURRENT_SOURCE_DIR}/3rdpart/aws-sdk/bin/lib/lib*.so*"
-    )
-
-    if(AWS_SDK_LIBS)
-      file(COPY ${AWS_SDK_LIBS}
-        DESTINATION ${EXECUTABLE_OUTPUT_PATH}
-      )
-    else()
-      message(WARNING "AWS SDK Linux libraries not found in 3rdpart/aws-sdk/bin/lib")
-    endif()
-
-  elseif(CMAKE_SYSTEM_NAME MATCHES "Windows")
-    file(GLOB AWS_SDK_DLLS
-      "${CMAKE_CURRENT_SOURCE_DIR}/3rdpart/aws-sdk/bin/lib/lib*.dll*"
-    )
-
-    if(AWS_SDK_DLLS)
-      file(COPY ${AWS_SDK_DLLS}
-        DESTINATION ${EXECUTABLE_OUTPUT_PATH}
-      )
-    else()
-      message(WARNING "AWS SDK Windows DLLs not found in 3rdpart/aws-sdk/bin/lib")
-    endif()
-  endif()
-endif()

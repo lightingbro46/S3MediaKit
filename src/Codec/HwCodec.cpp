@@ -24,6 +24,7 @@
 #endif
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <climits>
+#include <dlfcn.h>
 #include <unistd.h>
 #endif
 #include "HwCodec.h"
@@ -1109,7 +1110,21 @@ static bool pickVaapiNode(string &node) {
 }
 #endif
 
+// Which FFmpeg the process really loaded: the bundled libavutil_s3 next to the binary or a system copy.
+static void logFFmpegLibrary() {
+    string path = "unknown";
+#if defined(__linux__) && !defined(__ANDROID__)
+    // The version string lives in libavutil's .rodata, so dladdr names the loaded file.
+    Dl_info info;
+    if (dladdr(av_version_info(), &info) && info.dli_fname) {
+        path = info.dli_fname;
+    }
+#endif
+    InfoL << "FFmpeg " << av_version_info() << " loaded from " << path;
+}
+
 void HwCodecManager::probe() {
+    logFFmpegLibrary();
     probe(ffmpegProbe, true);
 }
 
