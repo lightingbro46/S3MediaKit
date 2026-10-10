@@ -23,6 +23,8 @@ enum class DeviceBrand {
     UNKNOWN,
     BOSCH,
     TOA,
+    HIKVISION,
+    HANWHA,
 };
 
 // What a vendor plugin is and what it needs from the control protocol layer (DeviceFactory::plugins()).
@@ -71,6 +73,16 @@ static DeviceBrand getDeviceBrand(const std::string& manufacturer) {
 
     if (name == "toa") {
         return DeviceBrand::TOA;
+    }
+
+    if (name.find("hikvision") != std::string::npos) {
+        return DeviceBrand::HIKVISION;
+    }
+
+    // Hanwha Vision / Hanwha Techwin, sold as Wisenet; Samsung Techwin before.
+    if (name.find("hanwha") != std::string::npos || name.find("wisenet") != std::string::npos ||
+        name.find("samsung") != std::string::npos) {
+        return DeviceBrand::HANWHA;
     }
 
     // Unknown vendors are driven over plain ONVIF with the speaker's own credentials.

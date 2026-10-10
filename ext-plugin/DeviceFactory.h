@@ -14,9 +14,8 @@ public:
     // code that only reads the registry (SpeakerStatistic) does not link ext-plugin.
     static const std::vector<VendorPluginInfo> &plugins(DeviceType type) {
         static const std::vector<VendorPluginInfo> speaker_plugins = makeSpeakerPlugins();
-        // No camera plugin yet (createCamera).
-        static const std::vector<VendorPluginInfo> none;
-        return type == DeviceType::Speaker ? speaker_plugins : none;
+        static const std::vector<VendorPluginInfo> camera_plugins = makeCameraPlugins();
+        return type == DeviceType::Speaker ? speaker_plugins : camera_plugins;
     }
 
     // The plugin of `brand` for devices of `type`; false when there is none.
@@ -45,8 +44,25 @@ private:
         return ret;
     }
 
+    // Camera plugins only identify the camera (manufacturer, model, serial...): no account of their
+    // own, no protocol constraint.
+    static std::vector<VendorPluginInfo> makeCameraPlugins() {
+        std::vector<VendorPluginInfo> ret;
+        VendorPluginInfo hikvision;
+        hikvision.type = DeviceType::Camera;
+        hikvision.brand = DeviceBrand::HIKVISION;
+        hikvision.name = "Hikvision";
+        ret.push_back(hikvision);
+        VendorPluginInfo hanwha;
+        hanwha.type = DeviceType::Camera;
+        hanwha.brand = DeviceBrand::HANWHA;
+        hanwha.name = "Hanwha Vision";
+        ret.push_back(hanwha);
+        return ret;
+    }
+
     static IDevice::Ptr createSpeaker(const IDeviceConfig& cfg);
-    // static IDevice::Ptr createCamera(const IDeviceConfig& cfg);
+    static IDevice::Ptr createCamera(const IDeviceConfig& cfg);
 };
 
 }//namespace managerkit

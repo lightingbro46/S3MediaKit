@@ -1,6 +1,6 @@
 # Plan: tầng plugin hãng chạy trước giao thức điều khiển (loa trước, camera sau)
 
-Ngày: 2026-10-08. Trạng thái: V1 (loa) đã làm; V2 (camera, no-op) đã làm; V3–V4 chưa làm.
+Ngày: 2026-10-08. Trạng thái: V1 (loa), V2 (camera, no-op), V3 (plugin camera Hikvision + Hanwha, chỉ nhận hãng) đã làm; V4 chưa làm.
 Tiếp nối V0: loa có `manufacturer` rỗng tự nhận hãng (qua API hãng hoặc deviceInfo của giao thức).
 
 ## 1. Bối cảnh
@@ -150,6 +150,29 @@ applyPlugin(): tạo plugin, provision tài khoản nếu ownControlAccount,
 - Điểm mở rộng V4: plugin trả về `DeviceControl` của riêng nó (giao thức `VENDOR` trong `ProtocolLock`),
   dành cho hãng chỉ điều khiển được qua API riêng (SDK/CGI).
 
+### 3.5 V3: plugin camera Hikvision, Hanwha (đã chốt 2026-10-09)
+
+- Phạm vi: **chỉ nhận hãng + deviceInfo**. Không tính năng hãng, không ràng buộc giao thức
+  (`requiredProtocol` rỗng, `ownControlAccount` false): điều khiển vẫn theo cấu hình camera (AUTO dò
+  `camera.control_auto_order`).
+- Registry camera theo thứ tự probe: Hikvision (`GET /ISAPI/System/deviceInfo`, XML DeviceInfo,
+  manufacturer "Hikvision") rồi Hanwha (`GET /stw-cgi/system.cgi?msubmenu=deviceinfo&action=view`,
+  SUNAPI `Key=Value` hoặc JSON, phải có `Model`, manufacturer "Hanwha Vision").
+- Cả hai đăng nhập bằng tài khoản cấu hình của camera, HTTP Digest MD5 (hoặc Basic), ở cổng web của
+  camera; `ext-plugin/VendorHttp` là GET bất đồng bộ trả lời một challenge 401. `VendorCamera` là lớp
+  chung (không phiên, `disconnect` không làm gì).
+- `getDeviceBrand`: "hikvision" → HIKVISION; "hanwha", "wisenet", "samsung" → HANWHA. Loa mang các tên
+  này vẫn không có plugin.
+- `CameraController`: chỉ khi `manufacturer` rỗng mới hỏi API hãng, mỗi chu kỳ, trước giao thức và
+  trong cùng chu kỳ (plugin không cần chuẩn bị gì). Dừng hỏi khi plugin nhận ra hãng, hoặc khi một
+  giao thức kết nối được (`identify` theo deviceInfo của giao thức). Chu kỳ giữ 60 s (không giãn như loa).
+- Ghi ngược (câu hỏi mở 2): như loa, MediaServer không ghi `option.manufacturer`; khi giao thức không
+  báo manufacturer thì caps của webhook mang deviceInfo plugin đọc được.
+- Kiểm thử: `unit.vendor_stage_all` (Digest theo ví dụ RFC 2617, parse hai hãng, probe qua
+  `psia_mock.py --dialect isapi` và `sunapi_mock.py` khi đặt `ISAPI_MOCK_ADDR`/`SUNAPI_MOCK_ADDR`),
+  `CameraProtocolTest` (chỉ camera không khai hãng mới hỏi, hỏi trước giao thức, caps điền từ plugin,
+  giao thức đặt tên thì thôi hỏi, mất mạng vẫn 60 s).
+
 ## 4. Các bước
 
 | # | Việc | Phạm vi | Ảnh hưởng |
@@ -159,7 +182,7 @@ applyPlugin(): tạo plugin, provision tài khoản nếu ownControlAccount,
 | **V1.2** | `VendorStage` + unit test riêng | `Control/` (mới) | chưa ai dùng |
 | **V1.3** | `SpeakerController` dùng `VendorStage`: bỏ các biến `_brand/_detecting/_detect_*`; `setupDeviceController` đọc `ownControlAccount`/`requiredProtocol`; `sharedDsp` từ registry; `probe()` của discovery dùng registry; `SpeakerStatistic::saveOnvifCredentials` dùng `findPlugin` | `Speaker/` | chỉ loa, hành vi giữ nguyên |
 | V2 | `CameraController` giữ `VendorStage(Camera)`, chưa có plugin → không đổi hành vi; unit test khẳng định không probe hãng | `Camera/` | xong: camera no-op, test `CameraProtocolTest.CameraWithoutPluginNeverDetectsItsBrand` |
-| V3 | Plugin camera đầu tiên: `DeviceFactory::createCamera`, đăng ký registry, tính năng hãng qua `CameraController` | `ext-plugin/`, `Camera/` | khi có yêu cầu hãng cụ thể |
+| V3 | Plugin camera Hikvision + Hanwha: chỉ nhận hãng + deviceInfo (mục 3.5) | `ext-plugin/`, `Camera/` | xong: camera có `manufacturer` rỗng |
 | V4 | (tuỳ chọn) Plugin cung cấp `DeviceControl` (`ControlProtocol::VENDOR`) | `Control/` | khi có hãng cần |
 
 V1 là refactor trong phạm vi loa: toàn bộ `SpeakerProtocolTest` (24 test, kể cả 7 test của V0) phải đạt
@@ -180,5 +203,5 @@ mà **không sửa kỳ vọng**.
 
 1. Thứ tự probe khi có nhiều plugin cùng loại: theo thứ tự đăng ký, hay cho cấu hình
    (`speaker.vendor_probe_order`)? V1 dùng thứ tự đăng ký.
-2. Camera có ghi ngược `manufacturer` như loa không, hay chỉ báo qua webhook như hiện tại?
-3. Plugin camera đầu tiên là hãng nào? V3 chờ yêu cầu cụ thể.
+2. ~~Camera có ghi ngược `manufacturer` như loa không?~~ Chốt: qua caps của webhook như loa (mục 3.5).
+3. ~~Plugin camera đầu tiên là hãng nào?~~ Chốt: Hikvision và Hanwha (mục 3.5).

@@ -1438,6 +1438,23 @@ protected:
         return std::make_shared<FakeProtocolControl>(protocol, _world);
     }
 
+    // The camera plugin APIs answer as ProtocolWorld::vendor_* say; logs "vendor".
+    void probeVendorApis(const std::string &, int, const std::string &, const std::string &,
+                         const VendorStage::OnProbe &cb) override {
+        _world->log("vendor");
+        VendorStage::ProbeResult result;
+        result.brand = static_cast<DeviceBrand>(_world->vendor_brand.load());
+        result.rejected = _world->vendor_rejected;
+        result.answered = _world->vendor_answered || result.brand != DeviceBrand::UNKNOWN;
+        if (result.brand != DeviceBrand::UNKNOWN) {
+            result.info.manufacturer = result.brand == DeviceBrand::HIKVISION ? "Hikvision" : "Hanwha Vision";
+            result.info.model = "VENDOR-MODEL";
+            result.info.serialNumber = "VENDOR-SN";
+        }
+        // Answers from another thread, as the HTTP poller of a plugin does.
+        std::thread([cb, result]() { cb(result); }).detach();
+    }
+
 private:
     std::shared_ptr<ProtocolWorld> _world;
 };
@@ -1497,9 +1514,9 @@ protected:
 
     void onPoller(const std::function<void()> &task) { _poller->sync(task); }
 
-    void setup(const std::string &protocol, const std::string &last = "") {
+    void setup(const std::string &protocol, const std::string &last = "", const std::string &manufacturer = "ONVIF") {
         CameraOption option;
-        option.manufacturer = "ONVIF";
+        option.manufacturer = manufacturer;
         option.ip = "127.0.0.1";
         option.port = 1;
         option.controlProtocol = protocol;
@@ -1820,49 +1837,114 @@ TEST_F(CameraProtocolTest, CommandsDuringTheProbeReportTheDeviceOffline) {
     EXPECT_FALSE(contains(_world->events(), "ptz"));
 }
 
-// No camera plugin is registered (V2 of docs/vendor-stage-plan.md): a camera without manufacturer
-// is not detected through vendor APIs, its first cycle probes the control protocols as before.
-TEST_F(CameraProtocolTest, CameraWithoutPluginNeverDetectsItsBrand) {
-    ASSERT_TRUE(DeviceFactory::plugins(DeviceType::Camera).empty());
-    const char *manufacturers[] = {"", "  ", "Bosch", "Hikvision", GENERIC_RTSP_CAMERA};
-    for (auto manufacturer : manufacturers) {
+// ── Camera plugins (Hikvision, Hanwha): they only identify a camera without manufacturer ────────
+
+TEST_F(CameraProtocolTest, OnlyACameraWithoutManufacturerAsksThePluginApis) {
+    struct Case {
+        const char *manufacturer;
+        bool detecting;
+        DeviceBrand plugin; // UNKNOWN = none
+    };
+    const Case cases[] = {
+        {"", true, DeviceBrand::UNKNOWN},
+        {"  ", true, DeviceBrand::UNKNOWN},
+        {"Hikvision", false, DeviceBrand::HIKVISION},
+        {"HIKVISION Digital Technology", false, DeviceBrand::HIKVISION},
+        {"Hanwha Vision", false, DeviceBrand::HANWHA},
+        {"Samsung Techwin", false, DeviceBrand::HANWHA},
+        {"Bosch", false, DeviceBrand::UNKNOWN},
+        {"ONVIF", false, DeviceBrand::UNKNOWN},
+        {GENERIC_RTSP_CAMERA, false, DeviceBrand::UNKNOWN},
+    };
+    for (const auto &c : cases) {
         CameraOption option;
-        option.manufacturer = manufacturer;
+        option.manufacturer = c.manufacturer;
         option.ip = "127.0.0.1";
         option.port = 1;
         option.controlProtocol = "AUTO";
         auto controller = _controller;
-        bool detecting = true, has_plugin = true;
+        bool detecting = false, has_plugin = false;
+        DeviceBrand brand = DeviceBrand::UNKNOWN;
         int interval = 0;
         onPoller([&]() {
             controller->setupController(option);
             const VendorStage &stage = CameraControllerTestPeer::vendorStage(*controller);
             detecting = stage.detecting();
             has_plugin = stage.hasPlugin();
-            interval = stage.cycleIntervalSec(600);
+            brand = has_plugin ? stage.plugin().brand : DeviceBrand::UNKNOWN;
+            interval = stage.cycleIntervalSec(60);
         });
-        EXPECT_FALSE(detecting) << "manufacturer \"" << manufacturer << "\"";
-        EXPECT_FALSE(has_plugin) << "manufacturer \"" << manufacturer << "\"";
-        EXPECT_EQ(60, interval) << "manufacturer \"" << manufacturer << "\"";
+        EXPECT_EQ(c.detecting, detecting) << "manufacturer \"" << c.manufacturer << "\"";
+        EXPECT_EQ(c.plugin != DeviceBrand::UNKNOWN, has_plugin) << "manufacturer \"" << c.manufacturer << "\"";
+        EXPECT_EQ(c.plugin, brand) << "manufacturer \"" << c.manufacturer << "\"";
+        EXPECT_EQ(60, interval) << "manufacturer \"" << c.manufacturer << "\"";
     }
 
-    // Blank manufacturer: the cycle goes straight to the protocols, and stays at 60 s when nothing answers.
-    CameraOption option;
-    option.ip = "127.0.0.2";
-    option.port = 1;
-    option.controlProtocol = "AUTO";
+    // A configured manufacturer goes straight to the protocols.
+    setup("AUTO", "", "Hikvision");
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "vendor"));
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+}
+
+TEST_F(CameraProtocolTest, PluginApiIdentifiesTheCameraAndTheProtocolControlsIt) {
+    _world->vendor_brand = static_cast<int>(DeviceBrand::HIKVISION);
+    _world->setManufacturer("");
+    setup("AUTO", "", "");
+    cycle();
+
+    auto events = _world->events();
+    // Asked first, then the protocols in the same cycle.
+    ASSERT_TRUE(contains(events, "vendor"));
+    EXPECT_LT(indexOf(events, "vendor"), indexOf(events, "create ONVIF"));
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+    EXPECT_TRUE(_controller->isReady());
+    // The protocol named no manufacturer: the capabilities carry what the plugin read.
+    auto caps = _world->caps();
+    EXPECT_EQ("Hikvision", caps.onvifProfile.deviceInfo.manufacturer);
+    EXPECT_EQ("VENDOR-MODEL", caps.onvifProfile.deviceInfo.model);
+    EXPECT_EQ("VENDOR-SN", caps.onvifProfile.deviceInfo.serialNumber);
+
+    _world->clear();
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "vendor")) << "identified: the plugin APIs are not asked again";
+}
+
+TEST_F(CameraProtocolTest, ProtocolNamesTheManufacturerWhenNoPluginApiAnswers) {
+    _world->setManufacturer("Hanwha Vision");
+    setup("AUTO", "", "");
+    cycle();
+    EXPECT_TRUE(contains(_world->events(), "vendor"));
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+    EXPECT_EQ("Hanwha Vision", _world->caps().onvifProfile.deviceInfo.manufacturer);
+    bool detecting = true;
     auto controller = _controller;
-    onPoller([&]() { controller->setupController(option); });
+    onPoller([&]() { detecting = CameraControllerTestPeer::vendorStage(*controller).detecting(); });
+    EXPECT_FALSE(detecting);
+
+    _world->clear();
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "vendor"));
+}
+
+TEST_F(CameraProtocolTest, UnreachableCameraWithoutManufacturerKeepsTheSixtySecondCycle) {
+    _world->vendor_answered = false;
     _world->setResult(ControlProtocol::ONVIF, ConnectError::UNREACHABLE);
+    setup("AUTO", "", "");
     for (int i = 0; i < 3; ++i) cycle();
+    EXPECT_EQ(3, _world->count("vendor"));
     EXPECT_EQ(3, _world->count("create ONVIF"));
     int interval = 0;
-    onPoller([&]() { interval = CameraControllerTestPeer::vendorStage(*controller).cycleIntervalSec(600); });
+    auto controller = _controller;
+    onPoller([&]() { interval = CameraControllerTestPeer::vendorStage(*controller).cycleIntervalSec(60); });
     EXPECT_EQ(60, interval);
 
+    // A protocol that comes back names it.
+    _world->setManufacturer("Hikvision");
     _world->setResult(ControlProtocol::ONVIF, ConnectError::NONE);
     cycle();
     EXPECT_EQ(ControlProtocol::ONVIF, current());
+    EXPECT_EQ("Hikvision", _world->caps().onvifProfile.deviceInfo.manufacturer);
 }
 
 TEST(ControlProtocolSettingTest, UnknownValuesMeanAuto) {

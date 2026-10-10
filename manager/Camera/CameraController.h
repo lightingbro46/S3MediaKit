@@ -99,11 +99,21 @@ protected:
     // supported); unit tests override it to return a fake device.
     virtual DeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &address,
                                                          const std::string &username, const std::string &password);
+    // Logs in to the camera plugin APIs (VendorStage::probe); unit tests override it. `cb` may run on any thread.
+    virtual void probeVendorApis(const std::string &ip, int port, const std::string &username, const std::string &password,
+                                 const VendorStage::OnProbe &cb);
 
 private:
     friend class CameraControllerTestPeer; // unit tests drive the media profile sync directly
 
     void onManager();
+    // The connect/probe of the control protocols, once onManager() decided a cycle runs.
+    void runControlCycle();
+
+    // ── Vendor plugin (on _poller) ──
+    // Manufacturer blank: asks the camera plugin APIs who made the camera, then runs the control cycle.
+    void startVendorDetect();
+    void onVendorProbeDone(uint64_t generation, const VendorStage::ProbeResult &result);
 
     void onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps);
 
@@ -115,8 +125,8 @@ private:
                      ConnectError err, DeviceFailure failure,
                      const DeviceClockReading &clock);
     // Result of a connect() of the current controller: locks the protocol, or counts the failures that
-    // say the camera no longer speaks it (AUTO only).
-    void onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err);
+    // say the camera no longer speaks it (AUTO only). `manufacturer`: its device information on success.
+    void onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err, const std::string &manufacturer = "");
     // A controller connected with `protocol`: drops the profile/rule/preset state of the previous
     // protocol when it differs, then locks AUTO to it.
     void onProtocolConnected(ControlProtocol protocol);
@@ -206,9 +216,14 @@ private:
     bool _configured = false;
     // Fixed protocol of the option, or the one AUTO locked to (restored by setLastControlProtocol).
     ProtocolLock _lock;
-    // Brand and vendor plugin of the camera (the step before the control protocols). No camera
-    // plugin is registered yet: it never detects nor has a plugin, and the cycle stays at 60 s.
+    // Brand and vendor plugin of the camera (the step before the control protocols). A camera
+    // plugin only identifies the camera: with a blank manufacturer each cycle first asks the plugin
+    // APIs, until a plugin or a control protocol names the manufacturer.
     VendorStage _vendor_stage;
+    // What the plugin read when it identified the camera; reported when the protocol names no manufacturer.
+    IDeviceInfo _vendor_info;
+    // HTTP port of the camera (its web port), where the plugin APIs answer.
+    int _web_port = 80;
     bool _probing = false;
     // lastFailure() of the controller the last failed AUTO probe reported; read when there is no controller.
     DeviceFailure _probe_failure = DeviceFailure::None;

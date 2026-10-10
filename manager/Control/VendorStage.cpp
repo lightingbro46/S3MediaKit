@@ -86,6 +86,7 @@ static void probePlugin(const std::vector<VendorPluginInfo> &plugins, size_t ind
         if (success) {
             result.brand = found->getBrand();
             result.answered = true;
+            result.info = found->getDeviceInfo();
             cb(result);
             found->disconnect([](bool, const std::string &) {});
             return;

@@ -126,7 +126,8 @@ def camera_entry(env, state):
         "name": "E2E camera",
         "ip": ctl["ip"] or "127.0.0.1",
         "httpPort": ctl["port"],
-        "manufacturer": "Generic",
+        # Rỗng: camera nhận hãng qua plugin (Hikvision/Hanwha) hoặc deviceInfo của giao thức.
+        "manufacturer": os.environ.get("E2E_CAMERA_MANUFACTURER", "Generic"),
         "model": "RTSP",
         "username": ctl["user"],
         "password": ctl["password"],

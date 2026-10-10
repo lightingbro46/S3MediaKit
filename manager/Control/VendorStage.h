@@ -17,6 +17,7 @@ public:
         DeviceBrand brand = DeviceBrand::UNKNOWN; // brand whose API accepted the login; UNKNOWN = none
         bool rejected = false;                    // a plugin API answered 401/403
         bool answered = false;                    // some plugin API answered (not refused, no timeout)
+        IDeviceInfo info;                         // what the plugin of `brand` read from the device
     };
     typedef std::function<void(const ProbeResult &result)> OnProbe;
 

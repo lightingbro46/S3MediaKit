@@ -173,18 +173,17 @@ void CameraController::setupController(const CameraOption &option) {
         return;
     }
 
-    string address = option.ip;
-    if (option.autoWebPort) {
-        address += ":" + (option.port > 0 ? to_string(option.port) : "80");
-    } else {
-        address += ":" + (option.webPort > 0 ? to_string(option.webPort) : "80");
-    }
+    const int web_port = option.autoWebPort ? (option.port > 0 ? option.port : 80)
+                                            : (option.webPort > 0 ? option.webPort : 80);
+    string address = option.ip + ":" + to_string(web_port);
 
     // save controller option and PTZ settings for later use
     _address      = address;
+    _web_port     = web_port;
     _ctrl_option  = ControllerOption::from(option);
     _lock.setSetting(option.controlProtocol);
     _vendor_stage.configure(DeviceType::Camera, option.manufacturer);
+    _vendor_info = IDeviceInfo();
     _enablePTZControl = option.enablePTZControl;
     _enableTimeSync   = option.enableTimeSync;
     _reversePanAxis   = option.reversePanAxis;
@@ -197,7 +196,6 @@ void CameraController::setupController(const CameraOption &option) {
 
     // One controller, one protocol: the fixed one, or the one AUTO locked to. An AUTO camera without
     // a lock gets its controller from the probe in onManager().
-    // todo: a camera plugin (_vendor_stage.hasPlugin()) prepares the control and limits the protocol
     ControlProtocol protocol = _lock.fixedOrLocked();
     if (protocol != ControlProtocol::NONE) {
         _device_ctr = createDeviceControl(protocol, address, option.username, option.password);
@@ -205,6 +203,7 @@ void CameraController::setupController(const CameraOption &option) {
     DebugL << "Controller of device: " << _tuple.shortUrl() << " (" << address << ")"
         << ", protocol setting: " << controlProtocolSetting(option.controlProtocol)
         << ", using: " << (protocol == ControlProtocol::NONE ? "probe" : controlProtocolToString(protocol))
+        << (_vendor_stage.detecting() ? ", manufacturer: detect" : "")
         << ", username: " << (option.username.empty() ? "empty" : "******")
         << ", password: " << (option.password.empty() ? "empty" : "******");
 }
@@ -246,13 +245,21 @@ void CameraController::onManager() {
 
     GET_CONFIG(int, auth_retry_sec, Camera::kAuthRetrySec);
     const uint64_t now = time(nullptr);
-    // Vendor detection (a blank manufacturer probing the plugin APIs) only exists once a camera
-    // plugin does: until then this is always 60 s.
+    // 60 s also while detecting the manufacturer: a camera keeps the reconnect pace it always had.
     if (_probing || !_pacer.due(now, _vendor_stage.cycleIntervalSec(60), auth_retry_sec)) {
         // avoid reconnecting too frequently, and logging in with a rejected password even less often
         return;
     }
     _pacer.onAttempt(now);
+    if (_vendor_stage.detecting()) {
+        startVendorDetect();
+        return;
+    }
+    runControlCycle();
+}
+
+void CameraController::runControlCycle() {
+    const uint64_t now = time(nullptr);
     if (!_device_ctr) {
         startProtocolProbe();
         return;
@@ -401,9 +408,10 @@ void CameraController::publishConnected(const DeviceControl::Ptr &device_ctr, bo
           << " (" << _address << ") connected";
     // Queued ahead of the profile sync below: a protocol switch drops the old profile state first.
     std::weak_ptr<CameraController> weak_self = shared_from_this();
-    _poller->async([weak_self, device_ctr]() {
+    const string manufacturer = device_ctr->getDeviceInfo().manufacturer;
+    _poller->async([weak_self, device_ctr, manufacturer]() {
         if (auto self = weak_self.lock()) {
-            self->onConnectResult(device_ctr, ConnectError::NONE);
+            self->onConnectResult(device_ctr, ConnectError::NONE, manufacturer);
         }
     }, false);
     if (sync_clock) {
@@ -475,6 +483,51 @@ void CameraController::startProtocolProbe() {
     });
 }
 
+void CameraController::probeVendorApis(const std::string &ip, int port, const std::string &username,
+                                       const std::string &password, const VendorStage::OnProbe &cb) {
+    IDeviceConfig cfg;
+    cfg.id       = _tuple.device_id;
+    cfg.ip       = ip;
+    cfg.port     = port;
+    cfg.username = username;
+    cfg.password = password;
+    VendorStage::probe(DeviceType::Camera, cfg, cb);
+}
+
+void CameraController::startVendorDetect() {
+    _probing = true;
+    _vendor_stage.startCycle();
+    const uint64_t generation = _ctrl_generation.load();
+    auto poller = _poller;
+    std::weak_ptr<CameraController> weak_self = shared_from_this();
+    probeVendorApis(_ctrl_option.ip, _web_port, _ctrl_option.username, _ctrl_option.password,
+        [weak_self, poller, generation](const VendorStage::ProbeResult &result) {
+            poller->async([weak_self, generation, result]() {
+                if (auto self = weak_self.lock()) {
+                    self->onVendorProbeDone(generation, result);
+                }
+            }, false);
+        });
+}
+
+void CameraController::onVendorProbeDone(uint64_t generation, const VendorStage::ProbeResult &result) {
+    if (generation != _ctrl_generation.load() || !_vendor_stage.detecting()) {
+        return;
+    }
+    _probing = false;
+    if (_vendor_stage.onVendorProbe(result)) {
+        _vendor_info = result.info;
+        InfoL << "Device " << _tuple.shortUrl() << " (" << _address << ") detected through its vendor API: "
+              << _vendor_stage.name() << (result.info.model.empty() ? "" : " " + result.info.model);
+    } else if (result.rejected) {
+        // A control protocol may still name the manufacturer; otherwise the next cycle asks again.
+        WarnL << "Device " << _tuple.shortUrl() << " (" << _address
+              << "): a vendor API rejected the account, manufacturer not detected yet";
+    }
+    // The plugin only identifies the camera: control goes on over the protocols in the same cycle.
+    runControlCycle();
+}
+
 void CameraController::onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
                                    ConnectError err, DeviceFailure failure,
                                    const DeviceClockReading &clock) {
@@ -503,13 +556,19 @@ void CameraController::onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_
     finishReconnect(result);
 }
 
-void CameraController::onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err) {
+void CameraController::onConnectResult(const DeviceControl::Ptr &device_ctr, ConnectError err, const std::string &manufacturer) {
     if (!device_ctr || device_ctr != _device_ctr) {
         return;
     }
     onAuthResult(err);
     if (err == ConnectError::NONE) {
         onProtocolConnected(device_ctr->protocol());
+        // Controlled without the plugin APIs answering: the protocol names the manufacturer (it reaches
+        // the backend through the capabilities), and the plugin APIs are not asked again.
+        if (_vendor_stage.detecting() && _vendor_stage.identify(manufacturer)) {
+            InfoL << "Device " << _tuple.shortUrl() << " (" << _address << ") reports manufacturer \"" << manufacturer
+                  << "\" over " << controlProtocolToString(device_ctr->protocol());
+        }
         return;
     }
     GET_CONFIG(int, reprobe_failures, Camera::kReprobeFailures);
@@ -881,7 +940,19 @@ void CameraController::onControllerReady(bool connect, const std::string &status
 
     _ready = connect;
     _err_msg = status;
-    auto data = toolkit::Any(caps);
+    std::shared_ptr<DeviceCapabilities> reported = caps;
+    if (caps && caps->onvifProfile.deviceInfo.manufacturer.empty() && !_vendor_info.manufacturer.empty()) {
+        // No control protocol told who made it: what the camera plugin read.
+        reported = std::make_shared<DeviceCapabilities>(*caps);
+        auto &info = reported->onvifProfile.deviceInfo;
+        info.manufacturer    = _vendor_info.manufacturer;
+        info.model           = _vendor_info.model;
+        info.firmwareVersion = _vendor_info.firmwareVersion;
+        info.serialNumber    = _vendor_info.serialNumber;
+        info.hardwareId      = _vendor_info.hardwareId;
+        info.macAddress      = _vendor_info.macAddress;
+    }
+    auto data = toolkit::Any(reported);
     DeviceSourceEventInterceptor::onControllerReady(DeviceSource::NullDeviceSource(), connect, status, data);
 }
 

@@ -74,6 +74,10 @@ Tham số `camera` (giá trị không truyền được giữ nguyên từ lần
 `--disable-audio 0|1`, `--motion 0|1`, `--rtp-transport TCP|UDP|AUTO`,
 `--keep-max-hours N`, `--keep-min-hours N`, `--present 0|1` (gỡ camera khỏi cấu hình).
 
+Điều khiển camera (tuỳ chọn): `E2E_CAMERA_IP`, `E2E_CAMERA_HTTP_PORT` (80), `E2E_CAMERA_USER`, `E2E_CAMERA_PASS`,
+`E2E_CONTROL_PROTOCOL` (`AUTO`), `E2E_CAMERA_PTZ` (`0`), `E2E_CAMERA_MANUFACTURER` (`Generic`; rỗng để camera nhận
+hãng qua plugin Hikvision/Hanwha, ví dụ `psia_mock.py --dialect isapi --onvif-401` hoặc `sunapi_mock.py`).
+
 Loa IP (tuỳ chọn, chỉ khi đặt `E2E_SPEAKER_IP`): thêm loa `e2e-speaker` vào `speakers` của `api-config.json`
 với `E2E_SPEAKER_HTTP_PORT` (80), `E2E_SPEAKER_USER`, `E2E_SPEAKER_PASS`, `E2E_SPEAKER_PROTOCOL` (`AUTO`),
 `E2E_SPEAKER_TIME_SYNC` (`1`, `speakerAdvanceConfig.onvif.enableTimeSync`), `E2E_SPEAKER_MANUFACTURER` (`Generic`).
