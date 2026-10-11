@@ -5,6 +5,7 @@
 #include "Control/DeviceControl.h"
 #include "Control/OnvifDeviceControl.h"
 #include "Control/VendorStage.h"
+#include "Control/OnvifEventSubscriber.h"
 #include "Common/SerialTaskQueue.h"
 
 namespace managerkit {
@@ -137,6 +138,9 @@ private:
 
     void onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps);
 
+    // Device queue, after an ONVIF connect(): hands the event endpoint (or none) to the subscriber on _poller.
+    void publishEventEndpoint(const DeviceControl::Ptr &device_ctr, const OnvifEventProfile &profile);
+
     // ── Control protocol selection (all on _poller unless noted) ──
     // AUTO without a lock: tries the protocols of camera.control_auto_order in one device task, keeping
     // at most one controller alive, and hands the first that connects to onProbeDone.
@@ -216,6 +220,8 @@ private:
     toolkit::EventPoller::Ptr _poller;
     // Serializes all blocking calls to this camera on the shared `device` pool.
     SerialTaskQueue::Ptr _device_queue;
+    // ONVIF event subscription of this camera; only touched on _poller.
+    OnvifEventSubscriber::Ptr _event_subscriber;
     // Incremented (on _poller) by every PTZ command; a pending continuous-move stop only fires
     // while it is unchanged, so it cannot stop a newer PTZ command.
     uint64_t _ptz_generation = 0;

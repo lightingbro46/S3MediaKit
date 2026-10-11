@@ -155,14 +155,14 @@ std::string SoapUtil::createUuidString() {
 }
 
 static tuple<string/*passdigest*/, string/*nonce*/, string/*timestamp*/>
-makePasswordDigest(const string &user_name, const string &passwd) {
+makePasswordDigest(const string &user_name, const string &passwd, const string &timestamp_in = "") {
     std::mt19937 rng(std::random_device{}());
     string nonce;
     nonce.resize(16);
     for (auto &ch : nonce) {
         ch = rng() & 0xFF;
     }
-    auto timestamp = getTimeStr("%Y-%m-%dT%H:%M:%S%z");
+    auto timestamp = timestamp_in.empty() ? getTimeStr("%Y-%m-%dT%H:%M:%S%z") : timestamp_in;
     auto passdigest = SHA1::encode_bin(nonce + timestamp + passwd);
     return std::make_tuple(encodeBase64(passdigest), encodeBase64(nonce), timestamp);
 }
@@ -186,6 +186,25 @@ std::string SoapUtil::createSoapRequest(const string &body, const string &user_n
         auto req = makePasswordDigest(user_name, passwd);
         header += createSoapSecurity(user_name, std::get<0>(req), std::get<1>(req), std::get<2>(req));
     }
+    header += R"(</s:Header><s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">)";
+    header += body;
+    header += R"(</s:Body></s:Envelope>)";
+    return header;
+}
+
+std::string SoapUtil::createSoapRequest(const string &body, const string &user_name, const string &passwd,
+                                        const string &extra_header, time_t clock_offset_sec) {
+    string header = R"(<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://www.w3.org/2005/08/addressing"><s:Header>)";
+    if (!user_name.empty() && !passwd.empty()) {
+        time_t now = time(nullptr) + clock_offset_sec;
+        struct tm tm_utc;
+        gmtime_r(&now, &tm_utc);
+        char created[32];
+        strftime(created, sizeof(created), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+        auto req = makePasswordDigest(user_name, passwd, created);
+        header += createSoapSecurity(user_name, std::get<0>(req), std::get<1>(req), std::get<2>(req));
+    }
+    header += extra_header;
     header += R"(</s:Header><s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">)";
     header += body;
     header += R"(</s:Body></s:Envelope>)";
@@ -358,7 +377,7 @@ static string urlPath(const string &url) {
 
 static void sendSoapRequest_l(const string &url, const string &SOAPAction, const string &body,
                               const SoapUtil::SoapRequestCB &func, float timeout_sec, const string &user_name,
-                              const string &pwd, const string &authorization) {
+                              const string &pwd, const string &authorization, bool quiet) {
     HttpRequester::Ptr requester(new HttpRequester);
     requester->setMethod("POST");
     requester->setBody(body);
@@ -370,13 +389,13 @@ static void sendSoapRequest_l(const string &url, const string &SOAPAction, const
     }
     std::shared_ptr<Ticker> ticker(new Ticker);
     requester->startRequester(url, [url, SOAPAction, body, func, timeout_sec, user_name, pwd, authorization, requester,
-                                    ticker](const SockException &ex, const Parser &parser) mutable {
+                                    ticker, quiet](const SockException &ex, const Parser &parser) mutable {
 
         onceToken token(nullptr, [&]() mutable {
             requester.reset();
         });
         auto invoker = [&](const SoapObject &node, const SoapErr &err) {
-            if (err) {
+            if (err && !quiet) {
                 WarnL << err;
             }
             if (func) {
@@ -398,14 +417,28 @@ static void sendSoapRequest_l(const string &url, const string &SOAPAction, const
             auto auth = SoapUtil::makeHttpAuthorization(challenges, "POST", urlPath(url), user_name, pwd,
                                                         makeRandStr(16), allow_basic);
             if (!auth.empty()) {
-                sendSoapRequest_l(url, SOAPAction, body, func, timeout_sec, user_name, pwd, auth);
+                sendSoapRequest_l(url, SOAPAction, body, func, timeout_sec, user_name, pwd, auth, quiet);
                 return;
             }
             WarnL << "Onvif request " << url << " got 401 with no challenge that can be answered"
                   << (allow_basic ? "" : " (HTTP Basic is refused unless onvif.allowHttpBasicAuth=1)");
         }
         if (parser.status() != "200") {
-            invoker(SoapObject(), SoapErr(url, SOAPAction, ex, parser));
+            // Most faults come with 400/500: keep the fault so a caller can tell why.
+            string fault_text;
+            if (!parser.content().empty()) {
+                SoapObject root;
+                try {
+                    root.load(parser.content().data(), parser.content().size());
+                    auto fault = root["Envelope/Body/Fault"];
+                    if (fault) {
+                        fault_text = string(fault["Code/Subcode/Value"].as_xml().text().as_string()) + " " +
+                                     fault["Reason/Text"].as_xml().text().as_string();
+                    }
+                } catch (std::exception &) {
+                }
+            }
+            invoker(SoapObject(), SoapErr(url, SOAPAction, ex, parser, fault_text));
             return;
         }
         SoapObject root;
@@ -424,7 +457,8 @@ static void sendSoapRequest_l(const string &url, const string &SOAPAction, const
         }
         auto fault = body["Fault"];
         if (fault) {
-            auto err = StrPrinter << "[onvif soap fault]:" << fault["Reason/Text"].as_xml().text().as_string() << endl;;
+            auto err = StrPrinter << "[onvif soap fault]:" << fault["Code/Subcode/Value"].as_xml().text().as_string() << " "
+                                  << fault["Reason/Text"].as_xml().text().as_string() << endl;
             invoker(SoapObject(), SoapErr(url, SOAPAction, ex, parser, err));
             return;
         }
@@ -434,8 +468,8 @@ static void sendSoapRequest_l(const string &url, const string &SOAPAction, const
 }
 
 void SoapUtil::sendSoapRequest(const string &url, const string &SOAPAction, const string &body, const SoapRequestCB &func,
-                               float timeout_sec, const string &user_name, const string &pwd) {
-    sendSoapRequest_l(url, SOAPAction, body, func, timeout_sec, user_name, pwd, "");
+                               float timeout_sec, const string &user_name, const string &pwd, bool quiet) {
+    sendSoapRequest_l(url, SOAPAction, body, func, timeout_sec, user_name, pwd, "", quiet);
 }
 
 void SoapUtil::sendGetDeviceInformation(const std::string &device_service, const std::string &user_name,

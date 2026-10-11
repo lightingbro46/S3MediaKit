@@ -6,7 +6,8 @@ camera sẽ làm ngập stdout), bật keep-alive, và đếm hook theo path đ�
 kiểm được rằng luồng nào thực sự lên/xuống.
 
 Webhook kết quả video config rule (`.../action-callback`) được giữ nguyên body và header
-`Idempotency-Key`, đọc lại qua `GET /_mock/hooks?path=action-callback`.
+`Idempotency-Key`, đọc lại qua `GET /_mock/hooks?path=action-callback`. Webhook
+`media-device-info` cũng được giữ body (kiểm khối `onvifEvents`): `GET /_mock/hooks?path=media-device-info`.
 
 Với `--config-root WORK`, hook lấy cấu hình (`/api/media-server/configuration-2nd-gen`) trả nội
 dung `WORK/<mediaServerId>/api-config.json`, đọc lại mỗi lần. Bản Release không đọc
@@ -27,7 +28,7 @@ COUNTS = defaultdict(int)
 STREAMS = {}
 # Body của các hook cần kiểm nội dung, theo thứ tự nhận.
 RECORDED = []
-RECORD_SUFFIXES = ("action-callback",)
+RECORD_SUFFIXES = ("action-callback", "media-device-info")
 LOCK = threading.Lock()
 STARTED = time.time()
 CONFIG_ROOT = None

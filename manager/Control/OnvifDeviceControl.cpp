@@ -7,6 +7,8 @@
 #include "Common/config.h"
 #include "Extension/Plugin.h"
 #include "Onvif/SoapUtil.h"
+#include "Onvif/OnvifEvent.h"
+#include "Onvif/OnvifEventTopics.h"
 #include "OnvifDeviceControl.h"
 #include <algorithm>
 #include <chrono>
@@ -50,6 +52,41 @@ static onceToken token([]() {
     mINI::Instance()[kClockSyncEnable] = 1;
 });
 } // namespace OnvifCtrl
+
+namespace OnvifEventCfg {
+const string kEventEnable = ONVIF_CTRL_FIELD"eventEnable";
+const string kPullTimeoutSec = ONVIF_CTRL_FIELD"eventPullTimeoutSec";
+const string kPullGraceSec = ONVIF_CTRL_FIELD"eventPullGraceSec";
+const string kMessageLimit = ONVIF_CTRL_FIELD"eventMessageLimit";
+const string kTerminationSec = ONVIF_CTRL_FIELD"eventTerminationSec";
+const string kRenewMarginSec = ONVIF_CTRL_FIELD"eventRenewMarginSec";
+const string kRetryMaxSec = ONVIF_CTRL_FIELD"eventRetryMaxSec";
+const string kMaxConcurrentSubscribe = ONVIF_CTRL_FIELD"eventMaxConcurrentSubscribe";
+const string kStartJitterMs = ONVIF_CTRL_FIELD"eventStartJitterMs";
+const string kSubscribeFilter = ONVIF_CTRL_FIELD"eventSubscribeFilter";
+const string kMaxTopics = ONVIF_CTRL_FIELD"eventMaxTopics";
+const string kLogPerCameraPerMin = ONVIF_CTRL_FIELD"eventLogPerCameraPerMin";
+const string kStatsIntervalSec = ONVIF_CTRL_FIELD"eventStatsIntervalSec";
+
+static onceToken token([]() {
+    mINI::Instance()[kEventEnable] = 1;
+    // A camera holds an empty pull this long; 300 cameras then cost ~30 requests/s when quiet.
+    mINI::Instance()[kPullTimeoutSec] = 10;
+    mINI::Instance()[kPullGraceSec] = 5;
+    mINI::Instance()[kMessageLimit] = 64;
+    // Short, and renewed: a subscription left behind by a crash frees its slot on the camera soon.
+    mINI::Instance()[kTerminationSec] = 60;
+    mINI::Instance()[kRenewMarginSec] = 10;
+    mINI::Instance()[kRetryMaxSec] = 300;
+    // After a network outage every camera subscribes again; spread the load on cameras and pollers.
+    mINI::Instance()[kMaxConcurrentSubscribe] = 16;
+    mINI::Instance()[kStartJitterMs] = 5000;
+    mINI::Instance()[kSubscribeFilter] = 1;
+    mINI::Instance()[kMaxTopics] = 512;
+    mINI::Instance()[kLogPerCameraPerMin] = 60;
+    mINI::Instance()[kStatsIntervalSec] = 60;
+});
+} // namespace OnvifEventCfg
 
 namespace managerkit {
 
@@ -614,6 +651,8 @@ bool OnvifControl::connect() {
 
     getRelayOutputCapabilities(); // non-critical
 
+    getEventCapabilities(); // non-critical
+
     getRecordingSummary();
 
     getStorageConfiguration();
@@ -889,6 +928,21 @@ bool OnvifControl::getDeviceCapabilities() {
             }
         }
     }
+    _strEventsUrl.clear();
+    _eventProfile = OnvifEventProfile();
+    if (GetCapabilitiesResponse.Capabilities->Events != nullptr && !GetCapabilitiesResponse.Capabilities->Events->XAddr.empty()) {
+        _strEventsUrl = GetCapabilitiesResponse.Capabilities->Events->XAddr;
+        int indexFooter = _strEventsUrl.find("/onvif");
+        // Check if contains onvif then replace cameraip to header
+        if (indexFooter > 0) {
+            _strEventsUrl.erase(0, indexFooter);
+            _strEventsUrl.insert(0, "http://" + _strDeviceIp);
+        }
+        _eventProfile.isEventSupported = true;
+        _eventProfile.isPullPointSupported = GetCapabilitiesResponse.Capabilities->Events->WSPullPointSupport;
+        TraceL << "Events XAddr:  " << _strEventsUrl << ", pull point " << _eventProfile.isPullPointSupported;
+    }
+
     if (GetCapabilitiesResponse.Capabilities->Extension != nullptr && GetCapabilitiesResponse.Capabilities->Extension->Search != nullptr) {
         // A member, like the other service URLs: soap_endpoint keeps a pointer to it, and a
         // thread_local shared by every camera connecting on this thread sent its search/replay
@@ -2444,6 +2498,55 @@ bool OnvifControl::getRelayOutputCapabilities() {
     }
     TraceL << "Relay output count: " << _relayOutputProfiles.size();
 
+    return true;
+}
+
+bool OnvifControl::getEventCapabilities() {
+    if (_strEventsUrl.empty()) {
+        return false;
+    }
+    if (!setCredentials()) {
+        return false;
+    }
+    PullPointSubscriptionBindingProxy proxy(_m_soap);
+    proxy.soap_endpoint = _strEventsUrl.c_str();
+    _tev__GetEventProperties *GetEventProperties = soap_new__tev__GetEventProperties(_m_soap);
+    _tev__GetEventPropertiesResponse GetEventPropertiesResponse;
+    if (callWithAuth([&] { return proxy.GetEventProperties(GetEventProperties, GetEventPropertiesResponse); }) != SOAP_OK) {
+        reportError();
+        WarnL << "GetEventProperties of " << _strDeviceIp << " failed, no event topics: " << _soapErrMsg;
+        return false;
+    }
+    std::vector<std::string> fragments;
+    if (GetEventPropertiesResponse.wstop__TopicSet) {
+        for (auto *xml : GetEventPropertiesResponse.wstop__TopicSet->__any) {
+            if (xml) {
+                fragments.emplace_back(xml);
+            }
+        }
+    }
+    GET_CONFIG(int, max_topics, OnvifEventCfg::kMaxTopics);
+    bool truncated = false;
+    auto topics = mediakit::parseOnvifTopicSet(fragments, max_topics > 0 ? max_topics : 0, &truncated);
+    _eventProfile.topics.clear();
+    size_t supported = 0;
+    for (auto &desc : topics) {
+        OnvifEventTopic topic;
+        topic.topic = desc.topic;
+        auto rule = mediakit::OnvifEventTopics::classify(desc.topic);
+        topic.eventType = rule ? rule->eventType : "";
+        topic.isSupported = rule != nullptr;
+        topic.isProperty = desc.isProperty;
+        topic.sourceItems = std::move(desc.sourceItems);
+        topic.dataItems = std::move(desc.dataItems);
+        supported += topic.isSupported ? 1 : 0;
+        _eventProfile.topics.push_back(std::move(topic));
+    }
+    if (truncated) {
+        WarnL << "Camera " << _strDeviceIp << " has more than " << max_topics << " event topics (onvif.eventMaxTopics), the rest are ignored";
+    }
+    InfoL << "Camera " << _strDeviceIp << " event topics: " << _eventProfile.topics.size() << ", supported " << supported
+          << ", pull point " << _eventProfile.isPullPointSupported;
     return true;
 }
 

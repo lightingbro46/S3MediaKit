@@ -59,7 +59,7 @@ add_test(NAME unit.replay_all COMMAND unit_replay)
 set_tests_properties(unit.replay_all PROPERTIES LABELS unit TIMEOUT 15)
 add_s3_unit_test(unit_http_body http/test_http_body.cpp)
 add_s3_unit_test(unit_http_splitters http/test_http_splitters.cpp http/test_websocket_splitter.cpp)
-add_s3_unit_test(unit_xml onvif/test_pugixml.cpp onvif/test_soap_object.cpp)
+add_s3_unit_test(unit_xml onvif/test_pugixml.cpp onvif/test_soap_object.cpp onvif/test_onvif_event.cpp)
 add_s3_unit_test(unit_codec codec/test_h26x.cpp codec/test_audio_codec.cpp codec/test_hw_codec.cpp codec/test_mjpeg_ingest.cpp)
 target_link_libraries(unit_codec PRIVATE S3MediaKit::ext-codec)
 # Static codec registration logs during --gtest_list_tests, which prevents
@@ -229,6 +229,20 @@ target_link_libraries(unit_onvif_http_auth PRIVATE
 target_include_directories(unit_onvif_http_auth PRIVATE "${PROJECT_SOURCE_DIR}/server")
 add_test(NAME unit.onvif_http_auth_all COMMAND unit_onvif_http_auth)
 set_tests_properties(unit.onvif_http_auth_all PROPERTIES LABELS unit TIMEOUT 60)
+
+# ONVIF event PullPoint subscription state machine against a fake transport.
+add_s3_unit_test(unit_onvif_event_subscriber
+  manager/test_onvif_event_subscriber.cpp
+  "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
+target_link_libraries(unit_onvif_event_subscriber PRIVATE
+  -Wl,--start-group
+  S3MediaKit::MediaKit
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec
+  -Wl,--end-group)
+target_include_directories(unit_onvif_event_subscriber PRIVATE "${PROJECT_SOURCE_DIR}/server")
+add_test(NAME unit.onvif_event_subscriber_all COMMAND unit_onvif_event_subscriber)
+set_tests_properties(unit.onvif_event_subscriber_all PROPERTIES LABELS unit TIMEOUT 60)
 
 # CameraManager collects camera online/offline changes into one report; server/ symbols come from the
 # tier-storage stubs.

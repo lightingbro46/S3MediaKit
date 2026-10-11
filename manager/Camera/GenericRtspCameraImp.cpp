@@ -40,10 +40,12 @@ void GenericRtspCameraImp::setCameraOption(const CameraOption& option) {
     if (_option == option) {
         return; // No change
     }
+    // media-device-info reports the event switch: send it again even when nothing else changed.
+    const bool event_switch_changed = _option.enableOnvifEvent != option.enableOnvifEvent;
     _option = option;
     _enabled = option.enableActive;
     saveCameraOption(option);
-    publishDeviceCapabilities(false);
+    publishDeviceCapabilities(event_switch_changed);
     
     if (!_enabled.load()) {
         stop();

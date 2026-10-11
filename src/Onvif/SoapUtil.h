@@ -49,6 +49,10 @@ public:
     operator bool() const;
     bool empty() const;
     int httpCode() const;
+    // No answer at all (connect failure, timeout, connection reset).
+    bool networkError() const { return (bool)_net_err; }
+    // SOAP fault of the answer, "<subcode> <reason>" (also with a non-200 status), else other errors.
+    const std::string &detail() const { return _other_err; }
 
 private:
     std::string _url;
@@ -66,6 +70,12 @@ public:
     static std::string createDiscoveryString(const std::string &uuid = "");
     static std::string createUuidString();
     static std::string createSoapRequest(const std::string &body, const std::string &user_name = "", const std::string &passwd = "");
+    /**
+     * Same, with `extra_header` (WS-Addressing...) added to the SOAP header, and the WS-Security
+     * timestamp written in UTC on the camera clock: local clock + `clock_offset_sec`.
+     */
+    static std::string createSoapRequest(const std::string &body, const std::string &user_name, const std::string &passwd,
+                                         const std::string &extra_header, time_t clock_offset_sec);
 
     using SoapRequestCB = std::function<void(const SoapObject &node, const SoapErr &err)>;
     /**
@@ -74,7 +84,7 @@ public:
      */
     static void sendSoapRequest(const std::string &url, const std::string &action, const std::string &body,
                                 const SoapRequestCB &func = nullptr, float timeout_sec = 10,
-                                const std::string &user_name = "", const std::string &pwd = "");
+                                const std::string &user_name = "", const std::string &pwd = "", bool quiet = false);
 
     /**
      * Authorization header value answering one of the WWW-Authenticate challenges of a 401

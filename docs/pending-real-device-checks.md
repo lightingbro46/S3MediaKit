@@ -8,6 +8,7 @@ File này chỉ giữ phần chưa kiểm được vì thiếu thiết bị ho�
 
 | Plan đã xoá | Việc còn lại |
 |---|---|
+| Sự kiện ONVIF (`onvif.event*`, [camera-control-protocol.md](camera-control-protocol.md) mục "Sự kiện ONVIF") | Hikvision (user ONVIF do plugin tạo), Hanwha, Dahua, Axis nếu có: danh sách topic trong `info.txt`, camera có nhận filter `ConcreteSet` không (hay nhận mà không gửi gì), motion/tamper/digital input, reboot camera, đổi mật khẩu; bổ sung bảng chuẩn hoá theo topic thật |
 | `psia-device-control-plan.md` (P6) | Camera ONVIF thật (hồi quy); camera bật PSIA ở chế độ `PSIA`; camera tắt ONVIF, chỉ còn PSIA, ở `AUTO`; restart vẫn giữ giao thức đã khoá; đổi `ONVIF` ↔ `PSIA` qua API; R3: URL luồng camera tự cấu hình có khớp URL PSIA sinh ra không. Harness: `E2E_CAMERA_*`, `E2E_CONTROL_PROTOCOL` của `tests/integration/e2e_real` |
 | `isapi-speaker-control-plan.md` (E, I0, S3, S4) | Spike I0 trên thiết bị Hikvision thật; PTZ relative ISAPI; loa ISAPI/ONVIF chạy qua `SpeakerController` trong MediaServer (loa và file âm thanh đến từ ESC); plugin Bosch qua `runVendorOp` |
 | `speaker-device-errors-clock-plan.md` | Loa Bosch thật: đặt giờ, lỗi API hãng 401; loa Hikvision ISAPI thật |
