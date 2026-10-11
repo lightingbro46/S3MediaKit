@@ -248,6 +248,24 @@ target_include_directories(unit_onvif_event_subscriber PRIVATE "${PROJECT_SOURCE
 add_test(NAME unit.onvif_event_subscriber_all COMMAND unit_onvif_event_subscriber)
 set_tests_properties(unit.onvif_event_subscriber_all PROPERTIES LABELS unit TIMEOUT 60)
 
+# Event bus: ONVIF event -> record (pure), disk spool, Kafka producer on the librdkafka mock cluster.
+add_s3_unit_test(unit_onvif_event_kafka
+  manager/test_onvif_event_kafka.cpp
+  "${PROJECT_SOURCE_DIR}/manager/Control/OnvifEventKafka.cpp")
+target_link_libraries(unit_onvif_event_kafka PRIVATE jsoncpp)
+add_s3_unit_test(unit_event_spool
+  manager/test_event_spool.cpp
+  "${PROJECT_SOURCE_DIR}/manager/Common/EventSpool.cpp")
+target_link_libraries(unit_event_spool PRIVATE z)
+if(ENABLE_KAFKA)
+  add_s3_unit_test(unit_kafka_producer
+    manager/test_kafka_producer.cpp
+    "${PROJECT_SOURCE_DIR}/manager/Common/KafkaProducer.cpp")
+  target_link_libraries(unit_kafka_producer PRIVATE rdkafka::rdkafka jsoncpp)
+  add_test(NAME unit.kafka_producer_all COMMAND unit_kafka_producer)
+  set_tests_properties(unit.kafka_producer_all PROPERTIES LABELS unit TIMEOUT 90)
+endif()
+
 # CameraManager collects camera online/offline changes into one report; server/ symbols come from the
 # tier-storage stubs.
 add_s3_unit_test(unit_camera_manager_status

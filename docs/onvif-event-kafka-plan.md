@@ -1,6 +1,6 @@
 # Plan: đẩy sự kiện ONVIF lên Service API qua Kafka
 
-Trạng thái: **K1 xong** (librdkafka vào build, 2026-10-11), K0 và K2–K8 chưa làm. Nối tiếp phần nhận sự kiện ONVIF (PullPoint, đã merge develop): sự kiện đã
+Trạng thái: **K1–K4 xong** (2026-10-11): librdkafka vào build, `OnvifEventKafka`, `EventSpool`, `KafkaProducer` có unit test nhưng chưa gắn vào luồng sự kiện (K5). K0, K5–K8 chưa làm. Nối tiếp phần nhận sự kiện ONVIF (PullPoint, đã merge develop): sự kiện đã
 được nhận, chuẩn hoá, dedup và phát qua `kBroadcastOnvifEvent`, hiện chỉ ghi log. Đợt này thêm **producer Kafka**
 trong MediaServer để gửi các sự kiện đó lên Service API; Service API là consumer.
 
@@ -421,6 +421,22 @@ MediaServer link được, `ldd` không thêm thư viện mới (libzstd/libsasl
 `sasl_ssl` + SCRAM, gửi idempotent qua mock cluster với lz4/zstd/gzip; bộ unit 306/306. Bản `-DENABLE_KAFKA=OFF`:
 configure không link, không có macro (chưa build vì chưa có code nào dùng macro). Dockerfile thêm `libzstd-dev` /
 `libzstd1`, `build_docker_images.sh` kiểm submodule. Không cần copy `.so`: bản tĩnh.
+
+Kết quả K2–K4 (2026-10-11), các lớp đứng riêng, chưa có chỗ gọi:
+
+- `manager/Common/EventRecord.h` (mới, ngoài bảng mục 3): key + header + value, dùng chung cho ba lớp; không chứa topic.
+- K2 `OnvifEventKafka`: `toRecord` (JSON một dòng, UTF-8 giữ nguyên), `normalizeActive` (true/1/active/on/closed/yes
+  → `true`; false/0/inactive/off/open/opened/no → `false`; khác → `active: null`), `decide` (Drop/Send/SendResync) và
+  `remember` (bảng `SentStates` truyền vào, trần khoá là tham số; khoá cấu hình `onvif.eventMaxStateKeys` làm ở K5).
+  Unit `unit_onvif_event_kafka` 9/9.
+- K3 `EventSpool`: như mục 6.2, thêm một điểm: segment đã gửi hết **chỉ bị xoá sau khi checkpoint mới đã ghi xuống
+  đĩa** (`flushCheckpoint`), nếu không crash giữa hai lần ghi checkpoint sẽ nhảy qua record chưa xác nhận (test bắt
+  được ở bản đầu). Đếm `pending`/`droppedRecords` chính xác qua cắt đuôi, xoá theo trần dung lượng và tuổi. Unit
+  `unit_event_spool` 10/10 (round-trip, đuôi cụt, CRC sai, trần dung lượng, tuổi, đĩa đầy, crash giữa hai checkpoint).
+- K4 `KafkaProducer`: số broker `UP` lấy từ statistics callback (`statistics.interval.ms`, mặc định 1000);
+  `classify()` gom mã lỗi thành `broker_down/auth/topic/queue_full/fatal/purged` cho cảnh báo; lỗi cấu hình không
+  in giá trị (mật khẩu). Unit `unit_kafka_producer` 6/6 trên mock cluster: thứ tự theo key, header + `replayed=1` tới
+  broker, `QUEUE_FULL` không chặn, purge trả DR, broker chết → DR `broker_down` → sống lại gửi được.
 
 Phụ thuộc: K0 → K1 → (K2, K3, K4) → K5 → K6 → K7 → K8. K1–K6 làm được trước khi có tên topic (dev dùng
 `kafka.devOverride`). Mỗi bước: `cmake --build build -j2` + `ctest --test-dir build-test -R unit.` (build dir test
