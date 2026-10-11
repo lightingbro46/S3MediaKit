@@ -36,6 +36,8 @@ Chuẩn bị ONVIF của plugin camera Hikvision (ext-plugin/Hikvision):
 
 --onvif-401: /onvif/device_service trả 401 + Digest challenge thay cho 404, giống Hikvision tắt
 ONVIF hoặc chưa tạo user ONVIF (ONVIF báo AUTH_FAILED lúc dò AUTO).
+Mỗi request ONVIF được ghi vào requests của --state kèm "onvif_user" (user WS-Security hoặc Digest
+đã thử), để kiểm ONVIF đăng nhập bằng tài khoản nào.
 
 Dùng:
     psia_mock.py [--port 18680] [--user admin --password admin123] [--basic]
@@ -492,7 +494,14 @@ def make_handler(cam, args):
 
         def _serve(self):
             if self.path.startswith("/onvif/") and args.onvif_401:
-                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode("utf-8", "replace")
+                # User ONVIF đã thử (WS-Security hoặc Digest), để script kiểm tài khoản đăng nhập ONVIF.
+                m = re.search(r"Username>([^<]*)<", body) or \
+                    re.search(r'username="([^"]*)"', self.headers.get("Authorization") or "")
+                with cam.lock:
+                    cam.requests.append({"method": self.command, "path": self.path,
+                                         "onvif_user": m.group(1) if m else "", "t": time.time()})
+                    cam.dump()
                 return self._challenge()
             if to_psia_path(self.path.split("?", 1)[0], args.dialect) is None:
                 self.rfile.read(int(self.headers.get("Content-Length") or 0))
