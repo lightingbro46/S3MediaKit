@@ -43,6 +43,7 @@ RUN apt-get update && \
          libx265-dev \
          libfaac-dev \
          zlib1g-dev \
+         libzstd-dev \
          gcc \
          g++ \
          gdb && \
@@ -54,9 +55,9 @@ RUN mkdir -p /opt/media
 COPY . /opt/media/S3MediaKit
 WORKDIR /opt/media/S3MediaKit
 
-# FFmpeg (3rdpart/FFmpeg) and the AWS SDK (3rdpart/aws-sdk-cpp) are git submodules built by CMake
-# into release/linux/3rdpart. The submodules must be checked out before docker build
-# (build_docker_images.sh checks it).
+# FFmpeg (3rdpart/FFmpeg), the AWS SDK (3rdpart/aws-sdk-cpp) and librdkafka (3rdpart/librdkafka,
+# static) are git submodules built by CMake into release/linux/3rdpart. The submodules must be
+# checked out before docker build (build_docker_images.sh checks it).
 RUN mkdir -p build release/linux/${MODEL}/
 
 WORKDIR /opt/media/S3MediaKit/build
@@ -95,6 +96,7 @@ RUN apt-get update && \
          libsqlite3-0 \
          libprotobuf23 \
          zlib1g \
+         libzstd1 \
          libfreetype6 \
          libharfbuzz0b \
          librsvg2-2 \

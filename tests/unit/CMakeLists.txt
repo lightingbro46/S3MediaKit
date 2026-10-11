@@ -30,6 +30,10 @@ add_s3_unit_test(unit_common_str_util
   "${PROJECT_SOURCE_DIR}/manager/Common/StrUtil.cpp")
 
 add_s3_unit_test(unit_parser common/test_parser.cpp)
+if(ENABLE_KAFKA)
+  add_s3_unit_test(unit_rdkafka_bundle common/test_rdkafka_bundle.cpp)
+  target_link_libraries(unit_rdkafka_bundle PRIVATE rdkafka::rdkafka)
+endif()
 add_s3_unit_test(unit_stamp common/test_stamp.cpp)
 add_s3_unit_test(unit_str_coding common/test_str_coding.cpp)
 add_s3_unit_test(unit_http http/test_http_const.cpp http/test_http_cookie.cpp http/test_http_cookie_manager.cpp http/test_hls_viewer_session.cpp http/test_hls_overlay_guard.cpp)

@@ -28,3 +28,7 @@
 	path = 3rdpart/aws-sdk-cpp
 	url = https://github.com/aws/aws-sdk-cpp.git
 	shallow = true
+[submodule "3rdpart/librdkafka"]
+	path = 3rdpart/librdkafka
+	url = https://github.com/confluentinc/librdkafka.git
+	shallow = true

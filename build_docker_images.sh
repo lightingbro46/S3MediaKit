@@ -76,9 +76,10 @@ packagename="3spro-mserver"
 
 case $type in
 	'build')
-	# FFmpeg and the AWS SDK are built from submodules inside the image (COPY . takes the checkout)
+	# FFmpeg, the AWS SDK and librdkafka are built from submodules inside the image (COPY . takes the checkout)
 	for f in 3rdpart/FFmpeg/configure 3rdpart/nv-codec-headers/Makefile \
-		3rdpart/aws-sdk-cpp/crt/aws-crt-cpp/crt/aws-c-common/CMakeLists.txt; do
+		3rdpart/aws-sdk-cpp/crt/aws-crt-cpp/crt/aws-c-common/CMakeLists.txt \
+		3rdpart/librdkafka/CMakeLists.txt; do
 		if [[ ! -f $f ]]; then
 			echo "missing $f, run: git submodule update --init --recursive --depth 1"
 			exit 1

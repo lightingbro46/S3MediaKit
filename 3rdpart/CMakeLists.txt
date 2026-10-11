@@ -188,3 +188,21 @@ if (ENABLE_AWS_SDK)
   update_cached_list(MK_LINK_LIBRARIES aws-cpp-sdk-s3 aws-cpp-sdk-core)
   update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_AWS_SDK)
 endif()
+
+###################################################################
+
+# librdkafka
+# Static, from the 3rdpart/librdkafka submodule (cmake/BundledRdKafka.cmake) into
+# release/<os>/3rdpart/librdkafka. Only the Kafka wrapper in manager/Common includes its header.
+if (ENABLE_KAFKA)
+  if (ENABLE_BUNDLED_RDKAFKA)
+    include(BundledRdKafka)
+  else ()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(RDKAFKA REQUIRED IMPORTED_TARGET GLOBAL rdkafka)
+    add_library(rdkafka::rdkafka ALIAS PkgConfig::RDKAFKA)
+  endif ()
+  message(STATUS "ENABLE_KAFKA defined")
+  update_cached_list(MK_LINK_LIBRARIES rdkafka::rdkafka)
+  update_cached_list(MK_COMPILE_DEFINITIONS ENABLE_KAFKA)
+endif ()

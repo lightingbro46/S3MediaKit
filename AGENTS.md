@@ -62,7 +62,9 @@ cmake --build build -j2
 For a fresh Debug build: FFmpeg (`3rdpart/FFmpeg`, n7.1.5; 4.4 still builds — the code guards with `FF_CODEC_VER_7_1`) and the AWS SDK (`3rdpart/aws-sdk-cpp`) are
 submodules that CMake builds once into `release/linux/3rdpart/` (shared by every build dir; the
 first build is long). FFmpeg libraries carry the `_s3` suffix and are copied next to `MediaServer`
-(RUNPATH `$ORIGIN`). `-DENABLE_BUNDLED_FFMPEG=OFF` falls back to the system FFmpeg:
+(RUNPATH `$ORIGIN`). `-DENABLE_BUNDLED_FFMPEG=OFF` falls back to the system FFmpeg. librdkafka
+(`3rdpart/librdkafka`, v2.15.1, `ENABLE_KAFKA`) is built the same way but static; needs `libzstd-dev`,
+`-DENABLE_BUNDLED_RDKAFKA=OFF` uses the system one:
 
 ```bash
 git submodule update --init --recursive --depth 1
