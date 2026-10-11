@@ -45,16 +45,16 @@ void GenericRtspCameraImp::setCameraOption(const CameraOption& option) {
     _option = option;
     _enabled = option.enableActive;
     saveCameraOption(option);
-    publishDeviceCapabilities(event_switch_changed);
-    
+
     if (!_enabled.load()) {
         stop();
-        return;
+    } else {
+        setupController();
+        setupStreamSink();
+        setupScheduler();
     }
-
-    setupController();
-    setupStreamSink();
-    setupScheduler();
+    // Publish after setup: onAllStreamReady() sets _src's listener, which the webhook needs to build deviceId.
+    publishDeviceCapabilities(event_switch_changed);
 }
 
 void GenericRtspCameraImp::onAllStreamReady() {
