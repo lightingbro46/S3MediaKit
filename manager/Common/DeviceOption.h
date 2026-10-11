@@ -64,6 +64,7 @@ struct OnvifProfile {
     std::vector<OnvifRelayOutputProfile> relayOutputProfiles;
     OnvifAudioOutputProfile audioOutputProfile;
     OnvifAudioInputProfile audioInputProfile;
+    OnvifEventProfile eventProfile;
 
     bool operator==(const OnvifProfile &o) const {
         return mediaProfiles   == o.mediaProfiles
@@ -72,7 +73,8 @@ struct OnvifProfile {
             && imageProfile    == o.imageProfile
             && relayOutputProfiles == o.relayOutputProfiles
             && audioOutputProfile   == o.audioOutputProfile
-            && audioInputProfile    == o.audioInputProfile;
+            && audioInputProfile    == o.audioInputProfile
+            && eventProfile         == o.eventProfile;
     }
     bool operator!=(const OnvifProfile &o) const { return !(*this == o); }
 };

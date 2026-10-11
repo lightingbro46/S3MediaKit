@@ -514,6 +514,60 @@ protected:
 
 } // namespace
 
+// The event capability and the per-camera event switch survive info.txt. isSupported is classified
+// again on load, and a file written before them gives no topics and the switch on.
+TEST(CameraStatisticJson, OnvifEventProfileRoundTrip) {
+    CameraStatistic stats;
+    stats.tuple.vhost = DEFAULT_VHOST;
+    stats.tuple.device_id = "cam-json-events";
+    stats.option.enableOnvifEvent = false;
+    auto &profile = stats.device_stats.device_caps.onvifProfile.eventProfile;
+    profile.isEventSupported = true;
+    profile.isPullPointSupported = true;
+    OnvifEventTopic motion;
+    motion.topic = "tns1:RuleEngine/CellMotionDetector/Motion";
+    motion.isProperty = true;
+    motion.sourceItems = { "VideoSourceConfigurationToken" };
+    motion.dataItems = { "IsMotion" };
+    // Saved as unsupported by an older table: classified again on load.
+    profile.topics.push_back(motion);
+    OnvifEventTopic vendor;
+    vendor.topic = "tnshik:RuleEngine/FaceDetection";
+    vendor.eventType = "FACE"; // not in the table: dropped on load
+    vendor.isSupported = true;
+    profile.topics.push_back(vendor);
+    const std::string json = CameraStatisticHelper::getParamsString(stats);
+
+    CameraStatistic loaded;
+    ASSERT_TRUE(CameraStatisticHelper::getParams(json, loaded));
+    EXPECT_FALSE(loaded.option.enableOnvifEvent);
+    const auto &got = loaded.device_stats.device_caps.onvifProfile.eventProfile;
+    EXPECT_TRUE(got.isEventSupported);
+    EXPECT_TRUE(got.isPullPointSupported);
+    ASSERT_EQ(2u, got.topics.size());
+    EXPECT_EQ("tns1:RuleEngine/CellMotionDetector/Motion", got.topics[0].topic);
+    EXPECT_TRUE(got.topics[0].isSupported);
+    EXPECT_EQ("MOTION", got.topics[0].eventType);
+    EXPECT_TRUE(got.topics[0].isProperty);
+    EXPECT_EQ(std::vector<std::string>{ "IsMotion" }, got.topics[0].dataItems);
+    EXPECT_FALSE(got.topics[1].isSupported);
+    EXPECT_EQ("", got.topics[1].eventType);
+    EXPECT_TRUE(got.hasSupportedTopic());
+
+    std::string legacy = json;
+    for (const char *key : {"eventProfile", "enableOnvifEvent"}) {
+        const std::string name(key);
+        for (size_t pos = legacy.find(name); pos != std::string::npos; pos = legacy.find(name, pos)) {
+            legacy.replace(pos, name.size(), "legacy" + name.substr(1));
+        }
+    }
+    CameraStatistic old;
+    ASSERT_TRUE(CameraStatisticHelper::getParams(legacy, old));
+    EXPECT_TRUE(old.option.enableOnvifEvent);
+    EXPECT_FALSE(old.device_stats.device_caps.onvifProfile.eventProfile.isEventSupported);
+    EXPECT_TRUE(old.device_stats.device_caps.onvifProfile.eventProfile.topics.empty());
+}
+
 // The vendor API channel of the capabilities survives info.txt; a file written before it has none.
 TEST(SpeakerStatisticJson, VendorChannelCapabilitiesRoundTrip) {
     SpeakerStatistic stats;

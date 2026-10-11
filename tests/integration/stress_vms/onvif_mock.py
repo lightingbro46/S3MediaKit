@@ -51,6 +51,11 @@ NS = (
     'xmlns:tse="http://www.onvif.org/ver10/search/wsdl" '
     'xmlns:trp="http://www.onvif.org/ver10/replay/wsdl" '
     'xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2" '
+    'xmlns:tev="http://www.onvif.org/ver10/events/wsdl" '
+    'xmlns:wstop="http://docs.oasis-open.org/wsn/t-1" '
+    'xmlns:wsa5="http://www.w3.org/2005/08/addressing" '
+    'xmlns:tns1="http://www.onvif.org/ver10/topics" '
+    'xmlns:tnsmock="urn:s3mk:mock:topics" '
     'xmlns:tt="http://www.onvif.org/ver10/schema"'
 )
 
@@ -187,6 +192,7 @@ def op_GetCapabilities(dev, body, port):
         '<tt:FirmwareUpgrade>false</tt:FirmwareUpgrade>'
         '<tt:SupportedVersions><tt:Major>2</tt:Major><tt:Minor>60</tt:Minor></tt:SupportedVersions>'
         '</tt:System></tt:Device>'
+        '%s'
         '<tt:Media><tt:XAddr>%s/onvif/media_service</tt:XAddr>'
         '<tt:StreamingCapabilities><tt:RTPMulticast>false</tt:RTPMulticast>'
         '<tt:RTP_TCP>true</tt:RTP_TCP><tt:RTP_RTSP_TCP>true</tt:RTP_RTSP_TCP>'
@@ -195,7 +201,7 @@ def op_GetCapabilities(dev, body, port):
         '<tt:Imaging><tt:XAddr>%s/onvif/imaging_service</tt:XAddr></tt:Imaging>'
         '%s'
         '</tds:Capabilities></tds:GetCapabilitiesResponse>'
-        % (base, base, base, base, _profile_g_capabilities(base)))
+        % (base, _events_capabilities(base), base, base, base, _profile_g_capabilities(base)))
 
 
 def _profile_g_capabilities(base):
@@ -698,6 +704,229 @@ def op_GetEventSearchResults(dev, body, port):
         '</tse:ResultList></tse:GetEventSearchResultsResponse>' % events)
 
 
+# ------------------------------------------------------------ Events (PullPoint)
+# Chỉ bật với --events. Topic: motion chuẩn (CellMotionDetector + MotionAlarm), tamper, digital
+# input và một topic riêng của "hãng" (tnsmock:) mà MediaServer không chuẩn hoá. Motion của từng
+# thiết bị bật/tắt mỗi `motion_period_sec` giây (fault spec, mặc định --motion-period-sec; 0 = không
+# đổi). Các khoá fault spec khác:
+#   "events_filter_refuse": true  -> CreatePullPointSubscription có Filter bị InvalidFilterFault
+#   "events_no_renew": true       -> Renew trả ActionNotSupported
+#   "events_epoch": N             -> đổi N = camera "reboot", quên mọi subscription cũ (ResourceUnknown)
+#   "events_401": true            -> mọi lệnh event trả 401 (không challenge)
+EVENT_OPS = ("GetEventProperties", "CreatePullPointSubscription", "PullMessages", "Renew", "Unsubscribe")
+EV_LOCK = threading.Lock()
+EV_SUBS = {}          # id -> dict(ip, filter, expires, epoch, last_motion, initialized)
+EV_SEQ = [0]
+EV_STATS = defaultdict(lambda: defaultdict(int))  # ip -> counters
+CTX = threading.local()
+
+
+def _events_capabilities(base):
+    if not REG.args.events:
+        return ""
+    return ('<tt:Events><tt:XAddr>%s/onvif/event_service</tt:XAddr>'
+            '<tt:WSSubscriptionPolicySupport>false</tt:WSSubscriptionPolicySupport>'
+            '<tt:WSPullPointSupport>true</tt:WSPullPointSupport>'
+            '<tt:WSPausableSubscriptionManagerInterfaceSupport>false</tt:WSPausableSubscriptionManagerInterfaceSupport>'
+            '</tt:Events>' % base)
+
+
+def _desc(source, data):
+    src = "".join('<tt:SimpleItemDescription Name="%s" Type="tt:ReferenceToken"/>' % n for n in source)
+    dat = "".join('<tt:SimpleItemDescription Name="%s" Type="xs:boolean"/>' % n for n in data)
+    return ('<tt:MessageDescription IsProperty="true"><tt:Source>%s</tt:Source><tt:Data>%s</tt:Data>'
+            '</tt:MessageDescription>' % (src, dat))
+
+
+def op_GetEventProperties(dev, body, port):
+    topics = (
+        '<tns1:RuleEngine wstop:topic="false"><CellMotionDetector wstop:topic="false">'
+        '<Motion wstop:topic="true">%s</Motion></CellMotionDetector>'
+        '<TamperDetector wstop:topic="false"><Tamper wstop:topic="true">%s</Tamper></TamperDetector>'
+        '</tns1:RuleEngine>'
+        '<tns1:VideoSource wstop:topic="false"><MotionAlarm wstop:topic="true">%s</MotionAlarm></tns1:VideoSource>'
+        '<tns1:Device wstop:topic="false"><Trigger wstop:topic="false">'
+        '<DigitalInput wstop:topic="true">%s</DigitalInput></Trigger></tns1:Device>'
+        '<tnsmock:Vendor wstop:topic="false"><FaceDetection wstop:topic="true">%s</FaceDetection></tnsmock:Vendor>'
+        % (_desc(["VideoSourceConfigurationToken", "VideoAnalyticsConfigurationToken", "Rule"], ["IsMotion"]),
+           _desc(["VideoSourceConfigurationToken", "VideoAnalyticsConfigurationToken", "Rule"], ["IsTamper"]),
+           _desc(["Source"], ["State"]), _desc(["InputToken"], ["LogicalState"]),
+           _desc(["Source"], ["State"])))
+    return envelope(
+        '<tev:GetEventPropertiesResponse>'
+        '<tev:TopicNamespaceLocation>http://www.onvif.org/onvif/ver10/topics/topicns.xml</tev:TopicNamespaceLocation>'
+        '<wsnt:FixedTopicSet>true</wsnt:FixedTopicSet>'
+        '<wstop:TopicSet>%s</wstop:TopicSet>'
+        '<wsnt:TopicExpressionDialect>http://www.onvif.org/ver10/tev/topicExpression/ConcreteSet</wsnt:TopicExpressionDialect>'
+        '<tev:MessageContentFilterDialect>http://www.onvif.org/ver10/tev/messageContentFilter/ItemFilter</tev:MessageContentFilterDialect>'
+        '<tev:MessageContentSchemaLocation>http://www.onvif.org/onvif/ver10/schema/onvif.xsd</tev:MessageContentSchemaLocation>'
+        '</tev:GetEventPropertiesResponse>' % topics)
+
+
+def _duration(text, default):
+    m = re.match(r"PT(\d+)S$", text or "")
+    return int(m.group(1)) if m else default
+
+
+def _motion_state(dev):
+    period = float(REG.policy(dev.ip).get("motion_period_sec", REG.args.motion_period_sec))
+    if period <= 0:
+        return False
+    # Lệch pha theo thiết bị: camera thật không đổi trạng thái cùng một giây (300 long-poll trả về
+    # cùng lúc làm mock Python không nhận kịp kết nối mới).
+    return int((time.time() + dev.index * 7.919) / period) % 2 == 1
+
+
+def _sub_id():
+    m = re.search(r"/onvif/event_sub/(\d+)", getattr(CTX, "path", ""))
+    return int(m.group(1)) if m else None
+
+
+def _live_sub(dev):
+    """Subscription của request, None khi camera không biết nó (hết hạn, reboot)."""
+    sid = _sub_id()
+    epoch = REG.policy(dev.ip).get("events_epoch", 0)
+    with EV_LOCK:
+        sub = EV_SUBS.get(sid)
+        if sub is None or sub["ip"] != dev.ip:
+            return sid, None
+        if sub["epoch"] != epoch or sub["expires"] < time.time():
+            EV_SUBS.pop(sid, None)
+            return sid, None
+        return sid, sub
+
+
+class EventFault(Exception):
+    def __init__(self, status, xml):
+        Exception.__init__(self, "event fault")
+        self.status = status
+        self.xml = xml
+
+
+def op_CreatePullPointSubscription(dev, body, port):
+    policy = REG.policy(dev.ip)
+    expr = xml_text(body, "TopicExpression")
+    if expr is not None and policy.get("events_filter_refuse"):
+        with EV_LOCK:
+            EV_STATS[dev.ip]["filter_refused"] += 1
+        raise EventFault(400, fault_sender("InvalidFilterFault", "filter not supported"))
+    lifetime = _duration(xml_text(body, "InitialTerminationTime"), 60)
+    now = time.time()
+    with EV_LOCK:
+        EV_SEQ[0] += 1
+        sid = EV_SEQ[0]
+        EV_SUBS[sid] = {"ip": dev.ip, "filter": [t.strip() for t in expr.split("|")] if expr else None,
+                        "expires": now + lifetime, "epoch": policy.get("events_epoch", 0),
+                        "last_motion": None}
+        EV_STATS[dev.ip]["subscribed"] += 1
+        EV_STATS[dev.ip]["filtered" if expr else "unfiltered"] += 1
+    base = "http://%s:%d" % (dev.ip, port)
+    return envelope(
+        '<tev:CreatePullPointSubscriptionResponse><tev:SubscriptionReference>'
+        '<wsa5:Address>%s/onvif/event_sub/%d</wsa5:Address>'
+        '<wsa5:ReferenceParameters><tnsmock:SubscriptionId>%d</tnsmock:SubscriptionId></wsa5:ReferenceParameters>'
+        '</tev:SubscriptionReference><wsnt:CurrentTime>%s</wsnt:CurrentTime>'
+        '<wsnt:TerminationTime>%s</wsnt:TerminationTime></tev:CreatePullPointSubscriptionResponse>'
+        % (base, sid, sid, _iso(now), _iso(now + lifetime)))
+
+
+def _resource_unknown():
+    return EventFault(400, fault_sender("ResourceUnknownFault", "unknown subscription"))
+
+
+def _notification(topic, when, op, source, data):
+    return ('<wsnt:NotificationMessage><wsnt:Topic Dialect="http://www.onvif.org/ver10/tev/topicExpression/ConcreteSet">'
+            '%s</wsnt:Topic><wsnt:Message><tt:Message UtcTime="%s" PropertyOperation="%s"><tt:Source>%s</tt:Source>'
+            '<tt:Data>%s</tt:Data></tt:Message></wsnt:Message></wsnt:NotificationMessage>'
+            % (topic, _iso(when), op, "".join('<tt:SimpleItem Name="%s" Value="%s"/>' % kv for kv in source),
+               "".join('<tt:SimpleItem Name="%s" Value="%s"/>' % kv for kv in data)))
+
+
+def _wants(sub, topic):
+    return sub["filter"] is None or topic in sub["filter"]
+
+
+def op_PullMessages(dev, body, port):
+    sid, sub = _live_sub(dev)
+    if sub is None:
+        raise _resource_unknown()
+    timeout = min(_duration(xml_text(body, "Timeout"), 10), 60)
+    deadline = time.time() + timeout
+    messages = []
+    while True:
+        state = _motion_state(dev)
+        with EV_LOCK:
+            if EV_SUBS.get(sid) is not sub:
+                raise _resource_unknown()
+            op = None
+            if sub["last_motion"] is None:
+                op = "Initialized"
+            elif sub["last_motion"] != state:
+                op = "Changed"
+            if op:
+                sub["last_motion"] = state
+        if op:
+            now = dev_now(dev.ip)
+            value = "true" if state else "false"
+            if _wants(sub, "tns1:RuleEngine/CellMotionDetector/Motion"):
+                messages.append(_notification("tns1:RuleEngine/CellMotionDetector/Motion", now, op,
+                                              [("VideoSourceConfigurationToken", "VSC_1"),
+                                               ("VideoAnalyticsConfigurationToken", "VAC_1"),
+                                               ("Rule", "MyMotionDetectorRule")], [("IsMotion", value)]))
+            if _wants(sub, "tns1:VideoSource/MotionAlarm"):
+                messages.append(_notification("tns1:VideoSource/MotionAlarm", now, op,
+                                              [("Source", "VSC_1")], [("State", value)]))
+            if sub["filter"] is None:
+                # Không filter: camera gửi cả topic hãng, server phải tự bỏ.
+                messages.append(_notification("tnsmock:Vendor/FaceDetection", now, op,
+                                              [("Source", "VSC_1")], [("State", "false")]))
+        if messages or time.time() >= deadline:
+            break
+        time.sleep(0.2)
+    now = time.time()
+    with EV_LOCK:
+        EV_STATS[dev.ip]["pulls"] += 1
+        EV_STATS[dev.ip]["messages"] += len(messages)
+    return envelope('<tev:PullMessagesResponse><tev:CurrentTime>%s</tev:CurrentTime>'
+                    '<tev:TerminationTime>%s</tev:TerminationTime>%s</tev:PullMessagesResponse>'
+                    % (_iso(dev_now(dev.ip)), _iso(sub["expires"] + dev_now(dev.ip) - now), "".join(messages)))
+
+
+def op_Renew(dev, body, port):
+    if REG.policy(dev.ip).get("events_no_renew"):
+        raise EventFault(400, fault("ActionNotSupported", "renew not supported"))
+    sid, sub = _live_sub(dev)
+    if sub is None:
+        raise _resource_unknown()
+    lifetime = _duration(xml_text(body, "TerminationTime"), 60)
+    now = time.time()
+    with EV_LOCK:
+        sub["expires"] = now + lifetime
+        EV_STATS[dev.ip]["renewed"] += 1
+    return envelope('<wsnt:RenewResponse><wsnt:TerminationTime>%s</wsnt:TerminationTime>'
+                    '<wsnt:CurrentTime>%s</wsnt:CurrentTime></wsnt:RenewResponse>'
+                    % (_iso(now + lifetime), _iso(now)))
+
+
+def op_Unsubscribe(dev, body, port):
+    sid, sub = _live_sub(dev)
+    with EV_LOCK:
+        EV_SUBS.pop(sid, None)
+        EV_STATS[dev.ip]["unsubscribed"] += 1
+    return envelope('<wsnt:UnsubscribeResponse/>')
+
+
+def events_snapshot():
+    now = time.time()
+    with EV_LOCK:
+        live = defaultdict(int)
+        for sub in EV_SUBS.values():
+            if sub["expires"] >= now:
+                live[sub["ip"]] += 1
+        out = {ip: dict(c, live_subscriptions=live.get(ip, 0)) for ip, c in EV_STATS.items()}
+    return out
+
+
 HANDLERS = {name[3:]: fn for name, fn in list(globals().items()) if name.startswith("op_")}
 
 
@@ -869,12 +1098,22 @@ class Handler(BaseHTTPRequestHandler):
         handler = HANDLERS.get(op)
         if op in PROFILE_G_OPS and not a.profile_g:
             handler = None
+        if op in EVENT_OPS and not a.events:
+            handler = None
+        if op in EVENT_OPS and handler and policy.get("events_401"):
+            self.send_response(401)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        CTX.path = self.path
         if handler is None:
             with REG.lock:
                 REG.faults[op] += 1
             return self.reply(fault("ActionNotSupported", "operation %s not supported" % op), 500)
         try:
             xml = handler(dev, body, REG.args.port)
+        except EventFault as exc:
+            return self.reply(exc.xml, exc.status)
         except Exception as exc:  # mock phải sống sót mọi payload lạ
             with REG.lock:
                 REG.faults[op] += 1
@@ -941,6 +1180,7 @@ def reporter():
                 json.dump({"devices": devices, "calls": total, "faults": faults,
                            "by_op": snapshot, "fault_by_op": fault_snapshot,
                            "encoders": encoders,
+                           "events": events_snapshot(),
                            "uptime_sec": time.time() - REG.started}, fh, indent=1)
             os.replace(tmp, REG.args.state)
 
@@ -972,6 +1212,10 @@ def main():
                     help="khai báo Search/Replay: mỗi camera có thẻ SD ghi liên tục (gap fill)")
     ap.add_argument("--sd-from-sec", type=float, default=86400.0,
                     help="thẻ SD có dữ liệu từ N giây trước lúc mock khởi động")
+    ap.add_argument("--events", action="store_true",
+                    help="khai báo Event service PullPoint (GetEventProperties, motion bật/tắt định kỳ)")
+    ap.add_argument("--motion-period-sec", type=float, default=0.0,
+                    help="--events: motion của mọi thiết bị đổi trạng thái mỗi N giây (0 = luôn tắt)")
     ap.add_argument("--verbose", action="store_true")
     REG = Registry(ap.parse_args())
     REG.reload()

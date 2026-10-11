@@ -15,6 +15,7 @@
 #include "soapSearchBindingProxy.h"
 #include "soapReplayBindingProxy.h"
 #include "soapRecordingBindingProxy.h"
+#include "soapPullPointSubscriptionBindingProxy.h"
 #include "Control/DeviceControl.h"
 
 namespace OnvifCtrl {
@@ -34,6 +35,23 @@ extern const std::string kClockSkewThresholdSec;
 // 0 stops the server from ever setting a camera clock (cameras kept in time by their own NTP).
 extern const std::string kClockSyncEnable;
 } // namespace OnvifCtrl
+
+// ONVIF event subscription (docs/camera-control-protocol.md, "Sự kiện ONVIF"). Topics are read on connect whatever kEventEnable says.
+namespace OnvifEventCfg {
+extern const std::string kEventEnable;            // 0 stops every camera event subscription
+extern const std::string kPullTimeoutSec;         // PullMessages Timeout
+extern const std::string kPullGraceSec;           // added to the HTTP timeout of a pull
+extern const std::string kMessageLimit;           // PullMessages MessageLimit
+extern const std::string kTerminationSec;         // InitialTerminationTime and Renew duration
+extern const std::string kRenewMarginSec;         // renew this long before the termination time
+extern const std::string kRetryMaxSec;            // backoff ceiling
+extern const std::string kMaxConcurrentSubscribe; // CreatePullPointSubscription in flight on the node
+extern const std::string kStartJitterMs;          // random delay before a subscription starts
+extern const std::string kSubscribeFilter;        // 0 subscribes without a topic filter (filtered on the server)
+extern const std::string kMaxTopics;              // topics kept from GetEventProperties
+extern const std::string kLogPerCameraPerMin;     // event log lines per camera per minute
+extern const std::string kStatsIntervalSec;       // statistics log period, 0 = off
+} // namespace OnvifEventCfg
 
 namespace managerkit {
 
@@ -167,6 +185,24 @@ public:
      * Get audio output profile — populated after connect()
      */
     OnvifAudioOutputProfile getAudioOutputProfile() const override { return _audioOutputProfile; }
+
+    /**
+     * Event capability and topic set — populated after connect()
+     */
+    OnvifEventProfile getEventProfile() const override { return _eventProfile; }
+
+    /**
+     * Event service address (GetCapabilities Events.XAddr), "" when the camera has none — set by connect()
+     */
+    std::string eventsUrl() const { return _strEventsUrl; }
+
+    /**
+     * Camera clock minus local clock (seconds) the SOAP requests are signed with, 0 when unknown.
+     * Any thread.
+     */
+    time_t signingClockOffset() const {
+        return _clock_offset_at.load(std::memory_order_acquire) != 0 ? _clock_offset.load(std::memory_order_relaxed) : 0;
+    }
 
     /**
      * Get audio input profile — populated after connect()
@@ -484,6 +520,12 @@ private:
     bool getRelayOutputCapabilities();
 
     /**
+     * GetEventProperties on the event service: the topic set, each topic classified against the
+     * normalized topics (mediakit::OnvifEventTopics). Non-critical: a failure leaves no topics.
+     */
+    bool getEventCapabilities();
+
+    /**
      * get preset
      */
     bool getPTZPresets();
@@ -633,6 +675,9 @@ private:
     std::string _strSearchUrl;
     std::string _strReplayUrl;
     std::string _strRecordingUrl;
+    std::string _strEventsUrl;
+
+    OnvifEventProfile _eventProfile;
 
     // Serialises all gSOAP operations on this instance.  recursive_mutex is
     // required because public methods call other public methods

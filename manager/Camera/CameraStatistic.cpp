@@ -9,6 +9,7 @@
 #include "Local/MediaGapFillManager.h"
 #include "Extension/Resource.h"
 #include "Common/BlockingExecutors.h"
+#include "Onvif/OnvifEventTopics.h"
 
 using namespace std;
 using namespace toolkit;
@@ -255,6 +256,58 @@ static Json::Value makeOnvifPTZPresetMapJson(const OnvifPTZProfile::PTZPresetMap
     return ret;
 }
 
+static Json::Value makeOnvifEventProfileJson(const OnvifEventProfile &profile) {
+    Json::Value ret = Json::objectValue;
+    ret["isEventSupported"] = profile.isEventSupported;
+    ret["isPullPointSupported"] = profile.isPullPointSupported;
+    Json::Value topics = Json::arrayValue;
+    for (const auto &t : profile.topics) {
+        Json::Value topic = Json::objectValue;
+        topic["topic"] = t.topic;
+        topic["eventType"] = t.eventType;
+        topic["isSupported"] = t.isSupported;
+        topic["isProperty"] = t.isProperty;
+        topic["source"] = Json::arrayValue;
+        for (const auto &item : t.sourceItems) {
+            topic["source"].append(item);
+        }
+        topic["data"] = Json::arrayValue;
+        for (const auto &item : t.dataItems) {
+            topic["data"].append(item);
+        }
+        topics.append(topic);
+    }
+    ret["topics"] = topics;
+    return ret;
+}
+
+static OnvifEventProfile getOnvifEventProfile(const Json::Value &data) {
+    OnvifEventProfile profile;
+    if (!data.isObject()) {
+        return profile;
+    }
+    profile.isEventSupported = data["isEventSupported"].asBool();
+    profile.isPullPointSupported = data["isPullPointSupported"].asBool();
+    for (const auto &t : data["topics"]) {
+        OnvifEventTopic topic;
+        topic.topic = t["topic"].asString();
+        // Classified again rather than read: a build with more normalized topics reports them for a
+        // camera that has not reconnected yet.
+        auto rule = mediakit::OnvifEventTopics::classify(topic.topic);
+        topic.eventType = rule ? rule->eventType : "";
+        topic.isSupported = rule != nullptr;
+        topic.isProperty = t["isProperty"].asBool();
+        for (const auto &item : t["source"]) {
+            topic.sourceItems.push_back(item.asString());
+        }
+        for (const auto &item : t["data"]) {
+            topic.dataItems.push_back(item.asString());
+        }
+        profile.topics.push_back(std::move(topic));
+    }
+    return profile;
+}
+
 static Json::Value makeOnvifProfileJson(const OnvifProfile &profile) {
     Json::Value ret = Json::objectValue;
     // mediaProfiles
@@ -354,6 +407,7 @@ static Json::Value makeOnvifProfileJson(const OnvifProfile &profile) {
         relayProfiles.append(r);
     }
     ret["relayOutputProfiles"] = relayProfiles;
+    ret["eventProfile"] = makeOnvifEventProfileJson(profile.eventProfile);
     return ret;
 }
 
@@ -504,6 +558,7 @@ static OnvifProfile getOnvifProfile(const Json::Value &data) {
             profile.relayOutputProfiles.push_back(relay);
         }
     }
+    profile.eventProfile = getOnvifEventProfile(data["eventProfile"]);
     return profile;
 }
 
@@ -646,6 +701,7 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     option.enablePTZControl = ret["enablePTZControl"].asBool();
     // Absent in statistics written before the option existed: keep its default (on).
     option.enableTimeSync = ret.isMember("enableTimeSync") ? ret["enableTimeSync"].asBool() : true;
+    option.enableOnvifEvent = ret.isMember("enableOnvifEvent") ? ret["enableOnvifEvent"].asBool() : true;
     option.motionPreRecordSec = ret["motionPreRecordSec"].asInt();
     option.motionPostRecordSec = ret["motionPostRecordSec"].asInt();
     option.recordSchedules = ret["recordSchedules"].asString();
@@ -779,6 +835,7 @@ string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     root["preferedMediaServer"] = stats.option.preferedMediaServer;
     root["enablePTZControl"] = stats.option.enablePTZControl;
     root["enableTimeSync"] = stats.option.enableTimeSync;
+    root["enableOnvifEvent"] = stats.option.enableOnvifEvent;
     root["motionPreRecordSec"] = stats.option.motionPreRecordSec;
     root["motionPostRecordSec"] = stats.option.motionPostRecordSec;
     root["recordSchedules"] = stats.option.recordSchedules;
@@ -1404,6 +1461,7 @@ struct ResourceAdapter<CameraStatistic> {
         kvs.push_back(make("controlProtocol",            opt.controlProtocol));
         kvs.push_back(make("onvifSubProfile",            opt.onvifSubProfile));
         kvs.push_back(make("enableTimeSync",             std::to_string(opt.enableTimeSync)));
+        kvs.push_back(make("enableOnvifEvent",           std::to_string(opt.enableOnvifEvent)));
 
         // ── motion ────────────────────────────────────────────────────────
         kvs.push_back(make("enableMotion",               std::to_string(opt.enableMotion)));
@@ -1517,6 +1575,8 @@ struct ResourceAdapter<CameraStatistic> {
                     stats.option.enablePTZControl = static_cast<bool>(std::stoi(kv.value));
                 } else if (kv.name == "enableTimeSync") {
                     stats.option.enableTimeSync = static_cast<bool>(std::stoi(kv.value));
+                } else if (kv.name == "enableOnvifEvent") {
+                    stats.option.enableOnvifEvent = static_cast<bool>(std::stoi(kv.value));
                 } else if (kv.name == "reversePanAxis") {
                     stats.option.reversePanAxis = static_cast<bool>(std::stoi(kv.value));
                 } else if (kv.name == "reverseTiltAxis") {

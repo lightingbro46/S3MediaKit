@@ -236,6 +236,126 @@ Loa IP chọn giao thức theo đúng luật của camera (cùng `ProtocolLock` 
 Webhook capabilities của loa có thêm `controlProtocol` và `controlProtocolSetting` như camera; `onvifDevice` giữ
 nghĩa đang chạy ONVIF. Option loa (`makeSpeakerOptionJson`) có thêm `controlProtocol`.
 
+## Sự kiện ONVIF
+
+Camera điều khiển bằng ONVIF được đọc khả năng sự kiện mỗi lần `connect()` đầy đủ, giống PTZ: `Events.XAddr` và
+`WSPullPointSupport` của `GetCapabilities`, rồi danh sách topic (`GetEventProperties`). Lượt kiểm tra 60 giây
+(`probeConnection`) không đọc lại. Đọc lỗi không làm hỏng kết nối: camera chỉ không có topic.
+
+Mỗi topic được so với bảng **topic chuẩn hoá** của MediaServer (`src/Onvif/OnvifEventTopics.cpp`), so theo đường dẫn
+bỏ tiền tố namespace, không phân biệt hoa thường:
+
+| `eventType` | Topic (bỏ tiền tố) | Trạng thái trong `Data` |
+|---|---|---|
+| `MOTION` | `RuleEngine/CellMotionDetector/Motion` | `IsMotion` |
+| `MOTION` | `VideoSource/MotionAlarm` | `State` |
+| `TAMPER` | `RuleEngine/TamperDetector/Tamper` | `IsTamper` |
+| `TAMPER` | `VideoSource/GlobalSceneChange/ImagingService` | `State` |
+| `VIDEO_LOSS` | `VideoSource/SignalLoss` | `State` |
+| `DIGITAL_INPUT` | `Device/Trigger/DigitalInput` | `LogicalState` |
+| `RELAY` | `Device/Trigger/Relay` | `LogicalState` |
+| `LINE_CROSSING` | `RuleEngine/LineDetector/Crossed` | (không phải trạng thái) |
+| `INTRUSION` | `RuleEngine/FieldDetector/ObjectsInside` | `IsInside` |
+
+Nhận thêm topic = thêm dòng vào bảng đó. Topic không có trong bảng (topic riêng của hãng...) là `isSupported=false`.
+
+### `info.txt`
+
+`capabilities.onvifProfile.eventProfile` giữ **mọi** topic của camera, kể cả topic không hỗ trợ, để đối chiếu khi mở
+rộng bảng:
+
+```json
+"eventProfile": {
+  "isEventSupported": true,
+  "isPullPointSupported": true,
+  "topics": [
+    { "topic": "tns1:RuleEngine/CellMotionDetector/Motion", "eventType": "MOTION", "isSupported": true,
+      "isProperty": true, "source": ["VideoSourceConfigurationToken", "VideoAnalyticsConfigurationToken", "Rule"],
+      "data": ["IsMotion"] },
+    { "topic": "tnshik:RuleEngine/FaceDetection", "eventType": "", "isSupported": false,
+      "isProperty": true, "source": ["Source"], "data": ["State"] }
+  ]
+}
+```
+
+`eventType`/`isSupported` được tính lại theo bảng khi đọc file, nên bản mới có bảng rộng hơn báo đúng cả camera chưa
+kết nối lại.
+
+### Webhook `media-device-info`
+
+Khối mới `onvifEvents`, **chỉ** gồm topic được MediaServer hỗ trợ:
+
+```json
+"onvifEvents": {
+  "isSupported": true,
+  "enable": true,
+  "eventTypes": ["MOTION", "TAMPER"],
+  "topics": [
+    { "eventType": "MOTION", "topic": "tns1:RuleEngine/CellMotionDetector/Motion" },
+    { "eventType": "MOTION", "topic": "tns1:VideoSource/MotionAlarm" },
+    { "eventType": "TAMPER", "topic": "tns1:RuleEngine/TamperDetector/Tamper" }
+  ]
+}
+```
+
+| Field | Ý nghĩa |
+|---|---|
+| `isSupported` | Camera đang điều khiển bằng ONVIF, có Event service và ít nhất một topic được hỗ trợ |
+| `enable` | Nhận sự kiện theo cấu hình: `onvif.eventEnable` **và** `cameraAdvanceConfig.onvif.enableEvent` |
+| `eventTypes` | Các `eventType` khác nhau, theo thứ tự bảng — client hiển thị theo field này |
+| `topics` | Topic gốc của camera đã lọc, để tra cứu |
+
+Camera ISAPI/PSIA/RTSP thuần: `isSupported=false`, mảng rỗng. Đổi `enableEvent` của camera gửi lại webhook. Đổi
+`onvif.eventEnable` lúc chạy có hiệu lực ngay nhưng `enable` trong webhook chỉ cập nhật ở lần gửi kế tiếp.
+
+### Bật/tắt theo camera
+
+```json
+{ "cameraAdvanceConfig": { "onvif": { "enableEvent": true } } }
+```
+
+Thiếu field = `true`. Đổi giá trị không làm controller kết nối lại. Option đi theo `info.txt` và đồng bộ ESC
+(`enableOnvifEvent`), không cần migration.
+
+### Nhận sự kiện
+
+Camera có ít nhất một topic hỗ trợ, bật toàn cục và bật ở camera thì được đăng ký **PullPoint**:
+`CreatePullPointSubscription` (kèm filter `TopicExpression` chỉ các topic hỗ trợ, `InitialTerminationTime`
+= `onvif.eventTerminationSec`) rồi `PullMessages` liên tục (camera giữ tối đa `onvif.eventPullTimeoutSec`), `Renew`
+trước khi hết hạn, `Unsubscribe` khi camera mất kết nối, bị tắt sự kiện, đổi giao thức hoặc bị xoá.
+
+- Request HTTP bất đồng bộ trên poller của camera: không thread nào bị giữ khi chờ camera (300 camera ≈ 30
+  request/s lúc yên lặng). Không dùng pool `device()` của PTZ.
+- Sau khi mất mạng, tối đa `onvif.eventMaxConcurrentSubscribe` lệnh đăng ký chạy cùng lúc, mỗi camera chờ ngẫu
+  nhiên tới `onvif.eventStartJitterMs` trước khi bắt đầu.
+- Camera từ chối filter: đăng ký lại không filter, server tự bỏ topic không hỗ trợ.
+- Camera không hỗ trợ `Renew`: tạo subscription mới khi cái cũ sắp hết.
+- Subscription mất (camera reboot, `ResourceUnknown`): đăng ký lại ngay một lần, sau đó chờ 5 s nhân đôi tới
+  `onvif.eventRetryMaxSec`.
+- Camera chỉ nhận HTTP Digest (bỏ qua WS-Security): mỗi camera nhớ challenge Digest (`nc` tăng dần), các request sau
+  gửi `Authorization` ngay, không bị 401 trước. Nonce hết hạn (`stale=true` hoặc nonce mới) thì trả lời lại một lần;
+  camera chỉ nhận mỗi nonce với `nc=1` thì tắt cache cho camera đó (mỗi request lại 401 rồi trả lời, như trước). Basic
+  (`onvif.allowHttpBasicAuth=1`) cũng được nhớ.
+- Camera trả 401/403/`NotAuthorized`: dừng, thử lại khi controller kết nối lại hoặc sau `onvif.eventRetryMaxSec`.
+  Không thêm lần đăng nhập sai nào (camera Hikvision khoá IP).
+
+Đợt này sự kiện chỉ được **ghi log**, qua broadcast `kBroadcastOnvifEvent` (đợt webhook sau gắn listener vào đây).
+Sự kiện trạng thái chỉ phát khi giá trị đổi (khoá: `eventType` + các `SimpleItem` của `Source`); trạng thái ban đầu
+ngay sau khi đăng ký (`Initialized`) ghi mức Debug. Camera có cả `CellMotionDetector/Motion` lẫn `VideoSource/MotionAlarm`
+báo một lần chuyển động bằng hai topic với `Source` khác nhau (token cấu hình analytics và token nguồn video), nên log
+cả hai dòng:
+
+```
+OnvifEvent <deviceId> 10.0.0.5 MOTION Changed tns1:RuleEngine/CellMotionDetector/Motion cam=2026-10-11T03:12:04Z lag=180ms src{VideoSourceConfigurationToken=VSC_1,Rule=R1} data{IsMotion=true}
+OnvifEvent <deviceId> 10.0.0.5 subscribed http://10.0.0.5/onvif/Events/PullSubManager_1 filter=2 topics
+OnvifEvent stats: pulling=287 backoff=9 suspended=1 events=1243 dropped_log=17 top=[...]
+```
+
+Mỗi camera ghi tối đa `onvif.eventLogPerCameraPerMin` dòng/phút, phần còn lại được đếm vào `dropped_log`.
+
+Hạn chế: camera khoá ISAPI/PSIA không nhận sự kiện kể cả khi có ONVIF; sự kiện lúc mất kết nối bị mất (PullPoint
+không có hàng đợi bền); topic chỉ đọc lại khi kết nối lại (`/media/mserver/device/reconnect`).
+
 ## Config toàn cục
 
 | Khoá | Mặc định | Ý nghĩa |
@@ -251,6 +371,19 @@ nghĩa đang chạy ONVIF. Option loa (`makeSpeakerOptionJson`) có thêm `contr
 | `speaker.detect_max_interval_sec` | `600` | Loa có `manufacturer` rỗng: mỗi chu kỳ thử API hãng (Bosch) rồi các giao thức, nhận ra hãng thì ghi đè `manufacturer` và báo qua webhook `media-device-info`. Khi không gì trả lời, chu kỳ nhân đôi từ 60 s tới giá trị này (0 = giữ 60 s) |
 | `psia.request_timeout_ms` | `5000` | Timeout mỗi request PSIA |
 | `isapi.request_timeout_ms` | `5000` | Timeout mỗi request ISAPI |
+| `onvif.eventEnable` | `1` | `0` tắt nhận sự kiện ONVIF mọi camera (topic vẫn được đọc khi kết nối) |
+| `onvif.eventPullTimeoutSec` | `10` | `Timeout` của `PullMessages` |
+| `onvif.eventPullGraceSec` | `5` | Cộng vào timeout HTTP của một pull |
+| `onvif.eventMessageLimit` | `64` | `MessageLimit` của `PullMessages` |
+| `onvif.eventTerminationSec` | `60` | Thời hạn subscription, gia hạn bằng `Renew` |
+| `onvif.eventRenewMarginSec` | `10` | Gia hạn trước khi hết hạn (cộng thêm một pull) |
+| `onvif.eventRetryMaxSec` | `300` | Trần thời gian chờ giữa các lần thử lỗi, và thời gian chờ sau khi bị từ chối tài khoản |
+| `onvif.eventMaxConcurrentSubscribe` | `16` | Số `CreatePullPointSubscription` chạy cùng lúc trên node |
+| `onvif.eventStartJitterMs` | `5000` | Chờ ngẫu nhiên tối đa chừng này trước khi đăng ký |
+| `onvif.eventSubscribeFilter` | `1` | `0` không gửi filter topic cho camera |
+| `onvif.eventMaxTopics` | `512` | Số topic tối đa giữ từ `GetEventProperties` |
+| `onvif.eventLogPerCameraPerMin` | `60` | Số dòng log sự kiện tối đa mỗi camera mỗi phút |
+| `onvif.eventStatsIntervalSec` | `60` | Chu kỳ dòng log thống kê; `0` tắt |
 
 ## Kiểm thử
 
@@ -265,5 +398,11 @@ nghĩa đang chạy ONVIF. Option loa (`makeSpeakerOptionJson`) có thêm `contr
   user ONVIF (plugin Hikvision chuẩn bị ONVIF).
 - Plugin camera: `unit.vendor_stage_all`; `VendorCameraMockTest.*` chạy với `psia_mock.py --dialect isapi
   --onvif-off` (`ISAPI_MOCK_ADDR`) và `sunapi_mock.py --onvif-off` (`SUNAPI_MOCK_ADDR`).
+- Sự kiện ONVIF: `unit.OnvifEventTopicsTest.*`, `unit.OnvifEventTest.*` (binary `unit_xml`: bảng chuẩn hoá,
+  parser TopicSet/PullMessages), `unit.onvif_event_subscriber_all` (state machine với transport giả). Camera giả:
+  `onvif_mock.py --events --motion-period-sec 20`; fault spec `events_filter_refuse`, `events_no_renew`,
+  `events_epoch` (đổi = camera reboot), `events_401`; `--state` ghi thống kê `events` từng thiết bị. Digest:
+  `--auth digest --auth-pass stress-pass --nonce-uses 50`, so `_http_401` với số request event trong `--state`.
+  Cache Digest: `OnvifHttpAuthTest.Session*` trong `unit.onvif_http_auth_all`.
 - `PSIA_MOCK_ADDR=127.0.0.1:18680 ISAPI_MOCK_ADDR=127.0.0.1:18681 release/linux/Debug/unit_psia_control` chạy cả
   các case gọi mock.

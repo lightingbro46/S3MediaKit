@@ -1,4 +1,5 @@
 #include "CameraController.h"
+#include "Onvif/OnvifEventTopics.h"
 #include "Common/BlockingExecutors.h"
 #include "server/WebApiErrCode.h"
 #include "Common/DeviceFailureCode.h"
@@ -42,7 +43,8 @@ SockException CameraController::controllerNotReady() const {
 
 CameraController::CameraController(const DeviceTuple &tuple, const toolkit::EventPoller::Ptr &poller)
     : _tuple(tuple), _poller(poller),
-      _device_queue(std::make_shared<SerialTaskQueue>(BlockingExecutors::device(), "camera " + tuple.shortUrl())) {}
+      _device_queue(std::make_shared<SerialTaskQueue>(BlockingExecutors::device(), "camera " + tuple.shortUrl())),
+      _event_subscriber(OnvifEventSubscriber::create(poller, tuple.device_id)) {}
 
 DeviceControl::Ptr CameraController::createDeviceControl(ControlProtocol protocol, const std::string &address,
                                                                const std::string &username, const std::string &password) {
@@ -134,6 +136,7 @@ void CameraController::setupController(const CameraOption &option) {
             // Connection unchanged — update PTZ settings in-place, no reconnect needed
             _enablePTZControl = option.enablePTZControl;
             _enableTimeSync   = option.enableTimeSync;
+            _event_subscriber->setCameraEnabled(option.enableOnvifEvent);
             _reversePanAxis   = option.reversePanAxis;
             _reverseTiltAxis  = option.reverseTiltAxis;
             _ptzMode          = option.ptzMode;
@@ -197,6 +200,7 @@ void CameraController::setupController(const CameraOption &option) {
     _onvif_own_account = prepare_onvif && _vendor_stage.hasPlugin() && _vendor_stage.plugin().ownControlAccount;
     _enablePTZControl = option.enablePTZControl;
     _enableTimeSync   = option.enableTimeSync;
+    _event_subscriber->setCameraEnabled(option.enableOnvifEvent);
     _reversePanAxis   = option.reversePanAxis;
     _reverseTiltAxis  = option.reverseTiltAxis;
     _ptzMode          = option.ptzMode;
@@ -446,6 +450,7 @@ void CameraController::publishConnected(const DeviceControl::Ptr &device_ctr, bo
     caps->onvifProfile.relayOutputProfiles = device_ctr->getRelayOutputProfiles();
     caps->onvifProfile.audioOutputProfile  = device_ctr->getAudioOutputProfile();
     caps->onvifProfile.audioInputProfile   = device_ctr->getAudioInputProfile();
+    caps->onvifProfile.eventProfile        = device_ctr->getEventProfile();
     caps->supportsSdCardPlayback           = device_ctr->getSDCardInfo().isSDSupport();
     // Register/refresh the provider before publishing the connected event.
     // The event closes the device gap and immediately triggers discovery.
@@ -453,7 +458,45 @@ void CameraController::publishConnected(const DeviceControl::Ptr &device_ctr, bo
         _tuple.device_id, controlUsername(ControlProtocol::ONVIF),
         _ctrl_option.password, asOnvif(device_ctr),
         _sd_sync_config, true);
+    publishEventEndpoint(device_ctr, caps->onvifProfile.eventProfile);
     onControllerReady(true, "connected", std::move(caps));
+}
+
+void CameraController::publishEventEndpoint(const DeviceControl::Ptr &device_ctr, const OnvifEventProfile &profile) {
+    // Device queue: the OnvifControl getters were filled by the connect() that just ran here.
+    auto onvif = asOnvif(device_ctr);
+    std::shared_ptr<OnvifEventEndpoint> endpoint;
+    if (onvif && profile.isEventSupported && !onvif->eventsUrl().empty()) {
+        endpoint = std::make_shared<OnvifEventEndpoint>();
+        endpoint->address = _address;
+        endpoint->eventsUrl = onvif->eventsUrl();
+        endpoint->username = controlUsername(ControlProtocol::ONVIF);
+        endpoint->password = _ctrl_option.password;
+        endpoint->clockOffset = onvif->signingClockOffset();
+        for (auto &topic : profile.topics) {
+            auto rule = topic.isSupported ? mediakit::OnvifEventTopics::classify(topic.topic) : nullptr;
+            if (!rule) {
+                continue;
+            }
+            auto concrete = mediakit::OnvifEventTopics::concreteTopic(*rule);
+            if (std::find(endpoint->filterTopics.begin(), endpoint->filterTopics.end(), concrete) == endpoint->filterTopics.end()) {
+                endpoint->filterTopics.push_back(concrete);
+            }
+        }
+    }
+    std::weak_ptr<CameraController> weak_self = shared_from_this();
+    _poller->async([weak_self, device_ctr, endpoint]() {
+        auto self = weak_self.lock();
+        // A connect of a controller replaced meanwhile (protocol switch, new settings) is stale.
+        if (!self || self->_device_ctr != device_ctr) {
+            return;
+        }
+        if (endpoint && !endpoint->filterTopics.empty()) {
+            self->_event_subscriber->setEndpoint(*endpoint);
+        } else {
+            self->_event_subscriber->clearEndpoint();
+        }
+    }, false);
 }
 
 void CameraController::startProtocolProbe() {
@@ -1083,6 +1126,9 @@ void CameraController::onControllerReady(bool connect, const std::string &status
 
     _ready = connect;
     _err_msg = status;
+    if (!connect) {
+        _event_subscriber->clearEndpoint();
+    }
     std::shared_ptr<DeviceCapabilities> reported = caps;
     if (caps && caps->onvifProfile.deviceInfo.manufacturer.empty() && !_vendor_info.manufacturer.empty()) {
         // No control protocol told who made it: what the camera plugin read.

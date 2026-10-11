@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <ctime>
 #include <sstream>
@@ -23,6 +24,7 @@
 #include "Server/ClusterManager.h"
 #include "Local/StatisticRecorder.h"
 #include "Common/StrUtil.h"
+#include "Onvif/OnvifEventTopics.h"
 #include "User/UserAuditLog.h"
 #include "User/UserAuthorManager.h"
 #ifdef ENABLE_SYNC_CHANGES
@@ -676,6 +678,7 @@ static void fromJson(CameraOption &option, const Json::Value &data) {
             option.onvifMainProfile = parseOnvifProfile(onvif["mainStream"]);
             option.onvifSubProfile = parseOnvifProfile(onvif["subStream"]);
             GET_OPTION_PROPERTY(option, enableTimeSync, onvif, enableTimeSync)
+            GET_OPTION_PROPERTY(option, enableOnvifEvent, onvif, enableEvent)
         }
 
         if (adv.isMember("mediaStreaming") && !adv["mediaStreaming"].isNull()) {
@@ -1471,6 +1474,40 @@ static Json::Value getAudioPlaybackModeString(const DeviceCapabilities &caps) {
     return ret;
 }
 
+// Event capability for media-device-info: only the topics the media server handles (isSupported).
+static Json::Value makeOnvifEventsJson(const DeviceCapabilities &caps, const CameraOption &option) {
+    const auto &profile = caps.onvifProfile.eventProfile;
+    Json::Value ret = Json::objectValue;
+    ret["isSupported"] = caps.isOnvifDevice && profile.isEventSupported && profile.hasSupportedTopic();
+    GET_CONFIG(bool, event_enable, OnvifEventCfg::kEventEnable);
+    ret["enable"] = event_enable && option.enableOnvifEvent;
+    ret["eventTypes"] = Json::arrayValue;
+    ret["topics"] = Json::arrayValue;
+    if (!ret["isSupported"].asBool()) {
+        return ret;
+    }
+    std::vector<std::string> types;
+    for (const auto &t : profile.topics) {
+        if (!t.isSupported) {
+            continue;
+        }
+        Json::Value topic = Json::objectValue;
+        topic["eventType"] = t.eventType;
+        topic["topic"] = t.topic;
+        ret["topics"].append(topic);
+        if (std::find(types.begin(), types.end(), t.eventType) == types.end()) {
+            types.push_back(t.eventType);
+        }
+    }
+    std::sort(types.begin(), types.end(), [](const std::string &a, const std::string &b) {
+        return mediakit::OnvifEventTopics::eventTypeOrder(a) < mediakit::OnvifEventTopics::eventTypeOrder(b);
+    });
+    for (const auto &type : types) {
+        ret["eventTypes"].append(type);
+    }
+    return ret;
+}
+
 Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const DeviceCapabilities* caps) {
     Json::Value data;
     auto weak_listener = device->getListener();
@@ -1552,6 +1589,7 @@ Json::Value makeDeviceCapabilitiesJson(const DeviceSource::Ptr &device, const De
                 for (const auto &transport : params.transport_stats.replayTransports) {
                     data["replayTransports"].append(transport);
                 }
+                data["onvifEvents"] = makeOnvifEventsJson(*caps, option);
             }
         }
 
@@ -1828,6 +1866,7 @@ Json::Value makeCameraOptionJson(const CameraOption &option) {
     val["onvifMainProfile"]    = option.onvifMainProfile;
     val["onvifSubProfile"]     = option.onvifSubProfile;
     val["enableTimeSync"]      = option.enableTimeSync;
+    val["enableOnvifEvent"]    = option.enableOnvifEvent;
 
     // Motion detection
     val["enableMotion"]         = option.enableMotion;

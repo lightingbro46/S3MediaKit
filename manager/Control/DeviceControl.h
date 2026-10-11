@@ -102,6 +102,42 @@ struct OnvifPTZProfile {
     bool operator!=(const OnvifPTZProfile &o) const { return !(*this == o); }
 };
 
+// One topic of the camera event topic set (ONVIF GetEventProperties).
+struct OnvifEventTopic {
+    std::string topic;            // as the camera wrote it: "tns1:RuleEngine/CellMotionDetector/Motion"
+    std::string eventType;        // mediakit::OnvifEventTopics::classify; "" when not supported
+    bool isSupported = false;     // the media server handles this topic (eventType not empty)
+    bool isProperty = false;      // a state (Initialized/Changed/Deleted) rather than a one-off event
+    std::vector<std::string> sourceItems;
+    std::vector<std::string> dataItems;
+
+    bool operator==(const OnvifEventTopic &o) const {
+        return topic == o.topic && eventType == o.eventType && isSupported == o.isSupported
+            && isProperty == o.isProperty && sourceItems == o.sourceItems && dataItems == o.dataItems;
+    }
+    bool operator!=(const OnvifEventTopic &o) const { return !(*this == o); }
+};
+
+// Event capability of a camera, read when the ONVIF controller connects (like OnvifPTZProfile).
+struct OnvifEventProfile {
+    bool isEventSupported = false;     // the camera has an ONVIF event service
+    bool isPullPointSupported = false; // GetCapabilities Events.WSPullPointSupport
+    std::vector<OnvifEventTopic> topics; // every topic, supported or not (kept in info.txt)
+
+    // At least one topic the media server handles.
+    bool hasSupportedTopic() const {
+        for (auto &t : topics) {
+            if (t.isSupported) return true;
+        }
+        return false;
+    }
+    bool operator==(const OnvifEventProfile &o) const {
+        return isEventSupported == o.isEventSupported && isPullPointSupported == o.isPullPointSupported
+            && topics == o.topics;
+    }
+    bool operator!=(const OnvifEventProfile &o) const { return !(*this == o); }
+};
+
 enum class VideoConfigSetState {NEW, PROCESSING, SUCCESS, FAILED, EXTERNAL};
 static std::unordered_map<VideoConfigSetState, std::string> configStateToString = {
     {VideoConfigSetState::NEW, "NEW"},
@@ -448,6 +484,7 @@ public:
     virtual SDCardInformation getSDCardInfo() { return SDCardInformation(); }
     virtual OnvifAudioOutputProfile getAudioOutputProfile() const { return OnvifAudioOutputProfile(); }
     virtual OnvifAudioInputProfile getAudioInputProfile() const { return OnvifAudioInputProfile(); }
+    virtual OnvifEventProfile getEventProfile() const { return OnvifEventProfile(); }
 
     // Audio to the device's speaker (ONVIF: RTSP backchannel, ISAPI: two-way audio). Blocking, on the
     // device queue, after a successful connect(). The default is "not supported".
