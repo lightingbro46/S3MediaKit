@@ -203,6 +203,8 @@ public:
     void setTimeRequiresAuth(bool on) { _time_requires_auth = on; }
     // Whether responses carry an HTTP Date header (camera clock).
     void setSendDate(bool on) { _send_date = on; }
+    // Digest: accept each nonce with nc=00000001 only (firmware that does not count nonces).
+    void setSingleUseNc(bool on) { _single_use_nc = on; }
 
     vector<Request> requestsFor(const string &action) {
         vector<Request> ret;
@@ -438,6 +440,9 @@ private:
         if (p["uri"] != path || p["response"] != expect || p["opaque"] != "op" || p["qop"] != "auth") {
             return false;
         }
+        if (_single_use_nc && p["nc"] != "00000001") {
+            return false;
+        }
         // Expire the nonce after it has been used _nonce_uses times.
         if (++_nonce_used >= _nonce_uses) {
             ++_nonce_gen;
@@ -457,6 +462,7 @@ private:
     atomic<long> _clock_offset { 0 };
     atomic<bool> _time_requires_auth { false };
     atomic<bool> _send_date { true };
+    atomic<bool> _single_use_nc { false };
     int _fd = -1;
     uint16_t _port = 0;
     atomic<bool> _stop { false };
@@ -707,6 +713,101 @@ void getDeviceInformation(const string &url, const string &user, const string &p
     });
     unique_lock<mutex> lk(res.mtx);
     ASSERT_TRUE(res.cv.wait_for(lk, chrono::seconds(10), [&res]() { return res.done; }));
+}
+
+// Same request with an HttpAuthSession, as the event subscriber sends it.
+void getDeviceInformation(const string &url, const string &user, const string &pass,
+                          const HttpAuthSession::Ptr &session, SoapResult &res) {
+    auto body = SoapUtil::createSoapRequest(R"(<GetDeviceInformation xmlns="http://www.onvif.org/ver10/device/wsdl"/>)",
+                                            user, pass);
+    SoapUtil::sendSoapRequest(url, R"("http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation")", body,
+                              [&res](const SoapObject &, const SoapErr &err) {
+        lock_guard<mutex> lk(res.mtx);
+        res.ok = !err;
+        res.http_code = err.httpCode();
+        res.done = true;
+        res.cv.notify_all();
+    }, 10, user, pass, true, session);
+    unique_lock<mutex> lk(res.mtx);
+    ASSERT_TRUE(res.cv.wait_for(lk, chrono::seconds(10), [&res]() { return res.done; }));
+}
+
+bool callWithSession(FakeCamera &cam, const string &pass, const HttpAuthSession::Ptr &session) {
+    SoapResult res;
+    getDeviceInformation("http://" + cam.host() + "/onvif/device_service", "admin", pass, session, res);
+    return res.ok;
+}
+
+string ncOf(const FakeCamera::Request &req) {
+    return parseParams(req.authorization.substr(7))["nc"];
+}
+
+TEST_F(OnvifHttpAuthTest, SessionAnswersDigestUpFrontAfterTheFirstChallenge) {
+    FakeCamera cam(FakeCamera::DIGEST, "admin", "pw");
+    auto session = std::make_shared<HttpAuthSession>();
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_TRUE(callWithSession(cam, "pw", session));
+    }
+    // One 401 for the first call only, then the nonce counts up.
+    auto reqs = cam.requestsFor("GetDeviceInformation");
+    ASSERT_EQ(4u, reqs.size());
+    EXPECT_FALSE(reqs[0].authorized);
+    EXPECT_EQ("00000001", ncOf(reqs[1]));
+    EXPECT_TRUE(reqs[2].authorized);
+    EXPECT_EQ("00000002", ncOf(reqs[2]));
+    EXPECT_TRUE(reqs[3].authorized);
+    EXPECT_EQ("00000003", ncOf(reqs[3]));
+}
+
+TEST_F(OnvifHttpAuthTest, SessionTakesTheNewNonceOfAStaleChallenge) {
+    FakeCamera cam(FakeCamera::DIGEST, "admin", "pw", 2);
+    auto session = std::make_shared<HttpAuthSession>();
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_TRUE(callWithSession(cam, "pw", session));
+    }
+    // 401 + answer, up front (nonce used up), stale 401 + answer, up front.
+    auto reqs = cam.requestsFor("GetDeviceInformation");
+    ASSERT_EQ(6u, reqs.size());
+    EXPECT_FALSE(reqs[3].authorized);
+    EXPECT_TRUE(reqs[4].authorized);
+    EXPECT_EQ("00000001", ncOf(reqs[4]));
+    EXPECT_TRUE(session->cacheEnabled());
+}
+
+TEST_F(OnvifHttpAuthTest, SessionWithAWrongPasswordFails) {
+    FakeCamera cam(FakeCamera::DIGEST, "admin", "pw");
+    auto session = std::make_shared<HttpAuthSession>();
+    EXPECT_FALSE(callWithSession(cam, "bad", session));
+    // The answer to the nonce was refused: not sent a third time.
+    EXPECT_EQ(2u, cam.requestsFor("GetDeviceInformation").size());
+}
+
+TEST_F(OnvifHttpAuthTest, SessionFallsBackForACameraThatTakesEachNonceOnce) {
+    FakeCamera cam(FakeCamera::DIGEST, "admin", "pw");
+    cam.setSingleUseNc(true);
+    auto session = std::make_shared<HttpAuthSession>();
+    EXPECT_TRUE(callWithSession(cam, "pw", session));
+    // nc=2 refused with the same nonce: answered again with nc=1, and no cache from then on.
+    EXPECT_TRUE(callWithSession(cam, "pw", session));
+    EXPECT_FALSE(session->cacheEnabled());
+    EXPECT_TRUE(callWithSession(cam, "pw", session));
+    auto reqs = cam.requestsFor("GetDeviceInformation");
+    ASSERT_EQ(6u, reqs.size());
+    EXPECT_EQ("00000002", ncOf(reqs[2]));
+    EXPECT_FALSE(reqs[2].authorized);
+    EXPECT_TRUE(reqs[3].authorized);
+    EXPECT_EQ("", reqs[4].authorization);
+    EXPECT_TRUE(reqs[5].authorized);
+}
+
+TEST_F(OnvifHttpAuthTest, SessionCachesBasicWhenAllowed) {
+    setAllowBasic(true);
+    FakeCamera cam(FakeCamera::BASIC, "admin", "pw");
+    auto session = std::make_shared<HttpAuthSession>();
+    EXPECT_TRUE(callWithSession(cam, "pw", session));
+    EXPECT_TRUE(callWithSession(cam, "pw", session));
+    EXPECT_EQ(3u, cam.requestsFor("GetDeviceInformation").size());
+    setAllowBasic(false);
 }
 
 TEST_F(OnvifHttpAuthTest, SoapUtilAnswersDigestChallenge) {

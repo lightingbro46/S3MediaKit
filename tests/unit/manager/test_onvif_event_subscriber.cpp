@@ -36,7 +36,7 @@ struct Request {
 class FakeTransport : public OnvifEventTransport {
 public:
     void send(const std::string &url, const std::string &action, const std::string &envelope, float,
-              const std::string &, const std::string &, const Callback &cb) override {
+              const std::string &, const std::string &, const HttpAuthSession::Ptr &, const Callback &cb) override {
         std::lock_guard<std::mutex> lck(_mtx);
         _requests.push_back(Request{ url, action, envelope, cb });
     }

@@ -7,6 +7,7 @@
 #include <vector>
 #include <functional>
 #include <initializer_list>
+#include <mutex>
 #include "Common/Parser.h"
 #include "Network/Socket.h"
 #include "pugixml.hpp"
@@ -36,6 +37,45 @@ extern const std::string kAllowHttpBasicAuth;
 } // namespace OnvifAuth
 
 class SoapObject;
+
+/**
+ * HTTP authentication remembered across the requests of one client that keeps talking to the same
+ * camera (an event subscription): the Digest challenge, with nc counting up, or Basic. Each request
+ * then carries Authorization at once instead of being answered 401 first (one round trip, and no
+ * rejected login on the camera, per request). Any thread.
+ */
+class HttpAuthSession {
+public:
+    using Ptr = std::shared_ptr<HttpAuthSession>;
+
+    /**
+     * Authorization for the next request, "" when no challenge is known yet. `retry`: the request
+     * answering a challenge just received, sent even while the cache is off.
+     */
+    std::string authorize(const std::string &method, const std::string &uri, const std::string &user_name,
+                          const std::string &pwd, bool retry = false);
+
+    /**
+     * A 401 with `challenges` answered a request sent with `sent_authorization` ("" = none). True
+     * when sending it again is worth it: the first challenge, a new nonce, stale=true, or a camera
+     * refusing a nonce count above 1 (the cache is then turned off and nc=1 used, as without a
+     * session). False when the credentials were refused with the nonce just used, or nothing can
+     * answer the challenges.
+     */
+    bool onChallenge(const std::vector<std::string> &challenges, const std::string &sent_authorization,
+                     bool allow_basic);
+
+    // Whether requests carry the cached answer (false after a camera refused nc > 1).
+    bool cacheEnabled() const;
+
+private:
+    mutable std::mutex _mtx;
+    enum class Scheme { None, Digest, Basic } _scheme = Scheme::None;
+    std::string _challenge; // the Digest parameters, as sent by the camera
+    uint32_t _nc = 0;       // last nonce count sent for the current nonce
+    std::string _cnonce;
+    bool _cache_enabled = true;
+};
 
 class SoapErr {
 public:
@@ -84,7 +124,8 @@ public:
      */
     static void sendSoapRequest(const std::string &url, const std::string &action, const std::string &body,
                                 const SoapRequestCB &func = nullptr, float timeout_sec = 10,
-                                const std::string &user_name = "", const std::string &pwd = "", bool quiet = false);
+                                const std::string &user_name = "", const std::string &pwd = "", bool quiet = false,
+                                const std::shared_ptr<HttpAuthSession> &auth_session = nullptr);
 
     /**
      * Authorization header value answering one of the WWW-Authenticate challenges of a 401

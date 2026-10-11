@@ -42,9 +42,11 @@ public:
     // May run on any thread.
     using Callback = std::function<void(const SoapObject &body, const SoapErr &err)>;
     virtual ~OnvifEventTransport() = default;
-    // `envelope` is a complete SOAP envelope; `user`/`pwd` answer an HTTP Digest challenge.
+    // `envelope` is a complete SOAP envelope; `user`/`pwd` answer an HTTP Digest challenge, remembered in
+    // `auth` for the next requests.
     virtual void send(const std::string &url, const std::string &action, const std::string &envelope,
-                      float timeout_sec, const std::string &user, const std::string &pwd, const Callback &cb) = 0;
+                      float timeout_sec, const std::string &user, const std::string &pwd,
+                      const HttpAuthSession::Ptr &auth, const Callback &cb) = 0;
 };
 
 /**
@@ -133,6 +135,8 @@ private:
 
     bool _holding_slot = false;
     mediakit::OnvifSubscriptionRef _subscription; // address empty = none
+    // HTTP Digest/Basic answer kept across the requests to this endpoint (new one per endpoint).
+    HttpAuthSession::Ptr _auth = std::make_shared<HttpAuthSession>();
     bool _use_filter = true;                      // false once the camera refused the topic filter
     bool _renew_unsupported = false;
     bool _resubscribed_after_error = false;       // one immediate retry after a dead subscription

@@ -21,9 +21,9 @@ namespace {
 class SoapEventTransport : public OnvifEventTransport {
 public:
     void send(const string &url, const string &action, const string &envelope, float timeout_sec, const string &user,
-              const string &pwd, const Callback &cb) override {
+              const string &pwd, const HttpAuthSession::Ptr &auth, const Callback &cb) override {
         // Quiet: the subscriber logs once per state change, not once per failed request.
-        SoapUtil::sendSoapRequest(url, "\"" + action + "\"", envelope, cb, timeout_sec, user, pwd, true);
+        SoapUtil::sendSoapRequest(url, "\"" + action + "\"", envelope, cb, timeout_sec, user, pwd, true, auth);
     }
 };
 
@@ -90,6 +90,10 @@ void OnvifEventSubscriber::setEndpoint(const OnvifEventEndpoint &endpoint) {
         return;
     }
     halt();
+    if (!_has_endpoint || !_endpoint.sameTarget(endpoint)) {
+        // Another account or camera: its Digest nonce means nothing here.
+        _auth = std::make_shared<HttpAuthSession>();
+    }
     _endpoint = endpoint;
     _has_endpoint = true;
     // A new connection may be a new firmware: ask for the filter and Renew again.
@@ -227,7 +231,7 @@ void OnvifEventSubscriber::send(const string &url, const char *action, const str
     std::weak_ptr<OnvifEventSubscriber> weak_self = shared_from_this();
     const uint64_t generation = _generation;
     auto poller = _poller;
-    _transport->send(url, action, envelope, timeout_sec, _endpoint.username, _endpoint.password,
+    _transport->send(url, action, envelope, timeout_sec, _endpoint.username, _endpoint.password, _auth,
                      [weak_self, generation, poller, cb](const SoapObject &node, const SoapErr &err) {
         poller->async([weak_self, generation, cb, node, err]() {
             auto self = weak_self.lock();
@@ -248,7 +252,7 @@ void OnvifEventSubscriber::sendUnsubscribe() {
     auto envelope = SoapUtil::createSoapRequest(OnvifEventRequest::unsubscribe(), _endpoint.username,
                                                 _endpoint.password, header, _endpoint.clockOffset);
     _transport->send(_subscription.address, OnvifEventRequest::kUnsubscribeAction, envelope, 3, _endpoint.username,
-                     _endpoint.password, nullptr);
+                     _endpoint.password, _auth, nullptr);
     _subscription = OnvifSubscriptionRef();
 }
 

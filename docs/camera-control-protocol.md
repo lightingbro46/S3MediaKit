@@ -332,6 +332,10 @@ trước khi hết hạn, `Unsubscribe` khi camera mất kết nối, bị tắt
 - Camera không hỗ trợ `Renew`: tạo subscription mới khi cái cũ sắp hết.
 - Subscription mất (camera reboot, `ResourceUnknown`): đăng ký lại ngay một lần, sau đó chờ 5 s nhân đôi tới
   `onvif.eventRetryMaxSec`.
+- Camera chỉ nhận HTTP Digest (bỏ qua WS-Security): mỗi camera nhớ challenge Digest (`nc` tăng dần), các request sau
+  gửi `Authorization` ngay, không bị 401 trước. Nonce hết hạn (`stale=true` hoặc nonce mới) thì trả lời lại một lần;
+  camera chỉ nhận mỗi nonce với `nc=1` thì tắt cache cho camera đó (mỗi request lại 401 rồi trả lời, như trước). Basic
+  (`onvif.allowHttpBasicAuth=1`) cũng được nhớ.
 - Camera trả 401/403/`NotAuthorized`: dừng, thử lại khi controller kết nối lại hoặc sau `onvif.eventRetryMaxSec`.
   Không thêm lần đăng nhập sai nào (camera Hikvision khoá IP).
 
@@ -397,6 +401,8 @@ không có hàng đợi bền); topic chỉ đọc lại khi kết nối lại (
 - Sự kiện ONVIF: `unit.OnvifEventTopicsTest.*`, `unit.OnvifEventTest.*` (binary `unit_xml`: bảng chuẩn hoá,
   parser TopicSet/PullMessages), `unit.onvif_event_subscriber_all` (state machine với transport giả). Camera giả:
   `onvif_mock.py --events --motion-period-sec 20`; fault spec `events_filter_refuse`, `events_no_renew`,
-  `events_epoch` (đổi = camera reboot), `events_401`; `--state` ghi thống kê `events` từng thiết bị.
+  `events_epoch` (đổi = camera reboot), `events_401`; `--state` ghi thống kê `events` từng thiết bị. Digest:
+  `--auth digest --auth-pass stress-pass --nonce-uses 50`, so `_http_401` với số request event trong `--state`.
+  Cache Digest: `OnvifHttpAuthTest.Session*` trong `unit.onvif_http_auth_all`.
 - `PSIA_MOCK_ADDR=127.0.0.1:18680 ISAPI_MOCK_ADDR=127.0.0.1:18681 release/linux/Debug/unit_psia_control` chạy cả
   các case gọi mock.

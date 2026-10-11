@@ -304,8 +304,10 @@ static bool hasToken(const string &list, const char *token) {
     return false;
 }
 
+// `nc`: nonce count, 8 hex digits.
 static string makeDigestAuthorization(const string &params_str, const string &method, const string &uri,
-                                      const string &user_name, const string &pwd, const string &cnonce) {
+                                      const string &user_name, const string &pwd, const string &cnonce,
+                                      const string &nc = "00000001") {
     auto params = parseAuthParams(params_str);
     auto &realm = params["realm"];
     auto &nonce = params["nonce"];
@@ -324,7 +326,6 @@ static string makeDigestAuthorization(const string &params_str, const string &me
         // auth-int only
         return "";
     }
-    static constexpr char nc[] = "00000001";
     auto ha1 = MD5(user_name + ":" + realm + ":" + pwd).hexdigest();
     if (sess) {
         ha1 = MD5(ha1 + ":" + nonce + ":" + cnonce).hexdigest();
@@ -369,15 +370,101 @@ string SoapUtil::makeHttpAuthorization(const vector<string> &challenges, const s
     return "";
 }
 
+// ---- HttpAuthSession --------------------------------------------------------
+
+static string digestParams(const string &challenge) {
+    auto pos = challenge.find(' ');
+    if (pos == string::npos || strcasecmp(challenge.substr(0, pos).data(), "Digest") != 0) {
+        return "";
+    }
+    return challenge.substr(pos + 1);
+}
+
+string HttpAuthSession::authorize(const string &method, const string &uri, const string &user_name,
+                                  const string &pwd, bool retry) {
+    lock_guard<mutex> lck(_mtx);
+    if (!retry && !_cache_enabled) {
+        return "";
+    }
+    if (_scheme == Scheme::Basic) {
+        return "Basic " + encodeBase64(user_name + ":" + pwd);
+    }
+    if (_scheme != Scheme::Digest) {
+        return "";
+    }
+    char nc[16];
+    snprintf(nc, sizeof(nc), "%08x", ++_nc);
+    return makeDigestAuthorization(_challenge, method, uri, user_name, pwd, _cnonce, nc);
+}
+
+bool HttpAuthSession::onChallenge(const vector<string> &challenges, const string &sent_authorization,
+                                  bool allow_basic) {
+    lock_guard<mutex> lck(_mtx);
+    string sent_nonce;
+    string sent_nc;
+    const bool sent_basic = sent_authorization.compare(0, 6, "Basic ") == 0;
+    if (sent_authorization.compare(0, 7, "Digest ") == 0) {
+        auto sent = parseAuthParams(sent_authorization.substr(7));
+        sent_nonce = sent["nonce"];
+        sent_nc = sent["nc"];
+    }
+    for (auto &challenge : challenges) {
+        auto params_str = digestParams(challenge);
+        if (params_str.empty()) {
+            continue;
+        }
+        // Only a challenge makeDigestAuthorization can answer.
+        if (makeDigestAuthorization(params_str, "POST", "/", "u", "p", "c").empty()) {
+            continue;
+        }
+        auto params = parseAuthParams(params_str);
+        const bool stale = strcasecmp(params["stale"].data(), "true") == 0;
+        if (!sent_nonce.empty() && params["nonce"] == sent_nonce && !stale) {
+            if (sent_nc.empty() || sent_nc == "00000001") {
+                // The answer to this very nonce was wrong: the credentials.
+                return false;
+            }
+            // Accepted with nc=1 before, refused now: a camera that takes each nonce once. Answer every
+            // challenge afresh from now on, as without a session.
+            _cache_enabled = false;
+        }
+        _scheme = Scheme::Digest;
+        _challenge = params_str;
+        _nc = 0;
+        _cnonce = makeRandStr(16);
+        return true;
+    }
+    if (allow_basic && !sent_basic) {
+        for (auto &challenge : challenges) {
+            if (strncasecmp(challenge.data(), "Basic", 5) == 0) {
+                _scheme = Scheme::Basic;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool HttpAuthSession::cacheEnabled() const {
+    lock_guard<mutex> lck(_mtx);
+    return _cache_enabled;
+}
+
 static string urlPath(const string &url) {
     auto pos = url.find("://");
     pos = url.find('/', pos == string::npos ? 0 : pos + 3);
     return pos == string::npos ? "/" : url.substr(pos);
 }
 
+// `retried`: this request already answers a 401 challenge, a second 401 is final.
 static void sendSoapRequest_l(const string &url, const string &SOAPAction, const string &body,
                               const SoapUtil::SoapRequestCB &func, float timeout_sec, const string &user_name,
-                              const string &pwd, const string &authorization, bool quiet) {
+                              const string &pwd, const string &authorization_in, bool quiet,
+                              const HttpAuthSession::Ptr &session, bool retried) {
+    auto authorization = authorization_in;
+    if (!retried && session && !user_name.empty()) {
+        authorization = session->authorize("POST", urlPath(url), user_name, pwd);
+    }
     HttpRequester::Ptr requester(new HttpRequester);
     requester->setMethod("POST");
     requester->setBody(body);
@@ -389,7 +476,7 @@ static void sendSoapRequest_l(const string &url, const string &SOAPAction, const
     }
     std::shared_ptr<Ticker> ticker(new Ticker);
     requester->startRequester(url, [url, SOAPAction, body, func, timeout_sec, user_name, pwd, authorization, requester,
-                                    ticker, quiet](const SockException &ex, const Parser &parser) mutable {
+                                    ticker, quiet, session, retried](const SockException &ex, const Parser &parser) mutable {
 
         onceToken token(nullptr, [&]() mutable {
             requester.reset();
@@ -407,21 +494,30 @@ static void sendSoapRequest_l(const string &url, const string &SOAPAction, const
             invoker(SoapObject(), SoapErr(url, SOAPAction, ex, parser));
             return;
         }
-        if (parser.status() == "401" && authorization.empty() && !user_name.empty()) {
+        if (parser.status() == "401" && !retried && !user_name.empty()) {
             vector<string> challenges;
             auto range = parser.getHeader().equal_range("WWW-Authenticate");
             for (auto it = range.first; it != range.second; ++it) {
                 challenges.emplace_back(it->second);
             }
             GET_CONFIG(bool, allow_basic, OnvifAuth::kAllowHttpBasicAuth);
-            auto auth = SoapUtil::makeHttpAuthorization(challenges, "POST", urlPath(url), user_name, pwd,
-                                                        makeRandStr(16), allow_basic);
+            string auth;
+            if (session) {
+                if (session->onChallenge(challenges, authorization, allow_basic)) {
+                    auth = session->authorize("POST", urlPath(url), user_name, pwd, true);
+                }
+            } else {
+                auth = SoapUtil::makeHttpAuthorization(challenges, "POST", urlPath(url), user_name, pwd,
+                                                       makeRandStr(16), allow_basic);
+            }
             if (!auth.empty()) {
-                sendSoapRequest_l(url, SOAPAction, body, func, timeout_sec, user_name, pwd, auth, quiet);
+                sendSoapRequest_l(url, SOAPAction, body, func, timeout_sec, user_name, pwd, auth, quiet, session, true);
                 return;
             }
-            WarnL << "Onvif request " << url << " got 401 with no challenge that can be answered"
-                  << (allow_basic ? "" : " (HTTP Basic is refused unless onvif.allowHttpBasicAuth=1)");
+            if (!session) {
+                WarnL << "Onvif request " << url << " got 401 with no challenge that can be answered"
+                      << (allow_basic ? "" : " (HTTP Basic is refused unless onvif.allowHttpBasicAuth=1)");
+            }
         }
         if (parser.status() != "200") {
             // Most faults come with 400/500: keep the fault so a caller can tell why.
@@ -468,8 +564,9 @@ static void sendSoapRequest_l(const string &url, const string &SOAPAction, const
 }
 
 void SoapUtil::sendSoapRequest(const string &url, const string &SOAPAction, const string &body, const SoapRequestCB &func,
-                               float timeout_sec, const string &user_name, const string &pwd, bool quiet) {
-    sendSoapRequest_l(url, SOAPAction, body, func, timeout_sec, user_name, pwd, "", quiet);
+                               float timeout_sec, const string &user_name, const string &pwd, bool quiet,
+                               const HttpAuthSession::Ptr &auth_session) {
+    sendSoapRequest_l(url, SOAPAction, body, func, timeout_sec, user_name, pwd, "", quiet, auth_session, false);
 }
 
 void SoapUtil::sendGetDeviceInformation(const std::string &device_service, const std::string &user_name,
