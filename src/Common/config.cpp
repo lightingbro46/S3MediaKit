@@ -836,6 +836,8 @@ const string kAuthRetrySec = CAMERA_FIELD "control_auth_retry_sec";
 const string kSyncConfigToDb = CAMERA_FIELD "sync_config_to_db";
 const string kMaxStreamTimeoutSec = CAMERA_FIELD "maxStreamTimeoutSec";
 const string kDeviceStatusReportDelaySec = CAMERA_FIELD "deviceStatusReportDelaySec";
+const string kPrepareOnvif = CAMERA_FIELD "prepareOnvif";
+const string kOnvifUsername = CAMERA_FIELD "onvifUsername";
 
 static onceToken token([]() {
     // ONVIF first: every camera that worked before keeps working the same way. ISAPI before PSIA:
@@ -849,6 +851,12 @@ static onceToken token([]() {
     mINI::Instance()[kSyncConfigToDb] = 1;
     mINI::Instance()[kMaxStreamTimeoutSec] = 10.0;
     mINI::Instance()[kDeviceStatusReportDelaySec] = 30;
+    // The camera plugin (Hikvision, Hanwha) turns ONVIF on and creates the ONVIF user below through the
+    // vendor API; 0 = never change the camera's settings.
+    mINI::Instance()[kPrepareOnvif] = 1;
+    // ONVIF user the plugin of a brand with ONVIF users apart from the web ones (Hikvision) creates, with
+    // the camera's configured password.
+    mINI::Instance()[kOnvifUsername] = "onvif_vms";
 });
 } // namespace Camera
 

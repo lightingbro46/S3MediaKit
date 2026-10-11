@@ -102,6 +102,13 @@ protected:
     // Logs in to the camera plugin APIs (VendorStage::probe); unit tests override it. `cb` may run on any thread.
     virtual void probeVendorApis(const std::string &ip, int port, const std::string &username, const std::string &password,
                                  const VendorStage::OnProbe &cb);
+    // `failure`: why a preparation failed (IDevice::lastFailure()), None on success.
+    typedef std::function<void(bool ok, DeviceFailure failure, const std::string &msg)> OnOnvifPrepared;
+    // IOnvifSetup::prepareOnvif() of the plugin of `brand`, logged in with the configured account;
+    // `onvif_username` empty only turns ONVIF on. Unit tests override it. `cb` may run on any thread.
+    virtual void prepareVendorOnvif(DeviceBrand brand, const std::string &ip, int port, const std::string &username,
+                                    const std::string &password, const std::string &onvif_username,
+                                    const OnOnvifPrepared &cb);
 
 private:
     friend class CameraControllerTestPeer; // unit tests drive the media profile sync directly
@@ -114,6 +121,19 @@ private:
     // Manufacturer blank: asks the camera plugin APIs who made the camera, then runs the control cycle.
     void startVendorDetect();
     void onVendorProbeDone(uint64_t generation, const VendorStage::ProbeResult &result);
+    // The plugin has ONVIF to prepare before the protocols of this cycle: camera.prepareOnvif on, a
+    // plugin that turns ONVIF on or provisions its account, a protocol setting that may use ONVIF, not
+    // prepared yet for these settings, and not within the wait after a failed try.
+    bool needsOnvifPrepare(uint64_t now) const;
+    // Asks the plugin to prepare ONVIF, then runs the control cycle (onOnvifPrepared).
+    void startOnvifPrepare();
+    void onOnvifPrepared(uint64_t generation, bool ok, DeviceFailure failure, const std::string &msg);
+    // ONVIF logs in with camera.onvifUsername (`own`) or the configured account; a current ONVIF
+    // controller of the other account is replaced.
+    void useOnvifAccount(bool own);
+    // Account `protocol` logs in with: ONVIF takes camera.onvifUsername once the plugin provisions it.
+    // Any thread (publishConnected runs on the device queue).
+    std::string controlUsername(ControlProtocol protocol) const;
 
     void onControllerReady(bool connect, const std::string &status, const std::shared_ptr<DeviceCapabilities> &caps);
 
@@ -224,6 +244,13 @@ private:
     IDeviceInfo _vendor_info;
     // HTTP port of the camera (its web port), where the plugin APIs answer.
     int _web_port = 80;
+    // The plugin prepared ONVIF for the current settings; a failed try is repeated from
+    // _onvif_prepare_retry_at (seconds) on. Both reset by setupController().
+    bool _onvif_prepared = false;
+    uint64_t _onvif_prepare_retry_at = 0;
+    // ONVIF logs in with camera.onvifUsername: the plugin provisions that account and its preparation
+    // has not failed. Set on _poller, read on the device queue too.
+    std::atomic<bool> _onvif_own_account{false};
     bool _probing = false;
     // lastFailure() of the controller the last failed AUTO probe reported; read when there is no controller.
     DeviceFailure _probe_failure = DeviceFailure::None;

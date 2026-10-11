@@ -44,19 +44,24 @@ private:
         return ret;
     }
 
-    // Camera plugins only identify the camera (manufacturer, model, serial...): no account of their
-    // own, no protocol constraint.
+    // Camera plugins identify the camera (manufacturer, model, serial...) and prepare ONVIF beside the
+    // control protocols; no protocol constraint (AUTO keeps ISAPI/PSIA as fallbacks).
     static std::vector<VendorPluginInfo> makeCameraPlugins() {
         std::vector<VendorPluginInfo> ret;
         VendorPluginInfo hikvision;
         hikvision.type = DeviceType::Camera;
         hikvision.brand = DeviceBrand::HIKVISION;
         hikvision.name = "Hikvision";
+        // ONVIF users are apart from the web users, and ONVIF is often off: camera.onvifUsername.
+        hikvision.ownControlAccount = true;
+        hikvision.enablesOnvif = true;
         ret.push_back(hikvision);
         VendorPluginInfo hanwha;
         hanwha.type = DeviceType::Camera;
         hanwha.brand = DeviceBrand::HANWHA;
         hanwha.name = "Hanwha Vision";
+        // ONVIF takes the web account; older firmware has it off.
+        hanwha.enablesOnvif = true;
         ret.push_back(hanwha);
         return ret;
     }

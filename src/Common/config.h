@@ -1088,6 +1088,12 @@ extern const std::string kSyncConfigToDb;
 extern const std::string kMaxStreamTimeoutSec;
 // Seconds to collect camera online/offline changes before reporting them in one API call, 0 reports each change at once
 extern const std::string kDeviceStatusReportDelaySec;
+// 1: the plugin of a known camera brand (Hikvision, Hanwha) turns ONVIF on and creates the ONVIF user
+// through the vendor API before the control protocols connect; 0: never changes the camera's settings
+extern const std::string kPrepareOnvif;
+// ONVIF user created on cameras whose ONVIF users are apart from the web ones (Hikvision), with the
+// camera's configured password; ONVIF logs in with it, ISAPI/PSIA keep the configured account
+extern const std::string kOnvifUsername;
 } // namespace Camera
 
 ////////////Management system (VMS) configuration///////////

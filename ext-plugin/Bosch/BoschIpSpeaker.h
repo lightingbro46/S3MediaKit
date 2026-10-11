@@ -10,6 +10,7 @@
 #include <mutex>
 #include "../IAudioPlayback.h"
 #include "../IDevice.h"
+#include "../IOnvifSetup.h"
 #include "Http/HttpRequester.h"
 #include "Http/HttpBody.h"
 #include "Util/logger.h"
@@ -28,7 +29,8 @@ struct BoschUser {
 
 using OnUsersResult = std::function<void(bool ok, const std::vector<BoschUser>& users, const std::string& err)>;
 
-class BoschIpSpeaker : public IDevice, public IAudioPlayback, public std::enable_shared_from_this<BoschIpSpeaker> {
+class BoschIpSpeaker : public IDevice, public IAudioPlayback, public IOnvifSetup,
+                       public std::enable_shared_from_this<BoschIpSpeaker> {
 public:
     explicit BoschIpSpeaker(const SpeakerConfig& cfg);
     ~BoschIpSpeaker() override = default;
@@ -39,8 +41,8 @@ public:
     // Disconnect from the speaker.
     void disconnect(OnDeviceResult cb) override;
 
-    // Create an ONVIF user on the device.
-    void createOnvifUser(const std::string& username, const std::string& password, OnDeviceResult cb) override;
+    // Creates the ONVIF user `username` (ONVIF is always on); fails when it already exists.
+    void prepareOnvif(const std::string& username, const std::string& password, OnDeviceResult cb) override;
     
     // Upload an audio file.
     void uploadAudio(const AudioFile& file, OnDeviceResult cb) override;

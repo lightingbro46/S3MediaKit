@@ -27,14 +27,19 @@ Thêm two-way audio:
     PUT  /ISAPI/System/TwoWayAudio/channels/<id>/open|close
     PUT  /ISAPI/System/TwoWayAudio/channels/<id>/audioData  (byte ghi nối vào --audio-out;
          Content-Length: 0 thì trả 200 ngay rồi đọc audio thô tới khi client đóng kết nối)
+Chuẩn bị ONVIF của plugin camera Hikvision (ext-plugin/Hikvision):
+    GET  /ISAPI/System/Network/Integrate,  PUT (bật/tắt ONVIF, giữ nguyên node khác)
+    GET  /ISAPI/Security/ONVIF/users,  POST (tạo),  PUT /ISAPI/Security/ONVIF/users/<id> (đổi mật khẩu)
 Đường /PSIA trả 404 ở dialect isapi và ngược lại.
+
+--onvif-off: Integrate báo ONVIF đang tắt (mặc định bật), chưa có user ONVIF nào.
 
 --onvif-401: /onvif/device_service trả 401 + Digest challenge thay cho 404, giống Hikvision tắt
 ONVIF hoặc chưa tạo user ONVIF (ONVIF báo AUTH_FAILED lúc dò AUTO).
 
 Dùng:
     psia_mock.py [--port 18680] [--user admin --password admin123] [--basic]
-                 [--dialect psia|isapi] [--onvif-401] [--audio-out PATH]
+                 [--dialect psia|isapi] [--onvif-401] [--onvif-off] [--audio-out PATH]
                  [--rtsp-port 554] [--no-ptz] [--state PATH] [--verbose]
 
 --state ghi JSON (mỗi lần có request): cấu hình encoder hiện tại, vị trí PTZ, trạng thái
@@ -119,6 +124,8 @@ class Camera:
         self.isapi = args.dialect == "isapi"
         self.two_way_open = False
         self.audio_bytes = 0
+        self.onvif_enabled = not args.onvif_off
+        self.onvif_users = {}  # id -> {"userName", "password", "userType"}
 
     def dump(self):
         if not self.args.state:
@@ -131,6 +138,8 @@ class Camera:
             "time_set": self.time_set,
             "two_way_open": self.two_way_open,
             "audio_bytes": self.audio_bytes,
+            "onvif_enabled": self.onvif_enabled,
+            "onvif_users": self.onvif_users,
             "requests": self.requests,
         }
         tmp = self.args.state + ".tmp"
@@ -287,6 +296,44 @@ class Camera:
 
     def _isapi_only(self, method, path, body):
         """Tài nguyên chỉ ISAPI có; None nếu không phải."""
+        if path == "/ISAPI/System/Network/Integrate":
+            if method == "GET":
+                return 200, ('<?xml version="1.0" encoding="UTF-8"?><Integrate version="2.0" xmlns="%s">'
+                             '<CGI><enable>false</enable><certificateType>digest</certificateType></CGI>'
+                             '<ONVIF><enable>%s</enable><certificateType>digest/WSSE</certificateType></ONVIF>'
+                             '<ISAPI><enable>true</enable></ISAPI></Integrate>'
+                             % (NS, "true" if self.onvif_enabled else "false"))
+            if method == "PUT":
+                doc = ET.fromstring(body)
+                onvif = find(doc, "ONVIF")
+                if onvif is None or text(onvif, "certificateType") != "digest/WSSE":
+                    return 400, status(6, "Invalid XML Content", "badXmlContent")
+                self.onvif_enabled = text(onvif, "enable") == "true"
+                return 200, status()
+        if path == "/ISAPI/Security/ONVIF/users":
+            if method == "GET":
+                return 200, ('<?xml version="1.0" encoding="UTF-8"?><UserList version="2.0" xmlns="%s">%s</UserList>'
+                             % (NS, "".join('<User><id>%s</id><userName>%s</userName><userType>%s</userType></User>'
+                                            % (i, u["userName"], u["userType"])
+                                            for i, u in sorted(self.onvif_users.items()))))
+            if method == "POST":
+                doc = ET.fromstring(body)
+                uid, name = text(doc, "id"), text(doc, "userName")
+                if not uid or not name or not text(doc, "password"):
+                    return 400, status(6, "Invalid XML Content", "badXmlContent")
+                if uid in self.onvif_users or any(u["userName"] == name for u in self.onvif_users.values()):
+                    return 400, status(6, "Invalid XML Content", "userNameDuplicate")
+                self.onvif_users[uid] = {"userName": name, "password": text(doc, "password"),
+                                         "userType": text(doc, "userType")}
+                return 200, status()
+        m = re.match(r"^/ISAPI/Security/ONVIF/users/(\w+)$", path)
+        if m and method == "PUT":
+            if m.group(1) not in self.onvif_users:
+                return 404, status(4, "Invalid Operation", "invalidID")
+            doc = ET.fromstring(body)
+            self.onvif_users[m.group(1)]["password"] = text(doc, "password")
+            self.onvif_users[m.group(1)]["userType"] = text(doc, "userType")
+            return 200, status()
         if path == "/ISAPI/Security/adminAccesses" and method == "GET":
             return 200, ('<?xml version="1.0" encoding="UTF-8"?><AdminAccessProtocolList version="2.0" xmlns="%s">'
                          '<AdminAccessProtocol><id>1</id><enabled>true</enabled><protocol>HTTP</protocol>'
@@ -496,6 +543,7 @@ def main():
     ap.add_argument("--basic", action="store_true", help="Basic thay cho Digest")
     ap.add_argument("--dialect", choices=["psia", "isapi"], default="psia")
     ap.add_argument("--onvif-401", action="store_true", help="ONVIF trả 401 thay cho 404 (Hikvision tắt ONVIF)")
+    ap.add_argument("--onvif-off", action="store_true", help="Integrate báo ONVIF tắt (dialect isapi)")
     ap.add_argument("--audio-out", default=None, help="file nhận byte two-way audio (dialect isapi)")
     ap.add_argument("--rtsp-port", type=int, default=554)
     ap.add_argument("--no-ptz", action="store_true")

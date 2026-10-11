@@ -62,6 +62,9 @@ Load `s3mediakit-architecture` first if you are not sure which layer owns the ch
   `ENABLE_WEBRTC`, `ENABLE_MOTION`, `ENABLE_AWS_SDK`): code inside a gate must compile out
   cleanly, and callers outside must not assume the symbols exist.
 - `.clang-format` exists — format only the lines you touch, never the whole file.
+- Vendor plugins (`ext-plugin/`): follow `docs/vendor-plugin-design.md` — registry traits in
+  `DeviceFactory`, one small capability interface per feature (`IOnvifSetup`, `IAudioPlayback`), no
+  `if (brand == X)` in `manager/`.
 
 ## Workflow
 

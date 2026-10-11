@@ -144,7 +144,7 @@ void BoschIpSpeaker::disconnect(OnDeviceResult cb) {
     );
 }
 
-void BoschIpSpeaker::createOnvifUser(const std::string& username, const std::string& password, OnDeviceResult cb) {
+void BoschIpSpeaker::prepareOnvif(const std::string& username, const std::string& password, OnDeviceResult cb) {
     InfoL << "[Bosch:" << m_cfg.id << "] create onvif user";
     std::weak_ptr<BoschIpSpeaker> weak_self = shared_from_this();
 

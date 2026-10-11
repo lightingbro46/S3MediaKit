@@ -28,7 +28,8 @@ cluster sync
 ```
 
 `api/` sits beside `server/` as a frozen C ABI over `mediakit` for CGo (`golang/`) and the
-Android SDK. `ext-plugin/` adapts vendor device SDKs behind `IDevice.h`.
+Android SDK. `ext-plugin/` adapts vendor device SDKs behind `IDevice.h`; a vendor API runs beside the
+control protocol, never as one — the patterns are in `docs/vendor-plugin-design.md`.
 
 Ownership rules that are easy to get wrong:
 

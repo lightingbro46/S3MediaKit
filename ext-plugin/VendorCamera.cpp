@@ -12,10 +12,25 @@ static constexpr float kDeviceInfoTimeoutSec = 5;
 
 VendorCamera::VendorCamera(const IDeviceConfig &cfg) : _cfg(cfg) {}
 
+void VendorCamera::request(const string &method, const string &path, const string &body, const string &content_type,
+                           const OnVendorHttp &cb) const {
+    const string url = "http://" + _cfg.ip + ":" + to_string(_cfg.port) + path;
+    vendorHttpRequest(method, url, body, content_type, _cfg.username, _cfg.password, kDeviceInfoTimeoutSec, cb);
+}
+
+void VendorCamera::failPrepare(const VendorHttpAnswer &answer, bool account_check, const string &step,
+                               const OnDeviceResult &cb) {
+    DeviceFailure failure = vendorHttpFailure(answer.sockErr, answer.status);
+    if (failure == DeviceFailure::None || (failure == DeviceFailure::Unauthorized && !(account_check && answer.status == 401))) {
+        failure = DeviceFailure::Other;
+    }
+    _last_failure = static_cast<int>(failure);
+    cb(false, step + ": " + (answer.status ? "HTTP " + to_string(answer.status) : string("no answer")));
+}
+
 void VendorCamera::connect(OnDeviceResult cb) {
-    const string url = "http://" + _cfg.ip + ":" + to_string(_cfg.port) + deviceInfoPath();
     std::weak_ptr<VendorCamera> weak_self = shared_from_this();
-    vendorHttpGet(url, _cfg.username, _cfg.password, kDeviceInfoTimeoutSec, [weak_self, cb](const VendorHttpAnswer &answer) {
+    request("GET", deviceInfoPath(), "", "", [weak_self, cb](const VendorHttpAnswer &answer) {
         auto self = weak_self.lock();
         if (!self) {
             return;

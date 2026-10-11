@@ -64,6 +64,27 @@ Camera đã khoá chỉ dò lại giao thức khi:
 Camera ONVIF đang có không phải làm gì: capabilities cũ có `isOnvifDevice=true` được đọc thành giao thức `ONVIF`,
 nên camera khoá ngay vào ONVIF và chạy như trước.
 
+### Plugin hãng chuẩn bị ONVIF
+
+Camera biết hãng (khai `manufacturer`, hoặc `manufacturer` rỗng và plugin nhận ra) có plugin Hikvision hoặc Hanwha
+thì trước các giao thức của chu kỳ, plugin chuẩn bị ONVIF qua API hãng, một lần cho mỗi bộ cấu hình camera:
+
+| Hãng | Plugin làm | ONVIF đăng nhập bằng |
+|---|---|---|
+| Hikvision | bật ONVIF nếu đang tắt; tạo user ONVIF `camera.onvifUsername` (administrator, mật khẩu của camera), hoặc ghi lại mật khẩu nếu user đã có | `camera.onvifUsername` |
+| Hanwha | bật ONVIF nếu đang tắt (firmware cũ) | tài khoản cấu hình |
+
+ISAPI/PSIA luôn đăng nhập bằng tài khoản cấu hình. Replay thẻ nhớ (gap fill) dùng tài khoản của ONVIF. API hãng là
+kênh song song, không phải một giao thức: nó không điều khiển PTZ/profile (thiết kế ở
+[vendor-plugin-design.md](vendor-plugin-design.md)).
+
+- Chuẩn bị không được (tài khoản không có quyền sửa cấu hình, firmware không có API đó): ONVIF dùng tài khoản cấu
+  hình, `AUTO` vẫn dò tiếp ISAPI/PSIA như trước; plugin thử lại sau 1 giờ.
+- API hãng từ chối chính tài khoản (401 ở lần đọc đầu): chu kỳ đó không dò giao thức nào (chúng dùng cùng mật khẩu),
+  tính là `AUTH_FAILED` và giãn chu kỳ theo `camera.control_auth_retry_sec`.
+- Camera đang khoá ISAPI không tự chuyển sang ONVIF khi plugin chuẩn bị xong; camera cố định `ISAPI`/`PSIA` không
+  được chuẩn bị. `camera.prepareOnvif=0` tắt hẳn việc sửa cấu hình camera.
+
 ## API trả về
 
 Webhook capabilities của thiết bị (`hook.on_device_caps_changed`, dựng bởi `makeDeviceCapabilitiesJson`) có thêm:
@@ -222,6 +243,8 @@ nghĩa đang chạy ONVIF. Option loa (`makeSpeakerOptionJson`) có thêm `contr
 | `camera.control_auto_order` | `onvif,isapi,psia` | Thứ tự thử khi `AUTO`. Camera đã khoá không bị ảnh hưởng khi đổi |
 | `camera.control_reprobe_failures` | `5` | Số lần liên tiếp báo "không phải giao thức này" trước khi camera đã khoá dò lại |
 | `camera.control_auth_retry_sec` | `300` | Khoảng cách giữa hai lần thử khi camera từ chối tài khoản (thay cho 60 giây) |
+| `camera.prepareOnvif` | `1` | Plugin Hikvision/Hanwha bật ONVIF và tạo user ONVIF trước các giao thức; `0` = không sửa cấu hình camera |
+| `camera.onvifUsername` | `onvif_vms` | User ONVIF plugin Hikvision tạo, mật khẩu là mật khẩu cấu hình của camera |
 | `speaker.control_auto_order` | `onvif,isapi,psia` | Như trên, cho loa |
 | `speaker.control_reprobe_failures` | `5` | Như trên, cho loa |
 | `speaker.control_auth_retry_sec` | `300` | Như trên, cho loa |
@@ -238,6 +261,9 @@ nghĩa đang chạy ONVIF. Option loa (`makeSpeakerOptionJson`) có thêm `contr
   `RTSP_BC_MOCK_STATE`).
 - Camera PSIA giả: `tests/integration/stress_vms/psia_mock.py --port 18680` (Digest, `admin`/`admin123`;
   `--basic` cho Basic). Camera ISAPI giả: thêm `--dialect isapi --rtsp-port 8554`; `--onvif-401` cho
-  `/onvif/device_service` trả 401 như Hikvision tắt ONVIF.
+  `/onvif/device_service` trả 401 như Hikvision tắt ONVIF; `--onvif-off` cho Integrate báo ONVIF tắt và chưa có
+  user ONVIF (plugin Hikvision chuẩn bị ONVIF).
+- Plugin camera: `unit.vendor_stage_all`; `VendorCameraMockTest.*` chạy với `psia_mock.py --dialect isapi
+  --onvif-off` (`ISAPI_MOCK_ADDR`) và `sunapi_mock.py --onvif-off` (`SUNAPI_MOCK_ADDR`).
 - `PSIA_MOCK_ADDR=127.0.0.1:18680 ISAPI_MOCK_ADDR=127.0.0.1:18681 release/linux/Debug/unit_psia_control` chạy cả
   các case gọi mock.

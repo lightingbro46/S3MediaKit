@@ -3,6 +3,8 @@
 #include "server/WebApiErrCode.h"
 #include "Common/DeviceFailureCode.h"
 #include "Local/MediaGapFillManager.h"
+#include "ext-plugin/DeviceFactory.h"
+#include "ext-plugin/IOnvifSetup.h"
 #include "Util/onceToken.h"
 #include "Util/util.h"
 #include "Common/config.h"
@@ -16,6 +18,10 @@ namespace managerkit {
 
 // Posts a device task after a delay; `on_cancel` runs instead if the task no longer applies.
 using DelayedDeviceTask = function<void(int delay_ms, const function<void()> &task, const function<void()> &on_cancel)>;
+
+// Wait before the plugin tries again to prepare ONVIF after it could not (an account that may not
+// change the settings, a firmware without that API): such a cause rarely goes away within the hour.
+static constexpr uint64_t kOnvifPrepareRetrySec = 3600;
 
 static ApiErrCode failureCode(const DeviceControl::Ptr &ptr, ApiErrCode fallback) {
     return deviceFailureCode(ptr->lastFailure(), fallback);
@@ -136,7 +142,7 @@ void CameraController::setupController(const CameraOption &option) {
             _sd_sync_config = sync_config;
             if (sync_config_changed) {
                 MediaGapFillManager::Instance().onManager(
-                    _tuple.device_id, _ctrl_option.username, _ctrl_option.password,
+                    _tuple.device_id, controlUsername(ControlProtocol::ONVIF), _ctrl_option.password,
                     asOnvif(_device_ctr), _sd_sync_config, _ready.load());
             }
             DebugL << "Controller of device: " << _tuple.shortUrl() << " connection unchanged, updated PTZ settings in-place";
@@ -184,6 +190,11 @@ void CameraController::setupController(const CameraOption &option) {
     _lock.setSetting(option.controlProtocol);
     _vendor_stage.configure(DeviceType::Camera, option.manufacturer);
     _vendor_info = IDeviceInfo();
+    _onvif_prepared = false;
+    _onvif_prepare_retry_at = 0;
+    GET_CONFIG(bool, prepare_onvif, Camera::kPrepareOnvif);
+    // Taken before the preparation answers: it runs ahead of the first connect.
+    _onvif_own_account = prepare_onvif && _vendor_stage.hasPlugin() && _vendor_stage.plugin().ownControlAccount;
     _enablePTZControl = option.enablePTZControl;
     _enableTimeSync   = option.enableTimeSync;
     _reversePanAxis   = option.reversePanAxis;
@@ -198,7 +209,7 @@ void CameraController::setupController(const CameraOption &option) {
     // a lock gets its controller from the probe in onManager().
     ControlProtocol protocol = _lock.fixedOrLocked();
     if (protocol != ControlProtocol::NONE) {
-        _device_ctr = createDeviceControl(protocol, address, option.username, option.password);
+        _device_ctr = createDeviceControl(protocol, address, controlUsername(protocol), option.password);
     }
     DebugL << "Controller of device: " << _tuple.shortUrl() << " (" << address << ")"
         << ", protocol setting: " << controlProtocolSetting(option.controlProtocol)
@@ -253,6 +264,10 @@ void CameraController::onManager() {
     _pacer.onAttempt(now);
     if (_vendor_stage.detecting()) {
         startVendorDetect();
+        return;
+    }
+    if (needsOnvifPrepare(now)) {
+        startOnvifPrepare();
         return;
     }
     runControlCycle();
@@ -435,7 +450,7 @@ void CameraController::publishConnected(const DeviceControl::Ptr &device_ctr, bo
     // Register/refresh the provider before publishing the connected event.
     // The event closes the device gap and immediately triggers discovery.
     MediaGapFillManager::Instance().onManager(
-        _tuple.device_id, _ctrl_option.username,
+        _tuple.device_id, controlUsername(ControlProtocol::ONVIF),
         _ctrl_option.password, asOnvif(device_ctr),
         _sd_sync_config, true);
     onControllerReady(true, "connected", std::move(caps));
@@ -448,18 +463,20 @@ void CameraController::startProtocolProbe() {
     const uint64_t generation = _ctrl_generation.load();
     const string address = _address;
     const string username = _ctrl_option.username;
+    const string onvif_username = controlUsername(ControlProtocol::ONVIF);
     const string password = _ctrl_option.password;
     // Same switches as the clock sync of onManager(); a camera that just connected always gets it.
     GET_CONFIG(bool, clock_sync_enable, OnvifCtrl::kClockSyncEnable);
     const bool time_sync = clock_sync_enable && _enableTimeSync;
     std::weak_ptr<CameraController> weak_self = shared_from_this();
-    postDeviceTask([weak_self, order, generation, address, username, password, time_sync]() {
+    postDeviceTask([weak_self, order, generation, address, username, onvif_username, password, time_sync]() {
         auto self = weak_self.lock();
         if (!self) {
             return;
         }
         auto result = probeControlProtocols(order, [&](ControlProtocol protocol) {
-            return self->createDeviceControl(protocol, address, username, password);
+            return self->createDeviceControl(protocol, address,
+                                             protocol == ControlProtocol::ONVIF ? onvif_username : username, password);
         }, self->_tuple.shortUrl() + " (" + address + ")", time_sync);
         DeviceControl::Ptr winner = result.winner;
         const std::string err_msg = result.err_msg;
@@ -519,13 +536,136 @@ void CameraController::onVendorProbeDone(uint64_t generation, const VendorStage:
         _vendor_info = result.info;
         InfoL << "Device " << _tuple.shortUrl() << " (" << _address << ") detected through its vendor API: "
               << _vendor_stage.name() << (result.info.model.empty() ? "" : " " + result.info.model);
+        GET_CONFIG(bool, prepare_onvif, Camera::kPrepareOnvif);
+        useOnvifAccount(prepare_onvif && _vendor_stage.hasPlugin() && _vendor_stage.plugin().ownControlAccount);
+        if (needsOnvifPrepare(time(nullptr))) {
+            // Before the protocols of this cycle, so that AUTO already finds ONVIF on.
+            startOnvifPrepare();
+            return;
+        }
     } else if (result.rejected) {
         // A control protocol may still name the manufacturer; otherwise the next cycle asks again.
         WarnL << "Device " << _tuple.shortUrl() << " (" << _address
               << "): a vendor API rejected the account, manufacturer not detected yet";
     }
-    // The plugin only identifies the camera: control goes on over the protocols in the same cycle.
+    // Control goes on over the protocols in the same cycle.
     runControlCycle();
+}
+
+bool CameraController::needsOnvifPrepare(uint64_t now) const {
+    GET_CONFIG(bool, prepare_onvif, Camera::kPrepareOnvif);
+    if (!prepare_onvif || _onvif_prepared || now < _onvif_prepare_retry_at || !_vendor_stage.hasPlugin()) {
+        return false;
+    }
+    const VendorPluginInfo &plugin = _vendor_stage.plugin();
+    if (!plugin.enablesOnvif && !plugin.ownControlAccount) {
+        return false;
+    }
+    // A camera fixed to ISAPI or PSIA never uses ONVIF: its settings are left alone.
+    return _lock.isAuto() || _lock.fixedOrLocked() == ControlProtocol::ONVIF;
+}
+
+void CameraController::startOnvifPrepare() {
+    _probing = true;
+    const uint64_t generation = _ctrl_generation.load();
+    GET_CONFIG(string, onvif_username, Camera::kOnvifUsername);
+    const string username = _vendor_stage.plugin().ownControlAccount ? onvif_username : string();
+    auto poller = _poller;
+    std::weak_ptr<CameraController> weak_self = shared_from_this();
+    prepareVendorOnvif(_vendor_stage.brand(), _ctrl_option.ip, _web_port, _ctrl_option.username, _ctrl_option.password,
+        username, [weak_self, poller, generation](bool ok, DeviceFailure failure, const std::string &msg) {
+            poller->async([weak_self, generation, ok, failure, msg]() {
+                if (auto self = weak_self.lock()) {
+                    self->onOnvifPrepared(generation, ok, failure, msg);
+                }
+            }, false);
+        });
+}
+
+void CameraController::onOnvifPrepared(uint64_t generation, bool ok, DeviceFailure failure, const std::string &msg) {
+    if (generation != _ctrl_generation.load()) {
+        return;
+    }
+    _probing = false;
+    if (ok) {
+        _onvif_prepared = true;
+        InfoL << "Device " << _tuple.shortUrl() << " (" << _address << "): ONVIF prepared by the "
+              << _vendor_stage.plugin().name << " plugin (" << msg << ")";
+    } else if (failure == DeviceFailure::Unauthorized) {
+        // The vendor API of a known brand rejected the configured account, which every protocol logs in
+        // with (the ONVIF user has its password too): skip them, one failed login per cycle instead of four.
+        WarnL << "Device " << _tuple.shortUrl() << " (" << _address << "): its " << _vendor_stage.plugin().name
+              << " API rejected the credentials (" << msg << "), the control protocols are not tried";
+        onAuthResult(ConnectError::AUTH_FAILED);
+        _probe_failure = failure;
+        onControllerReady(false, msg, nullptr);
+        ReconnectResult result;
+        result.finished = true;
+        result.error = ConnectError::AUTH_FAILED;
+        result.failure = failure;
+        result.msg = msg;
+        finishReconnect(result);
+        return;
+    } else if (failure == DeviceFailure::Unreachable || failure == DeviceFailure::Timeout) {
+        // Offline: the next cycle tries again, the protocols report it.
+        WarnL << "Device " << _tuple.shortUrl() << " (" << _address << "): ONVIF not prepared, no answer (" << msg << ")";
+    } else {
+        _onvif_prepare_retry_at = time(nullptr) + kOnvifPrepareRetrySec;
+        WarnL << "Device " << _tuple.shortUrl() << " (" << _address << "): the " << _vendor_stage.plugin().name
+              << " plugin could not prepare ONVIF (" << msg << "), ONVIF stays as the camera has it; next try in "
+              << kOnvifPrepareRetrySec << " s";
+        useOnvifAccount(false);
+    }
+    runControlCycle();
+}
+
+void CameraController::useOnvifAccount(bool own) {
+    if (_onvif_own_account.exchange(own) == own || !_device_ctr || _device_ctr->protocol() != ControlProtocol::ONVIF ||
+        _device_ctr->isConnected()) {
+        // A connected controller keeps working with the account it logged in with.
+        return;
+    }
+    // Not connected yet (created from the saved protocol): its connect uses the other account.
+    _device_ctr = createDeviceControl(ControlProtocol::ONVIF, _address, controlUsername(ControlProtocol::ONVIF),
+                                      _ctrl_option.password);
+}
+
+std::string CameraController::controlUsername(ControlProtocol protocol) const {
+    if (protocol == ControlProtocol::ONVIF && _onvif_own_account) {
+        GET_CONFIG(string, onvif_username, Camera::kOnvifUsername);
+        return onvif_username;
+    }
+    return _ctrl_option.username;
+}
+
+void CameraController::prepareVendorOnvif(DeviceBrand brand, const std::string &ip, int port, const std::string &username,
+                                          const std::string &password, const std::string &onvif_username,
+                                          const OnOnvifPrepared &cb) {
+    IDeviceConfig cfg;
+    cfg.id       = _tuple.device_id;
+    cfg.type     = DeviceType::Camera;
+    cfg.brand    = brand;
+    cfg.ip       = ip;
+    cfg.port     = port;
+    cfg.username = username;
+    cfg.password = password;
+    IDevice::Ptr device;
+    try {
+        device = DeviceFactory::create(cfg);
+    } catch (const std::exception &e) {
+        cb(false, DeviceFailure::Other, e.what());
+        return;
+    }
+    auto setup = dynamic_cast<IOnvifSetup *>(device.get());
+    if (!setup) {
+        cb(false, DeviceFailure::Other, "the plugin cannot prepare ONVIF");
+        return;
+    }
+    // The pending requests hold this callback, and it holds the plugin until it answers.
+    setup->prepareOnvif(onvif_username, password, [device, cb](bool ok, const std::string &msg) mutable {
+        auto held = std::move(device);
+        cb(ok, ok ? DeviceFailure::None : held->lastFailure(), msg);
+    });
 }
 
 void CameraController::onProbeDone(const DeviceControl::Ptr &device_ctr, uint64_t generation, const std::string &err_msg,
@@ -568,6 +708,9 @@ void CameraController::onConnectResult(const DeviceControl::Ptr &device_ctr, Con
         if (_vendor_stage.detecting() && _vendor_stage.identify(manufacturer)) {
             InfoL << "Device " << _tuple.shortUrl() << " (" << _address << ") reports manufacturer \"" << manufacturer
                   << "\" over " << controlProtocolToString(device_ctr->protocol());
+            // The next cycle prepares ONVIF through the plugin of that brand, if it has one.
+            GET_CONFIG(bool, prepare_onvif, Camera::kPrepareOnvif);
+            useOnvifAccount(prepare_onvif && _vendor_stage.hasPlugin() && _vendor_stage.plugin().ownControlAccount);
         }
         return;
     }

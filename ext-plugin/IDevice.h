@@ -33,9 +33,12 @@ struct VendorPluginInfo {
     DeviceBrand brand = DeviceBrand::UNKNOWN;
     // Manufacturer written back when the brand is detected through the plugin's API.
     std::string name;
-    // The plugin provisions the account the control protocol logs in with (speaker.onvifUsername)
-    // instead of the configured one.
+    // The plugin provisions the account ONVIF logs in with (speaker.onvifUsername, camera.onvifUsername)
+    // instead of the configured one, through IOnvifSetup.
     bool ownControlAccount = false;
+    // The plugin turns ONVIF on through its API when it is off (IOnvifSetup), with or without an account
+    // of its own.
+    bool enablesOnvif = false;
     // Control protocol the plugin needs ("ONVIF"); "" = the configured one.
     std::string requiredProtocol;
     // Backchannel audio and the plugin's audio files share the device's DSP.
@@ -105,9 +108,6 @@ public:
 
     // Disconnect from the device and terminate the session.
     virtual void disconnect(OnDeviceResult cb) = 0;
-
-    // Create an ONVIF user on the device.
-    virtual void createOnvifUser(const std::string& username, const std::string& password, OnDeviceResult cb) = 0;
 
     // Get the device information.
     virtual IDeviceInfo getDeviceInfo() const = 0;

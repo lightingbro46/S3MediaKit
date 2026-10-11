@@ -15,8 +15,14 @@ struct VendorHttpAnswer {
 };
 using OnVendorHttp = std::function<void(const VendorHttpAnswer &answer)>;
 
-// GET `url` with the account: a 401 challenge (Digest MD5, or Basic) is answered once by sending the
-// request again with the credentials. `cb` runs once, on the HTTP poller.
+// `method` `url` with the account: a 401 challenge (Digest MD5, or Basic) is answered once by sending the
+// request again with the credentials. `body` is sent as `content_type` when it is not empty. `cb` runs
+// once, on the HTTP poller.
+void vendorHttpRequest(const std::string &method, const std::string &url, const std::string &body,
+                       const std::string &content_type, const std::string &username, const std::string &password,
+                       float timeout_sec, const OnVendorHttp &cb);
+
+// vendorHttpRequest() of a GET.
 void vendorHttpGet(const std::string &url, const std::string &username, const std::string &password,
                    float timeout_sec, const OnVendorHttp &cb);
 

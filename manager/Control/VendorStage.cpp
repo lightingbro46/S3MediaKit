@@ -97,7 +97,13 @@ static void probePlugin(const std::vector<VendorPluginInfo> &plugins, size_t ind
         if (failure == DeviceFailure::Unauthorized) {
             result.rejected = true;
         }
-        if (failure != DeviceFailure::Unreachable && failure != DeviceFailure::Timeout) {
+        if (failure == DeviceFailure::Unreachable) {
+            // No connection to the web server at all: no other plugin's API will answer either. A
+            // timeout may be this path only (some web servers drop unknown URLs), so it moves on.
+            cb(result);
+            return;
+        }
+        if (failure != DeviceFailure::Timeout) {
             result.answered = true;
         }
         probePlugin(plugins, index + 1, cfg, result, cb);

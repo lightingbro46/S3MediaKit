@@ -1,8 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <map>
+#include <vector>
 #include "Control/VendorStage.h"
 #include "ext-plugin/DeviceFactory.h"
+#include "ext-plugin/IOnvifSetup.h"
 #include "ext-plugin/VendorHttp.h"
 #include "ext-plugin/Hanwha/HanwhaCamera.h"
 #include "ext-plugin/Hikvision/HikvisionCamera.h"
@@ -41,9 +44,12 @@ TEST(VendorStageTest, RegistryDescribesTheCameraPlugins) {
     EXPECT_EQ("Hikvision", plugins[0].name);
     EXPECT_EQ(DeviceBrand::HANWHA, plugins[1].brand);
     EXPECT_EQ("Hanwha Vision", plugins[1].name);
+    // Hikvision ONVIF users are apart from the web users; Hanwha ONVIF takes the web account.
+    EXPECT_TRUE(plugins[0].ownControlAccount);
+    EXPECT_FALSE(plugins[1].ownControlAccount);
     for (const auto &plugin : plugins) {
-        // They only identify the camera.
-        EXPECT_FALSE(plugin.ownControlAccount);
+        // They prepare ONVIF beside the protocols, never constrain them.
+        EXPECT_TRUE(plugin.enablesOnvif);
         EXPECT_EQ("", plugin.requiredProtocol);
         EXPECT_FALSE(plugin.sharedDsp);
     }
@@ -229,6 +235,59 @@ TEST(HanwhaCameraTest, ParsesSunapiDeviceInfoAsTextOrJson) {
     EXPECT_FALSE(HanwhaCamera::parseSunapiDeviceInfo("{\"Error\":{\"Code\":600}}", none));
 }
 
+TEST(HikvisionCameraTest, TurnsOnvifOnInTheIntegrateDocument) {
+    const std::string xml =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<Integrate version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">"
+        "<CGI><enable>true</enable><certificateType>digest</certificateType></CGI>"
+        "<ONVIF><enable>false</enable><certificateType>digest/WSSE</certificateType></ONVIF>"
+        "<ISAPI><enable>true</enable></ISAPI></Integrate>";
+    bool enabled = true;
+    ASSERT_TRUE(HikvisionCamera::parseIntegrateOnvif(xml, enabled));
+    EXPECT_FALSE(enabled);
+    std::string on;
+    ASSERT_TRUE(HikvisionCamera::enableIntegrateOnvif(xml, on));
+    ASSERT_TRUE(HikvisionCamera::parseIntegrateOnvif(on, enabled));
+    EXPECT_TRUE(enabled);
+    // Every other node as the camera sent it.
+    EXPECT_NE(std::string::npos, on.find("<certificateType>digest/WSSE</certificateType>"));
+    EXPECT_NE(std::string::npos, on.find("<CGI><enable>true</enable>"));
+
+    EXPECT_FALSE(HikvisionCamera::parseIntegrateOnvif("<Integrate><CGI><enable>true</enable></CGI></Integrate>", enabled));
+    EXPECT_FALSE(HikvisionCamera::parseIntegrateOnvif("<html/>", enabled));
+}
+
+TEST(HikvisionCameraTest, ReadsAndWritesOnvifUsers) {
+    std::vector<HikvisionCamera::OnvifUser> users;
+    ASSERT_TRUE(HikvisionCamera::parseOnvifUsers(
+        "<UserList version=\"2.0\" xmlns=\"http://www.hikvision.com/ver20/XMLSchema\">"
+        "<User><id>1</id><userName>admin</userName><userType>administrator</userType></User>"
+        "<User><id>3</id><userName>onvif_vms</userName><userType>operator</userType></User></UserList>", users));
+    ASSERT_EQ(2u, users.size());
+    EXPECT_EQ("3", users[1].id);
+    EXPECT_EQ("onvif_vms", users[1].name);
+    ASSERT_TRUE(HikvisionCamera::parseOnvifUsers("<UserList version=\"2.0\"/>", users));
+    EXPECT_TRUE(users.empty());
+    EXPECT_FALSE(HikvisionCamera::parseOnvifUsers("<ResponseStatus/>", users));
+
+    const std::string user = HikvisionCamera::onvifUserXml("4", "onvif_vms", "p<&>\"w");
+    EXPECT_NE(std::string::npos, user.find("<id>4</id>"));
+    EXPECT_NE(std::string::npos, user.find("<userName>onvif_vms</userName>"));
+    EXPECT_NE(std::string::npos, user.find("<password>p&lt;&amp;&gt;\"w</password>")) << user;
+    EXPECT_NE(std::string::npos, user.find("<userType>administrator</userType>"));
+}
+
+TEST(HanwhaCameraTest, ReadsSunapiFields) {
+    std::map<std::string, std::string> fields;
+    ASSERT_TRUE(HanwhaCamera::parseSunapiFields("Enable=False\r\n", fields));
+    EXPECT_EQ("False", fields["Enable"]);
+    fields.clear();
+    ASSERT_TRUE(HanwhaCamera::parseSunapiFields("{\"Enable\":true}", fields));
+    EXPECT_EQ("True", fields["Enable"]);
+    fields.clear();
+    EXPECT_FALSE(HanwhaCamera::parseSunapiFields("<html/>", fields));
+}
+
 namespace {
 
 // VendorStage::probe of a camera at `addr` (ip:port) with the account; waits for its answer.
@@ -290,4 +349,81 @@ TEST(VendorCameraMockTest, UnreachableCameraIsNotAnAnswer) {
     EXPECT_EQ(DeviceBrand::UNKNOWN, result.brand);
     EXPECT_FALSE(result.answered);
     EXPECT_FALSE(result.rejected);
+}
+
+namespace {
+
+struct Prepared {
+    bool ok = false;
+    std::string msg;
+    DeviceFailure failure = DeviceFailure::None;
+};
+
+// IOnvifSetup::prepareOnvif of the `brand` plugin of a camera at `addr`; waits for its answer.
+Prepared prepareCamera(DeviceBrand brand, const std::string &addr, const std::string &password,
+                       const std::string &onvif_username) {
+    IDeviceConfig cfg;
+    cfg.id = "vendor-camera-test";
+    cfg.type = DeviceType::Camera;
+    cfg.brand = brand;
+    cfg.ip = addr.substr(0, addr.find(':'));
+    cfg.port = atoi(addr.substr(addr.find(':') + 1).c_str());
+    cfg.username = "admin";
+    cfg.password = password;
+    auto device = DeviceFactory::create(cfg);
+    auto setup = dynamic_cast<IOnvifSetup *>(device.get());
+    Prepared out;
+    if (!setup) {
+        out.msg = "no IOnvifSetup";
+        return out;
+    }
+    toolkit::semaphore sem;
+    setup->prepareOnvif(onvif_username, password, [&](bool ok, const std::string &msg) {
+        out.ok = ok;
+        out.msg = msg;
+        out.failure = device->lastFailure();
+        sem.post();
+    });
+    sem.wait();
+    return out;
+}
+
+} // namespace
+
+// Against psia_mock.py --dialect isapi --onvif-off: ONVIF off and no ONVIF user at first.
+TEST(VendorCameraMockTest, HikvisionTurnsOnvifOnAndCreatesThenUpdatesItsUser) {
+    const char *addr = getenv("ISAPI_MOCK_ADDR");
+    if (!addr || !*addr) {
+        GTEST_SKIP() << "ISAPI_MOCK_ADDR not set";
+    }
+    auto created = prepareCamera(DeviceBrand::HIKVISION, addr, "admin123", "onvif_vms");
+    EXPECT_TRUE(created.ok) << created.msg;
+    auto updated = prepareCamera(DeviceBrand::HIKVISION, addr, "admin123", "onvif_vms");
+    EXPECT_TRUE(updated.ok) << updated.msg;
+    EXPECT_EQ("ONVIF user updated", updated.msg);
+
+    auto rejected = prepareCamera(DeviceBrand::HIKVISION, addr, "wrong-password", "onvif_vms");
+    EXPECT_FALSE(rejected.ok);
+    EXPECT_EQ(DeviceFailure::Unauthorized, rejected.failure);
+}
+
+// Against sunapi_mock.py --onvif-off.
+TEST(VendorCameraMockTest, HanwhaTurnsOnvifOn) {
+    const char *addr = getenv("SUNAPI_MOCK_ADDR");
+    if (!addr || !*addr) {
+        GTEST_SKIP() << "SUNAPI_MOCK_ADDR not set";
+    }
+    auto prepared = prepareCamera(DeviceBrand::HANWHA, addr, "admin123", "");
+    EXPECT_TRUE(prepared.ok) << prepared.msg;
+    auto again = prepareCamera(DeviceBrand::HANWHA, addr, "admin123", "");
+    EXPECT_TRUE(again.ok) << again.msg;
+    EXPECT_EQ("ONVIF on", again.msg);
+    EXPECT_FALSE(prepareCamera(DeviceBrand::HANWHA, addr, "admin123", "onvif_vms").ok) << "no ONVIF users";
+}
+
+// Nothing listens: the network, not the account.
+TEST(VendorCameraMockTest, UnreachableCameraIsNotARejectedAccount) {
+    auto prepared = prepareCamera(DeviceBrand::HIKVISION, "127.0.0.1:1", "admin123", "onvif_vms");
+    EXPECT_FALSE(prepared.ok);
+    EXPECT_EQ(DeviceFailure::Unreachable, prepared.failure);
 }

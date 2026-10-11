@@ -15,6 +15,7 @@
 #include "Speaker/SpeakerController.h"
 #include "ext-plugin/Bosch/BoschIpSpeaker.h"
 #include "ext-plugin/DeviceFactory.h"
+#include "ext-plugin/IOnvifSetup.h"
 #include "Camera/VideoConfigRuleDecision.h"
 #include "Common/config.h"
 #include "Poller/EventPoller.h"
@@ -1317,6 +1318,20 @@ public:
     std::atomic<int> vendor_api_failure{static_cast<int>(DeviceFailure::Unreachable)};
     std::atomic<int> vendor_api_delay_ms{0};
 
+    // What the plugin of a camera answers when asked to prepare ONVIF (ProtocolTestController).
+    std::atomic<bool> prepare_ok{true};
+    std::atomic<int> prepare_failure{static_cast<int>(DeviceFailure::Other)};
+
+    // Account the last controller of `protocol` was created with.
+    void setUsername(ControlProtocol protocol, const std::string &username) {
+        std::lock_guard<std::mutex> lck(_mtx);
+        _usernames[static_cast<int>(protocol)] = username;
+    }
+    std::string username(ControlProtocol protocol) {
+        std::lock_guard<std::mutex> lck(_mtx);
+        return _usernames[static_cast<int>(protocol)];
+    }
+
     // Capabilities of the last controller-ready event.
     void setCaps(const DeviceCapabilities &caps) {
         std::lock_guard<std::mutex> lck(_mtx);
@@ -1344,6 +1359,7 @@ private:
     std::string _manufacturer;
     DeviceCapabilities _caps;
     int _caps_count = 0;
+    std::string _usernames[4];
     // Indexed by ControlProtocol. Not a Hikvision camera unless a test says so: ISAPI is not spoken.
     std::atomic<int> _results[4] = {{static_cast<int>(ConnectError::NONE)},
                                     {static_cast<int>(ConnectError::NONE)},
@@ -1433,9 +1449,19 @@ public:
         : CameraController(tuple, poller), _world(std::move(world)) {}
 
 protected:
-    DeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &, const std::string &,
+    DeviceControl::Ptr createDeviceControl(ControlProtocol protocol, const std::string &, const std::string &username,
                                                  const std::string &) override {
+        _world->setUsername(protocol, username);
         return std::make_shared<FakeProtocolControl>(protocol, _world);
+    }
+
+    // The plugin answers as ProtocolWorld::prepare_* say; logs "prepare <ONVIF user>".
+    void prepareVendorOnvif(DeviceBrand, const std::string &, int, const std::string &, const std::string &,
+                            const std::string &onvif_username, const OnOnvifPrepared &cb) override {
+        _world->log("prepare " + onvif_username);
+        const bool ok = _world->prepare_ok;
+        const DeviceFailure failure = ok ? DeviceFailure::None : static_cast<DeviceFailure>(_world->prepare_failure.load());
+        std::thread([cb, ok, failure]() { cb(ok, failure, ok ? "ONVIF on" : "HTTP 403"); }).detach();
     }
 
     // The camera plugin APIs answer as ProtocolWorld::vendor_* say; logs "vendor".
@@ -1947,6 +1973,133 @@ TEST_F(CameraProtocolTest, UnreachableCameraWithoutManufacturerKeepsTheSixtySeco
     EXPECT_EQ("Hikvision", _world->caps().onvifProfile.deviceInfo.manufacturer);
 }
 
+TEST_F(CameraProtocolTest, HikvisionPluginPreparesOnvifBeforeTheProtocolsWithItsOwnAccount) {
+    setup("AUTO", "", "Hikvision");
+    cycle();
+    auto events = _world->events();
+    ASSERT_TRUE(contains(events, "prepare onvif_vms"));
+    EXPECT_LT(indexOf(events, "prepare"), indexOf(events, "create ONVIF"));
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+    EXPECT_EQ("onvif_vms", _world->username(ControlProtocol::ONVIF));
+
+    _world->clear();
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "prepare")) << "prepared once per settings";
+
+    // New settings: prepared again (the password may have changed).
+    setup("AUTO", "", "HIKVISION Digital Technology");
+    _world->clear();
+    cycle();
+    EXPECT_TRUE(contains(_world->events(), "prepare onvif_vms"));
+}
+
+TEST_F(CameraProtocolTest, IsapiKeepsTheWebAccountOfAPreparedHikvision) {
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::AUTH_FAILED);
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::NONE);
+    setup("AUTO", "", "Hikvision");
+    cycle();
+    EXPECT_EQ("onvif_vms", _world->username(ControlProtocol::ONVIF));
+    EXPECT_EQ(ControlProtocol::ISAPI, current());
+    EXPECT_NE("onvif_vms", _world->username(ControlProtocol::ISAPI));
+}
+
+TEST_F(CameraProtocolTest, DetectedHikvisionIsPreparedInTheSameCycle) {
+    _world->vendor_brand = static_cast<int>(DeviceBrand::HIKVISION);
+    _world->setManufacturer("");
+    setup("AUTO", "", "");
+    cycle();
+    auto events = _world->events();
+    ASSERT_TRUE(contains(events, "prepare onvif_vms"));
+    EXPECT_LT(indexOf(events, "vendor"), indexOf(events, "prepare"));
+    EXPECT_LT(indexOf(events, "prepare"), indexOf(events, "create ONVIF"));
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+    EXPECT_EQ("onvif_vms", _world->username(ControlProtocol::ONVIF));
+}
+
+TEST_F(CameraProtocolTest, HanwhaPluginOnlyTurnsOnvifOnAndOnvifKeepsTheWebAccount) {
+    setup("AUTO", "", "Hanwha Vision");
+    cycle();
+    auto events = _world->events();
+    ASSERT_TRUE(contains(events, "prepare"));
+    EXPECT_FALSE(contains(events, "prepare onvif_vms"));
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+    EXPECT_NE("onvif_vms", _world->username(ControlProtocol::ONVIF));
+}
+
+TEST_F(CameraProtocolTest, FailedPreparationKeepsTheWebAccountAndWaitsBeforeTryingAgain) {
+    _world->prepare_ok = false;
+    setup("AUTO", "", "Hikvision");
+    cycle();
+    EXPECT_TRUE(contains(_world->events(), "prepare onvif_vms"));
+    EXPECT_EQ(ControlProtocol::ONVIF, current()) << "the protocols still run";
+    EXPECT_NE("onvif_vms", _world->username(ControlProtocol::ONVIF));
+
+    _world->clear();
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "prepare")) << "not every cycle";
+}
+
+TEST_F(CameraProtocolTest, SavedOnvifControllerFallsBackToTheWebAccountWhenPreparationFails) {
+    _world->prepare_ok = false;
+    setup("AUTO", "ONVIF", "Hikvision");
+    EXPECT_EQ("onvif_vms", _world->username(ControlProtocol::ONVIF)) << "created before the preparation answers";
+    cycle();
+    EXPECT_NE("onvif_vms", _world->username(ControlProtocol::ONVIF));
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+    EXPECT_TRUE(_controller->isReady());
+}
+
+TEST_F(CameraProtocolTest, UnreachableCameraIsPreparedAgainNextCycle) {
+    _world->prepare_ok = false;
+    _world->prepare_failure = static_cast<int>(DeviceFailure::Unreachable);
+    _world->setResult(ControlProtocol::ONVIF, ConnectError::UNREACHABLE);
+    setup("AUTO", "", "Hikvision");
+    cycle();
+    EXPECT_EQ("onvif_vms", _world->username(ControlProtocol::ONVIF)) << "offline is not a failed preparation";
+    _world->clear();
+    cycle();
+    EXPECT_TRUE(contains(_world->events(), "prepare onvif_vms"));
+}
+
+TEST_F(CameraProtocolTest, VendorApiRejectingTheAccountSkipsTheProtocols) {
+    _world->prepare_ok = false;
+    _world->prepare_failure = static_cast<int>(DeviceFailure::Unauthorized);
+    setup("AUTO", "", "Hikvision");
+    cycle();
+    auto events = _world->events();
+    EXPECT_TRUE(contains(events, "prepare"));
+    EXPECT_FALSE(contains(events, "create")) << "every protocol would reject the same password";
+    EXPECT_FALSE(_controller->isReady());
+    bool rejected = false;
+    auto controller = _controller;
+    onPoller([&]() { rejected = CameraControllerTestPeer::authRejected(*controller); });
+    EXPECT_TRUE(rejected) << "camera.control_auth_retry_sec applies";
+
+    _world->prepare_ok = true;
+    _world->clear();
+    cycle();
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+}
+
+TEST_F(CameraProtocolTest, CameraNotUsingOnvifOrPreparationOffIsLeftAlone) {
+    _world->setResult(ControlProtocol::ISAPI, ConnectError::NONE);
+    setup("ISAPI", "", "Hikvision");
+    cycle();
+    EXPECT_FALSE(contains(_world->events(), "prepare"));
+    EXPECT_EQ(ControlProtocol::ISAPI, current());
+
+    mINI::Instance()[mediakit::Camera::kPrepareOnvif] = 0;
+    NOTICE_EMIT(BroadcastReloadConfigArgs, mediakit::Broadcast::kBroadcastReloadConfig);
+    setup("AUTO", "", "Hikvision");
+    _world->clear();
+    cycle();
+    mINI::Instance()[mediakit::Camera::kPrepareOnvif] = 1;
+    NOTICE_EMIT(BroadcastReloadConfigArgs, mediakit::Broadcast::kBroadcastReloadConfig);
+    EXPECT_FALSE(contains(_world->events(), "prepare"));
+    EXPECT_EQ(ControlProtocol::ONVIF, current());
+    EXPECT_NE("onvif_vms", _world->username(ControlProtocol::ONVIF));
+}
+
 TEST(ControlProtocolSettingTest, UnknownValuesMeanAuto) {
     EXPECT_EQ("ONVIF", controlProtocolSetting("onvif"));
     EXPECT_EQ("PSIA", controlProtocolSetting("PSIA"));
@@ -2077,7 +2230,7 @@ public:
 namespace {
 // Vendor plugin of a speaker (a Bosch one): login and logout answer from another thread, as the HTTP
 // poller of a plugin does, after ProtocolWorld::vendor_api_delay_ms. Logs "api login".
-class FakeVendorDevice : public IDevice, public IAudioPlayback {
+class FakeVendorDevice : public IDevice, public IAudioPlayback, public IOnvifSetup {
 public:
     FakeVendorDevice(const SpeakerConfig &cfg, std::shared_ptr<ProtocolWorld> world) : _cfg(cfg), _world(std::move(world)) {}
 
@@ -2094,7 +2247,7 @@ public:
         }).detach();
     }
     void disconnect(OnDeviceResult cb) override { cb(true, "logout"); }
-    void createOnvifUser(const std::string &, const std::string &, OnDeviceResult cb) override { cb(true, ""); }
+    void prepareOnvif(const std::string &, const std::string &, OnDeviceResult cb) override { cb(true, ""); }
     IDeviceInfo getDeviceInfo() const override {
         IDeviceInfo info;
         info.manufacturer = "Bosch";

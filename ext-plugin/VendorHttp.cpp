@@ -130,12 +130,16 @@ static string pickChallenge(const Parser &parser) {
     return basic;
 }
 
-static void sendGet(const string &url, const string &authorization, float timeout_sec,
-                    const HttpRequester::HttpRequesterResult &cb) {
+static void sendRequest(const string &method, const string &url, const string &body, const string &content_type,
+                        const string &authorization, float timeout_sec, const HttpRequester::HttpRequesterResult &cb) {
     auto requester = std::make_shared<HttpRequester>();
-    requester->setMethod("GET");
+    requester->setMethod(method);
     if (!authorization.empty()) {
         requester->addHeader("Authorization", authorization);
+    }
+    if (!body.empty()) {
+        requester->addHeader("Content-Type", content_type);
+        requester->setBody(body);
     }
     // Same lifetime as the webhooks: the callback holds the requester and drops it when it is done.
     requester->startRequester(url, [requester, cb](const SockException &ex, const Parser &res) mutable {
@@ -155,24 +159,30 @@ static VendorHttpAnswer toAnswer(const SockException &ex, const Parser &res) {
     return answer;
 }
 
-void vendorHttpGet(const string &url, const string &username, const string &password, float timeout_sec,
-                   const OnVendorHttp &cb) {
-    sendGet(url, "", timeout_sec, [url, username, password, timeout_sec, cb](const SockException &ex, const Parser &res) {
+void vendorHttpRequest(const string &method, const string &url, const string &body, const string &content_type,
+                       const string &username, const string &password, float timeout_sec, const OnVendorHttp &cb) {
+    sendRequest(method, url, body, content_type, "", timeout_sec,
+                [method, url, body, content_type, username, password, timeout_sec, cb](const SockException &ex,
+                                                                                       const Parser &res) {
         VendorHttpAnswer answer = toAnswer(ex, res);
         if (answer.status != 401 || username.empty()) {
             cb(answer);
             return;
         }
-        const string authorization = vendorHttpAuthorization(pickChallenge(res), "GET", requestUri(url), username,
+        const string authorization = vendorHttpAuthorization(pickChallenge(res), method, requestUri(url), username,
                                                              password, MD5(makeRandStr(16)).hexdigest().substr(0, 16));
         if (authorization.empty()) {
             cb(answer);
             return;
         }
-        sendGet(url, authorization, timeout_sec, [cb](const SockException &ex, const Parser &res) {
-            cb(toAnswer(ex, res));
-        });
+        sendRequest(method, url, body, content_type, authorization, timeout_sec,
+                    [cb](const SockException &ex, const Parser &res) { cb(toAnswer(ex, res)); });
     });
+}
+
+void vendorHttpGet(const string &url, const string &username, const string &password, float timeout_sec,
+                   const OnVendorHttp &cb) {
+    vendorHttpRequest("GET", url, "", "", username, password, timeout_sec, cb);
 }
 
 } // namespace managerkit

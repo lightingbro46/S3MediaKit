@@ -2,6 +2,7 @@
 #include "Common/BlockingExecutors.h"
 #include "ext-plugin/DeviceFactory.h"
 #include "ext-plugin/Bosch/BoschIpSpeaker.h"
+#include "ext-plugin/IOnvifSetup.h"
 #include "Backchannel/BackchannelManager.h"
 #include "Common/StrUtil.h"
 #include "Common/DeviceFailureCode.h"
@@ -853,7 +854,12 @@ bool SpeakerController::setupDeviceController() {
             WarnL << "Connect to speaker " << shortUrl << " failed: " << data;
             return;
         }
-        device->createOnvifUser(username, password, [weak_device, shortUrl](bool ok, const std::string& data) {
+        auto setup = dynamic_cast<IOnvifSetup *>(device.get());
+        if (!setup) {
+            WarnL << "Vendor plugin of speaker " << shortUrl << " cannot create an onvif user";
+            return;
+        }
+        setup->prepareOnvif(username, password, [weak_device, shortUrl](bool ok, const std::string& data) {
             auto device = weak_device.lock();
             if (!device) {
                 return;
