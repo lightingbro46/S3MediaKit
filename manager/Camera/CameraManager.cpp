@@ -219,6 +219,20 @@ bool CameraManager::delCamera(const string &key) {
     return false;
 }
 
+size_t CameraManager::deactivateAll() {
+    std::lock_guard<std::recursive_mutex> lck(_mtx);
+    std::vector<std::string> keys;
+    for (const auto &it : _gcImp) {
+        if (it.second->isEnabled()) {
+            keys.push_back(it.first);
+        }
+    }
+    for (const auto &key : keys) {
+        delCamera(key);
+    }
+    return keys.size();
+}
+
 void CameraManager::clear() {
     {
         std::lock_guard<std::mutex> lck(_status_mtx);

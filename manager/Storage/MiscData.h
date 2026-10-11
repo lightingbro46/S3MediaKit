@@ -12,6 +12,8 @@ namespace managerkit {
 #define MISC_DATA_VERSION_KEY "VERSION"
 #define MISC_DATA_DB_INSTANCE_ID_KEY "DB_INSTANCE_ID"
 #define MISC_DATA_DB_BOOTSTRAP_DONE "DB_BOOTSTRAP_DONE"
+// Prefix of the keys recording media servers removed from the cluster whose ESC data is not cleaned up yet.
+#define MISC_DATA_REMOVED_PEER_PREFIX "REMOVED_PEER:"
 #define MISC_DATA_DB_BOOTSTRAP_PENDING_VALUE "{\"schema_version\":1,\"status\":\"pending\"}"
 
 struct MiscData {
@@ -62,6 +64,13 @@ public:
                          .update(EntityTraits<MiscData>::tableName())
                          .set({{cols[1], vals[1]}})
                          .where(whereClause.str(), whereParams);
+        return _executor->execDML(query) > 0;
+    }
+
+    bool removeByKey(const std::string &key) {
+        auto query = toolkit::QueryBuilder()
+                         .deleteFrom(EntityTraits<MiscData>::tableName())
+                         .where("key = ?", {key});
         return _executor->execDML(query) > 0;
     }
 

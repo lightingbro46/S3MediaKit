@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Create two isolated MediaServer node directories (node-a, node-b) for a local sync test.
 
-Usage: setup_nodes.py <repo_root> <cluster_dir> [phase2..phase4 | fo1..fo3 | sp1..sp6 | syncoff:<node> | syncon:<node>]
+Usage: setup_nodes.py <repo_root> <cluster_dir> [phase2..phase4 | fo1..fo3 | sp1..sp6 | rm1..rm3 | syncoff:<node> | syncon:<node>]
 """
 import json
 import os
@@ -114,22 +114,59 @@ def speaker(speaker_id, media_server, name=None):
     }
 
 
-def api_config(devices, speakers=()):
+def api_config(devices, speakers=(), members=None):
     return {
         "media_server": {"serverGroupId": 0, "maxConfigCameras": 16, "maxStream": 64,
                          "maxStreamPerCamera": 8, "projectId": "sync-test",
                          "unlimitedStream": True, "unlimitedStreamPerCamera": True},
-        "list_media_server": [server_entry(n, p) for n, p in NODES.items()],
+        "list_media_server": [server_entry(n, p) for n, p in NODES.items() if members is None or n in members],
         "devices": devices,
         "speakers": list(speakers),
     }
 
 
-def write_api_config(node_id, devices, speakers=()):
+def write_api_config(node_id, devices, speakers=(), members=None):
     path = os.path.join(CLUSTER, node_id, "api-config.json")
     tmp = path + ".tmp"
-    json.dump(api_config(devices, speakers), open(tmp, "w"), indent=2)
+    json.dump(api_config(devices, speakers, members), open(tmp, "w"), indent=2)
     os.replace(tmp, path)
+
+
+RM_ORPHAN, RM_MOVED, RM_SPEAKER = "cam-rm-orphan", "cam-rm-moved", "spk-rm-1"
+
+
+def rm_camera(camera_id, primary):
+    cam = camera(True)
+    cam.update({"id": camera_id, "name": camera_id, "priMediaServerId": primary,
+                "primaryStreamId": camera_id + "-main"})
+    return cam
+
+
+def set_not_qualified(node_ids):
+    """Media servers the mock service API answers with HTTP 412 (removed from the cluster)."""
+    path = os.path.join(CLUSTER, "not_qualified.txt")
+    open(path + ".tmp", "w").write("".join(n + "\n" for n in node_ids))
+    os.replace(path + ".tmp", path)
+
+
+def removal_phase(name):
+    """node-b removed from the cluster (run_cluster.sh <dir> removal), checked by check_removal.py."""
+    if name == "rm1":
+        # node-b runs two cameras and a speaker; node-a runs nothing.
+        set_not_qualified([])
+        write_api_config("node-a", [])
+        write_api_config("node-b", [rm_camera(RM_ORPHAN, "node-b"), rm_camera(RM_MOVED, "node-b")],
+                         [speaker(RM_SPEAKER, "node-b")])
+    elif name == "rm2":
+        # The service moves one camera to node-a, deletes the other camera and the speaker, then drops
+        # node-b: node-a no longer lists it and node-b gets HTTP 412.
+        write_api_config("node-a", [rm_camera(RM_MOVED, "node-a")], members=["node-a"])
+        set_not_qualified(["node-b"])
+    elif name == "rm3":
+        # node-b is added back with nothing to run.
+        write_api_config("node-a", [rm_camera(RM_MOVED, "node-a")])
+        write_api_config("node-b", [])
+        set_not_qualified([])
 
 
 def set_sync_config(node_id, value):
@@ -204,7 +241,10 @@ def main():
             # must still hold it when the primary node takes it back one config reload later.
             "manager": {"apiSecret": "", "certSavePath": d + "/www/certs"},
             "cluster": {"serverLocationId": 0,
-                        "failoverActiveDelaySec": int(os.environ.get("FAILOVER_ACTIVE_DELAY_SEC", "5"))},
+                        "failoverActiveDelaySec": int(os.environ.get("FAILOVER_ACTIVE_DELAY_SEC", "5")),
+                        # removal scenario: short decommission/cleanup delays (production: 300 s / 3600 s)
+                        "decommissionAfterSec": int(os.environ.get("DECOMMISSION_AFTER_SEC", "300")),
+                        "removedPeerCleanupSec": int(os.environ.get("REMOVED_PEER_CLEANUP_SEC", "3600"))},
             # device/config APIs are exercised without JWT (check_worker_apis.py)
             "auth": {"enableAuthorize": 0},
             # check_worker_apis.py blocks every API worker on purpose (pool/testConnection against
@@ -256,6 +296,8 @@ if __name__ == "__main__":
     if len(sys.argv) > 3 and sys.argv[3].startswith("sync"):
         mode, node = sys.argv[3].split(":", 1)
         set_sync_config(node, 0 if mode == "syncoff" else 1)
+    elif len(sys.argv) > 3 and sys.argv[3].startswith("rm"):
+        removal_phase(sys.argv[3])
     elif len(sys.argv) > 3 and sys.argv[3].startswith("sp"):
         speaker_phase(sys.argv[3])
     elif len(sys.argv) > 3 and sys.argv[3].startswith("fo"):

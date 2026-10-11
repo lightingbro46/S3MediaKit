@@ -67,6 +67,21 @@ Loa `spk-sync-1` trỏ tới `127.0.0.1:9` (không kết nối được, chỉ k
 | sp5 | node-b restart với `camera.sync_config_to_db=0`, `speaker.sync_config_to_db=0`; thêm camera `cam-sync-off`, loa `spk-sync-off`, đổi tên `spk-sync-1` | SP-40..43: assignment của camera vẫn ghi; không có `vms_resource`/kvpair của camera và loa mới; tên `spk-sync-1` trên DB không đổi |
 | sp6 | node-b bật lại đồng bộ, xoá loa khỏi cả 2 node | SP-50: `vms_resource` và kvpair của loa bị xoá trên cả 2 DB |
 
+## Kịch bản bỏ node khỏi cluster
+```bash
+bash tests/integration/sync_cluster/run_cluster.sh /tmp/s3mk_removal removal
+```
+Mock API trả HTTP 412 (`code 689501`) cho các node có id trong `<work_dir>/not_qualified.txt`. Kịch bản chạy với
+`cluster.decommissionAfterSec=15`, `cluster.removedPeerCleanupSec=30` (đổi bằng `DECOMMISSION_AFTER_SEC`,
+`REMOVED_PEER_CLEANUP_SEC`). Kiểm tra nằm trong `check_removal.py` (`RM_WAIT_SEC`, mặc định 120). Chính sách:
+[docs/api-sync.md](../../../docs/api-sync.md), mục "Node bị bỏ khỏi cluster".
+
+| Bước | Diễn biến | Kiểm tra |
+|---|---|---|
+| rm1 | node-b chạy `cam-rm-orphan`, `cam-rm-moved`, loa `spk-rm-1` | RM-01..02: node-a nhận đủ, owner là node-b |
+| rm2 | Service chuyển `cam-rm-moved` sang node-a, bỏ node-b (node-a không còn liệt kê, node-b nhận 412) | RM-10..12: node-b vào decommissioned, tắt 2 camera + bỏ loa, không ghi log ESC; RM-13..17: node-a nhận camera, sau 30 s dọn camera bị xoá + loa, đóng assignment của node-b, xoá bản ghi `REMOVED_PEER` |
+| rm3 | Thêm node-b lại | RM-20..23: node-b thoát decommissioned, đuổi kịp bản dọn; RM-22: không entry nào node-b ghi lúc decommissioned tới node-a |
+
 ## Kịch bản
 | Phase | Nội dung |
 |---|---|

@@ -11,6 +11,8 @@
 namespace Peer {
 // List of peers in the cluster, stored as JSON string in config, format: [{"id": "peer1", "name": "name", "ip": "ip",...}, ...]
 extern const std::string kPeerList;
+// Unix time since when the service API no longer lists this server (0 = member of the cluster)
+extern const std::string kDecommissionedSince;
 } // namespace Peer
 
 extern std::string g_ini_file;

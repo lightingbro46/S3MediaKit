@@ -9,6 +9,7 @@
 #include <set>
 #include <vector>
 #include <mutex>
+#include <atomic>
 #include <functional>
 #include <json/json.h>
 #include "Poller/Timer.h"
@@ -114,6 +115,30 @@ public:
 
     void setSingleNodeMode(bool single_node);
 
+    bool isRunning();
+
+    // Bootstrapped, and every peer answered a pull sent at or after `since_ms` with all it had: the ESC
+    // data includes everything the peers held at that time. True without peers.
+    bool isCaughtUpSince(uint64_t since_ms);
+
+    // Decommissioned: the service API no longer lists this server ("not qualified"). Local mutations
+    // are then not appended to transaction_log, so nothing this node writes while out of the cluster
+    // reaches the other nodes if it is added back later.
+    void setDecommissioned(bool decommissioned);
+    bool isDecommissioned() const { return _decommissioned.load(); }
+
+    // Cluster membership from the service API (ClusterManager). The ESC data a removed peer leaves
+    // behind is cleaned up after cluster.removedPeerCleanupSec, unless the peer is added back first.
+    void onPeerRemovedFromCluster(const std::string &peer_id);
+    void onPeerAddedToCluster(const std::string &peer_id);
+
+    // Cleanup of a removed peer runs on one node only, once the grace time is over and this node
+    // has pulled everything from each of its peers after that point (a peer that took a camera over
+    // has then delivered its assignment): the node with the lowest id among itself and its peers.
+    static bool shouldCleanupRemovedPeer(const std::string &self_id, const std::vector<std::string> &peers,
+                                         const std::unordered_map<std::string, uint64_t> &last_complete_pull_ms,
+                                         uint64_t removed_at_ms, uint64_t grace_ms, uint64_t now_ms);
+
     Json::Value getMiscData();
 
     // Called for every local mutation before it is appended to transaction_log (ENABLE_SYNC_CHANGES).
@@ -198,6 +223,11 @@ private:
     // GC: compute safe prune watermark and delete old transaction_log entries.
     void maybePruneLog();
 
+    // Runs the cleanup of removed peers whose time has come (sync worker).
+    void maybeCleanupRemovedPeers(const std::unordered_map<std::string, std::string> &peers, uint64_t now_ms);
+    // Records that a pull from `peer_id` sent at `sent_ms` returned everything the peer had.
+    void markPullComplete(const std::string &peer_id, uint64_t sent_ms);
+
 private:
     toolkit::Timer::Ptr                          _timer;
     toolkit::EventPoller::Ptr                    _worker;
@@ -223,6 +253,9 @@ private:
     // Plugin registry: table_name → sync handler.
     std::unordered_map<std::string, TableSyncHandler> _table_handlers;
     bool _single_node = false;
+    std::atomic<bool> _decommissioned { false };
+    // peer → send time of the last pull that returned all its pending entries (guarded by _mtx).
+    std::unordered_map<std::string, uint64_t> _last_complete_pull_ms;
 };
 
 } // namespace managerkit

@@ -198,6 +198,56 @@ public:
         return !current.empty() && current[0].owner_peer_id != self_peer_id;
     }
 
+    // What cleanupRemovedPeer() changed.
+    struct RemovedPeerCleanup {
+        size_t released = 0;  // assignments of the removed server closed
+        size_t removed = 0;   // resources deleted (cameras/speakers nobody took over)
+    };
+
+    // ESC data left by a media server removed from the cluster: closes its unreleased assignments
+    // and deletes the resources nobody took over (its assignment is the last one of the camera,
+    // or a speaker still names it). Every change is logged and synced to the cluster.
+    RemovedPeerCleanup cleanupRemovedPeer(const std::string &peer_id) {
+        RemovedPeerCleanup ret;
+        if (peer_id.empty() || peer_id == _self_node_id) {
+            return ret;
+        }
+        std::lock_guard<std::mutex> lk(_mtx);
+        // Local properties are left alone: they belong to this node's own copy of the device, if any.
+        auto remove_resource = [&](const std::string &guid) {
+            _rstatus_imp->remove(guid);
+            _kvpair_imp->remove(guid);
+            _resource_imp->remove(guid);
+            ++ret.removed;
+        };
+
+        for (auto assign : _assign_imp->findOpenByOwner(peer_id)) {
+            auto last = _assign_imp->findLastAssignment(assign.resource_guid);
+            bool taken_over = !last.empty() && last[0].assignment_guid != assign.assignment_guid;
+            assign.released_at = static_cast<int64_t>(time(nullptr));
+            _assign_imp->update(assign);
+            ++ret.released;
+            if (taken_over) {
+                InfoL << "Released assignment of removed media server " << peer_id << " for resource " << assign.resource_guid
+                      << ", now assigned to " << last[0].owner_peer_id;
+                continue;
+            }
+            // Nobody took the camera over: the service API deleted it together with the server.
+            InfoL << "Removed resource " << assign.resource_guid << " left by removed media server " << peer_id;
+            remove_resource(assign.resource_guid);
+        }
+
+        // Speakers have no assignment; their owner is the media server they name.
+        auto speaker_type = ResourceTypeManager::Instance().getResourceTypeGuid(RESOURCE_TYPE_SPEAKER);
+        if (!speaker_type.empty()) {
+            for (const auto &res : _resource_imp->findByParentGuidAndXType(peer_id, speaker_type)) {
+                InfoL << "Removed speaker " << res.guid << " left by removed media server " << peer_id;
+                remove_resource(res.guid);
+            }
+        }
+        return ret;
+    }
+
     const std::string getSelfNodeId() const { return _self_node_id; }
 
     const std::string getSelfDbGuid() const { return _self_db_guid; }

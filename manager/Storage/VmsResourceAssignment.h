@@ -226,6 +226,20 @@ public:
         return ret;
     }
 
+    // Unreleased assignments held by a media server (used to clean up after it left the cluster).
+    std::vector<VmsResourceAssignment> findOpenByOwner(const std::string &owner_peer_id) {
+        auto query = toolkit::QueryBuilder()
+                            .select(EntityTraits<VmsResourceAssignment>::getColumns())
+                            .from(EntityTraits<VmsResourceAssignment>::tableName())
+                            .where("owner_peer_id = ? AND released_at = 0", {owner_peer_id});
+        std::vector<VmsResourceAssignment> ret;
+        auto rows = _executor->executeRaw(query);
+        for (const auto& row : rows) {
+            ret.push_back(EntityTraits<VmsResourceAssignment>::fromRow(row));
+        }
+        return ret;
+    }
+
 private:
     // Check if the incoming assignment is stale compared to the current active assignment.
     bool isStaleActiveAssignment(const VmsResourceAssignment &incoming) {

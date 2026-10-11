@@ -154,7 +154,12 @@ static void parse_http_response(const SockException &ex, const Parser &res, cons
     const string status = res.status();
     if (status.size() != 3 || status[0] != '2') {
         auto errStr = StrPrinter << "[bad http status code]:" << res.status() << endl;
-        fun(Json::nullValue, errStr, should_retry);
+        // Hand an error body over too: some callers need its error code.
+        Value body;
+        if (!StrJsonUtils::readJsonString(res.content(), body)) {
+            body = Json::nullValue;
+        }
+        fun(body, errStr, should_retry);
         return;
     }
 
@@ -529,6 +534,13 @@ static ArgsType make_json(const MediaInfo &args) {
     return body;
 }
 
+// The service API answers HTTP 412 with this code when it no longer lists this media server.
+static bool isNotQualifiedResponse(const Value &obj, const string &err) {
+    GET_CONFIG(int, not_qualified_code, Cluster::kNotQualifiedCode);
+    return !err.empty() && obj.isObject() && obj["status"].asInt() == 412 && obj["code"].isIntegral() &&
+           obj["code"].asInt64() == not_qualified_code;
+}
+
 static Timer::Ptr g_started_timer;
 static atomic<bool> s_report_started { false };
 static atomic<uint64_t> s_last_report_started_time { 0 };
@@ -593,6 +605,9 @@ static void reportServerStarted() {
             } else {
                 TraceL << "hook " << hook_api_url + hook_server_started << " failed:" << err;
                 WarnL << "Report server started failed:" << err;
+                if (isNotQualifiedResponse(obj, err)) {
+                    WorkThreadPool::Instance().getPoller()->async([]() { onServerNotQualified(); });
+                }
             }
         });
         return true;
@@ -781,12 +796,18 @@ static void reportServerStatistic() {
                             return;
                         }
                         InfoL << "Load server config success: " << config["devices"].size() << " devices, " << config["list_media_server"].size() << " servers";
+                        if (!onServerQualified()) {
+                            return; // back in the cluster, still catching up: applied on a later load
+                        }
                         // loadServerConfigJson is thread-safe (uses its own mutex), no need to dispatch to a specific poller
                         loadServerConfigJson(config);
                     } else {
                         // Load server config failed
                         TraceL << "hook " << hook_api_url + hook_server_load << " failed:" << err;
                         WarnL << "Load server config failed:" << err;
+                        if (isNotQualifiedResponse(obj, err)) {
+                            onServerNotQualified();
+                        }
                     }
                 });
             });
@@ -2064,7 +2085,12 @@ void installWebHook() {
 
         auto device = sender.shared_from_this();
         ArgsType body = makeDeviceCapabilitiesJson(device, &caps);
-        
+        if (!body.isMember("deviceId")) {
+            // Device listener not attached yet (or device released): never send a body without deviceId.
+            WarnL << "Skip media-device-info hook for " << sender.getDeviceTuple().device_id << ": device is not ready";
+            return;
+        }
+
         // Execute hook
         do_http_hook(hook_api_url + hook_device_caps_changed, body, nullptr);
     });

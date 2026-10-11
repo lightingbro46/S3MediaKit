@@ -15,6 +15,7 @@
 #include "Thread/WorkThreadPool.h"
 #include "Server/ClusterManager.h"
 #include <random>
+#include <cstring>
 
 #ifdef ENABLE_SYNC_CHANGES
 
@@ -304,6 +305,7 @@ void SyncManager::stop() {
     _bootstrapping.clear();
     _last_bootstrap_peer.clear();
     _bootstrap_probes.clear();
+    _last_complete_pull_ms.clear();
     InfoL << "Sync manager has been stopped";
 }
 
@@ -324,6 +326,7 @@ void SyncManager::removePeer(const string &peer_id) {
     _peers.erase(peer_id);
     _bootstrapping.erase(peer_id);
     _bootstrap_probes.erase(peer_id);
+    _last_complete_pull_ms.erase(peer_id);
     if (_last_bootstrap_peer == peer_id) {
         _last_bootstrap_peer.clear();
     }
@@ -366,6 +369,12 @@ void SyncManager::onTick() {
         peers_copy           = _peers;
         bootstrapped         = _bootstrapped;
         bootstrap_in_progress = !_bootstrapping.empty();
+    }
+
+    if (bootstrapped && !isDecommissioned()) {
+        // Also when no peer is left: the last node of a cluster cleans up after the removed ones.
+        // Not while decommissioned: its writes would not be logged.
+        maybeCleanupRemovedPeers(peers_copy, toolkit::getCurrentMillisecond(true));
     }
 
     if (!peers_copy.size()) {
@@ -796,8 +805,11 @@ void SyncManager::pullFromRelay(const string &relay_peer_id, const string &base_
 
     TraceL << "Relay pull from " << relay_peer_id << " with " << all_seqs.size() << " cursors";
 
+    GET_CONFIG(int, batch_limit, Database::kBatchLimit);
+    const uint64_t sent_ms = toolkit::getCurrentMillisecond(true);
     weak_ptr<SyncManager> weak_self = shared_from_this();
-    Broadcast::OnResInvoker onRes = [weak_self, relay_peer_id](const string &err, const int &idx, const Json::Value &data) {
+    const int limit = batch_limit;
+    Broadcast::OnResInvoker onRes = [weak_self, relay_peer_id, sent_ms, limit](const string &err, const int &idx, const Json::Value &data) {
         auto self = weak_self.lock();
         if (!self) return;
 
@@ -807,24 +819,32 @@ void SyncManager::pullFromRelay(const string &relay_peer_id, const string &base_
         }
 
         const Json::Value &rows = data["data"];
-        if (!rows.isArray() || rows.empty()) return;
+        if (!rows.isArray()) return;
+        if (rows.empty()) {
+            self->markPullComplete(relay_peer_id, sent_ms);
+            return;
+        }
 
         InfoL << "Relay received " << rows.size() << " entries from " << relay_peer_id << " (first tran_seq=" << rows[0]["sequence"].asString() << " last tran_seq=" << rows[rows.size()-1]["sequence"].asString() << ")";
         // Apply on the sync worker: blocking SQLite work must not run on the HTTP client poller,
         // and responses from several relays are applied one after another.
         Json::Value rows_copy = rows;
-        self->getWorker()->async([weak_self, relay_peer_id, rows_copy]() {
+        self->getWorker()->async([weak_self, relay_peer_id, rows_copy, sent_ms, limit]() {
             auto self = weak_self.lock();
             if (!self) return;
             try {
-                self->handleGaps(self->applyBatch(rows_copy), toolkit::getCurrentMillisecond(true));
+                auto gaps = self->applyBatch(rows_copy);
+                // A full batch may leave entries behind on the relay.
+                if (gaps.empty() && (limit <= 0 || rows_copy.size() < static_cast<Json::ArrayIndex>(limit))) {
+                    self->markPullComplete(relay_peer_id, sent_ms);
+                }
+                self->handleGaps(gaps, toolkit::getCurrentMillisecond(true));
             } catch (const std::exception &e) {
                 WarnL << "Failed to apply batch from " << relay_peer_id << ": " << e.what();
             }
         }, false);
     };
 
-    GET_CONFIG(int, batch_limit, Database::kBatchLimit);
     Json::Value all_seqs_json = Json::arrayValue;
     Json::Value all_acks_json = Json::arrayValue;
 
@@ -1263,6 +1283,154 @@ void SyncManager::maybePruneLog() {
 void SyncManager::setSingleNodeMode(bool single_node) {
     _single_node = single_node;
     InfoL << "SyncManager single node mode set to " << single_node;
+}
+
+bool SyncManager::isRunning() {
+    lock_guard<mutex> lock(_mtx);
+    return _running;
+}
+
+bool SyncManager::isCaughtUpSince(uint64_t since_ms) {
+    lock_guard<mutex> lock(_mtx);
+    if (!_running || !_bootstrapped) {
+        return false;
+    }
+    for (const auto &peer : _peers) {
+        auto it = _last_complete_pull_ms.find(peer.first);
+        if (it == _last_complete_pull_ms.end() || it->second < since_ms) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void SyncManager::setDecommissioned(bool decommissioned) {
+    if (_decommissioned.exchange(decommissioned) != decommissioned) {
+        InfoL << "SyncManager decommissioned set to " << decommissioned;
+    }
+}
+
+void SyncManager::markPullComplete(const string &peer_id, uint64_t sent_ms) {
+    lock_guard<mutex> lock(_mtx);
+    auto &last = _last_complete_pull_ms[peer_id];
+    last = max(last, sent_ms);
+}
+
+void SyncManager::onPeerRemovedFromCluster(const string &peer_id) {
+    if (peer_id.empty() || peer_id == ResourceManager::Instance().getSelfNodeId()) {
+        return;
+    }
+    const uint64_t removed_at_ms = toolkit::getCurrentMillisecond(true);
+    // SQLite work on the sync worker, in order with onPeerAddedToCluster.
+    getWorker()->async([peer_id, removed_at_ms]() {
+        try {
+            auto imp = make_shared<MiscDataImp>();
+            MiscData data;
+            data.key = MISC_DATA_REMOVED_PEER_PREFIX + peer_id;
+            if (!imp->findByKey(data.key).empty()) {
+                return; // keep the first removal time
+            }
+            Json::Value state;
+            state["removed_at_ms"] = static_cast<Json::UInt64>(removed_at_ms);
+            data.value = StrJsonUtils::writeJsonString(state);
+            imp->add(data);
+            InfoL << "Media server " << peer_id << " left the cluster; its ESC data will be cleaned up later";
+        } catch (const std::exception &ex) {
+            WarnL << "Failed to record removed media server " << peer_id << ": " << ex.what();
+        }
+    }, false);
+}
+
+void SyncManager::onPeerAddedToCluster(const string &peer_id) {
+    if (peer_id.empty()) {
+        return;
+    }
+    getWorker()->async([peer_id]() {
+        try {
+            if (make_shared<MiscDataImp>()->removeByKey(MISC_DATA_REMOVED_PEER_PREFIX + peer_id)) {
+                InfoL << "Media server " << peer_id << " is back in the cluster; cleanup of its ESC data cancelled";
+            }
+        } catch (const std::exception &ex) {
+            WarnL << "Failed to cancel cleanup of media server " << peer_id << ": " << ex.what();
+        }
+    }, false);
+}
+
+bool SyncManager::shouldCleanupRemovedPeer(const string &self_id, const vector<string> &peers,
+                                           const unordered_map<string, uint64_t> &last_complete_pull_ms,
+                                           uint64_t removed_at_ms, uint64_t grace_ms, uint64_t now_ms) {
+    const uint64_t due_ms = removed_at_ms + grace_ms;
+    if (self_id.empty() || now_ms < due_ms) {
+        return false;
+    }
+    for (const auto &peer : peers) {
+        if (peer < self_id) {
+            return false; // that peer cleans up
+        }
+        auto it = last_complete_pull_ms.find(peer);
+        if (it == last_complete_pull_ms.end() || it->second < due_ms) {
+            return false; // this peer may still hold an assignment we have not received
+        }
+    }
+    return true;
+}
+
+void SyncManager::maybeCleanupRemovedPeers(const unordered_map<string, string> &peers, uint64_t now_ms) {
+    vector<MiscData> removed;
+    try {
+        for (const auto &data : make_shared<MiscDataImp>()->findAll()) {
+            if (data.key.compare(0, strlen(MISC_DATA_REMOVED_PEER_PREFIX), MISC_DATA_REMOVED_PEER_PREFIX) == 0) {
+                removed.push_back(data);
+            }
+        }
+    } catch (const std::exception &ex) {
+        WarnL << "Failed to read removed media servers: " << ex.what();
+        return;
+    }
+    if (removed.empty()) {
+        return;
+    }
+
+    GET_CONFIG(int, grace_sec, Cluster::kRemovedPeerCleanupSec);
+    string self_id;
+    unordered_map<string, uint64_t> last_complete;
+    {
+        lock_guard<mutex> lock(_mtx);
+        self_id = _self_node_id;
+        last_complete = _last_complete_pull_ms;
+    }
+    vector<string> peer_ids;
+    for (const auto &p : peers) {
+        peer_ids.push_back(p.first);
+    }
+
+    for (const auto &data : removed) {
+        const string peer_id = data.key.substr(strlen(MISC_DATA_REMOVED_PEER_PREFIX));
+        Json::Value state;
+        uint64_t removed_at_ms = 0;
+        if (StrJsonUtils::readJsonString(data.value, state) && state.isObject()) {
+            removed_at_ms = state["removed_at_ms"].asUInt64();
+        }
+        if (!shouldCleanupRemovedPeer(self_id, peer_ids, last_complete, removed_at_ms,
+                                      static_cast<uint64_t>(grace_sec > 0 ? grace_sec : 0) * 1000, now_ms)) {
+            continue;
+        }
+        try {
+            auto result = ResourceManager::Instance().cleanupRemovedPeer(peer_id);
+            auto bookmark_imp = make_shared<BookmarkIndexImp>();
+            size_t bookmarks = 0;
+            for (const auto &guid : bookmark_imp->findGuidsByOwnerPeer(peer_id)) {
+                bookmark_imp->remove(guid);
+                ++bookmarks;
+            }
+            make_shared<MiscDataImp>()->removeByKey(data.key);
+            InfoL << "Cleaned up ESC data of removed media server " << peer_id << ": " << result.released
+                  << " assignments released, " << result.removed << " resources removed, " << bookmarks << " bookmarks removed";
+        } catch (const std::exception &ex) {
+            // The record stays: retried on the next tick.
+            WarnL << "Failed to clean up ESC data of removed media server " << peer_id << ": " << ex.what();
+        }
+    }
 }
 
 Json::Value SyncManager::getMiscData() {

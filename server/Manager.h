@@ -21,6 +21,15 @@ void migrateDatabase();
 
 void loadServerConfigJson(const Json::Value &config);
 
+// The service API answered server_load/server_started with "not qualified": this server was removed
+// from the cluster. After cluster.decommissionAfterSec of such answers the server is decommissioned:
+// ESC sync stops, no ESC log is written any more and every running camera/speaker is stopped.
+void onServerNotQualified();
+
+// server_load succeeded. A decommissioned server first catches up with the cluster's ESC data and returns
+// false (config not to be applied) until it has; it then leaves the decommissioned state and returns true.
+bool onServerQualified();
+
 void getServerStatisticJson(const std::function<void(Json::Value &data)> &cb);
 
 void getServerUsageJson(const std::function<void(Json::Value &data)> &cb);

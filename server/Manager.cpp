@@ -68,13 +68,27 @@ static void loadSavedDeviceInfo() {
     });
 }
 
+static bool isDecommissioned() {
+    // Read directly: the value is changed at runtime without a config reload event.
+    uint64_t decommissioned_since = mINI::Instance()[Peer::kDecommissionedSince];
+    return decommissioned_since > 0;
+}
+
 static void loadSavedMediaServerInfo() {
+#ifdef ENABLE_SYNC_CHANGES
+    // Before any device is loaded: a server removed from the cluster writes no ESC log.
+    SyncManager::Instance().setDecommissioned(isDecommissioned());
+#endif
     EventPollerPool::Instance().getPoller()->doDelayTask(6000, []() {
         DebugL << "Cluster manager has been started loading persisted peers";
         ClusterManager::Instance().loadSavedMediaServerInfo();
 #ifdef ENABLE_SYNC_CHANGES
-        DebugL << "Sync manager has been started";
-        SyncManager::Instance().start();
+        if (isDecommissioned()) {
+            WarnL << "Media server was removed from the cluster, sync manager is not started";
+        } else {
+            DebugL << "Sync manager has been started";
+            SyncManager::Instance().start();
+        }
 #endif
         return 0;
     });
@@ -1096,6 +1110,99 @@ static void loadServerClusterFromJson(const Json::Value &data) {
     SyncManager::Instance().setSingleNodeMode(ClusterManager::Instance().getMediaServerIds().size() == 1);
 #endif
     TraceL << "Load media server cluster config: " << ClusterManager::Instance().getMediaServerIds().size() << " active servers";
+}
+
+static std::mutex s_decommission_mtx;
+// Time of the first "not qualified" answer since the last successful server_load (0 = none).
+static uint64_t s_not_qualified_since = 0;
+
+void onServerNotQualified() {
+    GET_CONFIG(int, decommission_after_sec, Cluster::kDecommissionAfterSec);
+    const uint64_t now = time(nullptr);
+    {
+        std::lock_guard<std::mutex> lck(s_decommission_mtx);
+        if (isDecommissioned()) {
+            return;
+        }
+        if (s_not_qualified_since == 0) {
+            s_not_qualified_since = now;
+        }
+        if (now - s_not_qualified_since < static_cast<uint64_t>(std::max(decommission_after_sec, 0))) {
+            WarnL << "Service API no longer lists this media server since " << getTimeStr("%Y-%m-%d %H:%M:%S", s_not_qualified_since)
+                  << ", decommission after " << decommission_after_sec << "s";
+            return;
+        }
+        if (!CameraManager::Instance().isReady()) {
+            return; // saved cameras still loading: retried on the next answer
+        }
+        mINI::Instance()[Peer::kDecommissionedSince] = now;
+        mINI::Instance().dumpFile(g_ini_file);
+    }
+    WarnL << "Media server was removed from the cluster: stopping ESC sync, cameras and speakers";
+#ifdef ENABLE_SYNC_CHANGES
+    // ESC log first: nothing written from now on may reach the cluster if this server is added back.
+    SyncManager::Instance().setDecommissioned(true);
+    SyncManager::Instance().stop();
+#endif
+    auto cameras = CameraManager::Instance().deactivateAll();
+    size_t speakers = 0;
+    for (const auto &key : SpeakerManager::Instance().getSpeakerKeys()) {
+        if (SpeakerManager::Instance().delSpeaker(key)) {
+            ++speakers;
+        }
+    }
+    InfoL << "Media server decommissioned: " << cameras << " cameras stopped, " << speakers << " speakers removed";
+}
+
+#ifdef ENABLE_SYNC_CHANGES
+// When the ESC sync was restarted for this server to catch up after it was listed again.
+static uint64_t s_rejoin_sync_started_ms = 0;
+#endif
+
+bool onServerQualified() {
+    {
+        std::lock_guard<std::mutex> lck(s_decommission_mtx);
+        s_not_qualified_since = 0;
+        if (!isDecommissioned()) {
+            return true;
+        }
+    }
+#ifdef ENABLE_SYNC_CHANGES
+    // The ESC data of this server is stale (no sync while decommissioned): applying the config now would
+    // decide on it, e.g. delete the ESC record of a camera another server took over meanwhile. Pull first;
+    // the log gate stays on, so nothing is written until then.
+    auto &sync = SyncManager::Instance();
+    if (!sync.isRunning()) {
+        InfoL << "Media server is listed again, catching up with the cluster before applying its config";
+        // Resumes from the stored cursors; a gap (log pruned meanwhile) triggers a full resync.
+        sync.start();
+        s_rejoin_sync_started_ms = toolkit::getCurrentMillisecond(true);
+        // start() forgets the peers: hand back the healthy ones of this server group instead of waiting
+        // for the next health check round.
+        GET_CONFIG(int, self_group_id, Cluster::kServerLocationId);
+        auto &cluster = ClusterManager::Instance();
+        for (const auto &peer : cluster.getPeerUrls()) {
+            if (cluster.getMediaServer(peer.first).serverGroupId == self_group_id) {
+                sync.addPeer(peer.first, peer.second);
+            }
+        }
+    }
+    // Sync disabled by config (start() did not run it): nothing to wait for.
+    if (sync.isRunning() && !sync.isCaughtUpSince(s_rejoin_sync_started_ms)) {
+        InfoL << "Still catching up with the cluster, config not applied yet";
+        return false;
+    }
+#endif
+    {
+        std::lock_guard<std::mutex> lck(s_decommission_mtx);
+        mINI::Instance()[Peer::kDecommissionedSince] = 0;
+        mINI::Instance().dumpFile(g_ini_file);
+    }
+#ifdef ENABLE_SYNC_CHANGES
+    sync.setDecommissioned(false);
+#endif
+    InfoL << "Media server is back in the cluster";
+    return true;
 }
 
 void loadServerConfigJson(const Json::Value &data_api) {

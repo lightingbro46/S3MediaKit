@@ -291,6 +291,19 @@ public:
         return countByTimeRange(start_time, end_time, camera_guid, creator_guid, search_term);
     }
 
+    // Bookmarks whose detail is held by a media server (used to clean up after it left the cluster).
+    std::vector<std::string> findGuidsByOwnerPeer(const std::string &owner_peer_id) {
+        auto query = toolkit::QueryBuilder()
+                         .select({"bookmark_guid"})
+                         .from(EntityTraits<BookmarkIndex>::tableName())
+                         .where("owner_peer_id = ?", {owner_peer_id});
+        std::vector<std::string> ret;
+        for (const auto &row : _executor->executeRaw(query)) {
+            if (!row.empty()) ret.push_back(row[0]);
+        }
+        return ret;
+    }
+
     std::vector<BookmarkIndex> findRecentByCameraGuid(const std::string &camera_guids, const std::string &user_id, int size, std::string sort) {
         std::vector<std::string> _camera_guids;
         if (!camera_guids.empty()) {

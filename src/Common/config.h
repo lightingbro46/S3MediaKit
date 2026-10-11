@@ -1136,6 +1136,12 @@ extern const std::string kServerLocationId;
 extern const std::string kEnableFailover;
 // Seconds a camera released by this server stays in the local list before it is removed
 extern const std::string kFailoverActiveDelaySec;
+// Error code in the HTTP 412 body of server_load/server_started meaning this server was removed from the cluster
+extern const std::string kNotQualifiedCode;
+// Seconds the service API must keep answering "not qualified" before this server stops its cameras and ESC sync
+extern const std::string kDecommissionAfterSec;
+// Seconds after a peer is removed from the cluster before its orphaned ESC data is cleaned up
+extern const std::string kRemovedPeerCleanupSec;
 } // namespace Cluster
 
 } // namespace mediakit

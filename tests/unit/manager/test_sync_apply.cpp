@@ -93,6 +93,10 @@ public:
 
     static void requestResync(SyncManager &m, const std::string &reason) { m.requestResync(reason); }
 
+    static void cleanupRemovedPeers(SyncManager &m, const std::unordered_map<std::string, std::string> &peers, uint64_t now_ms) {
+        m.maybeCleanupRemovedPeers(peers, now_ms);
+    }
+
     static SyncManager::BootstrapResult bootstrapResponse(SyncManager &m, const Json::Value &data) {
         auto result = std::make_shared<SyncManager::BootstrapResult>(SyncManager::BootstrapResult::Failed);
         m.onBootstrapResponse("node-bootstrap-src", "", data, [result](SyncManager::BootstrapResult r) { *result = r; });
@@ -896,4 +900,127 @@ TEST(SyncBootstrapSeedTest, LowestAnsweringNodeSeedsAfterEnoughRounds) {
     // No peers or unknown self id.
     EXPECT_FALSE(SyncManager::shouldSeedBootstrap("node-a", {}, {}, 3));
     EXPECT_FALSE(SyncManager::shouldSeedBootstrap("", peers, {{"node-b", probe(3, 0)}, {"node-c", probe(3, 0)}}, 3));
+}
+
+TEST(SyncRemovedPeerTest, CleanupWaitsForGraceLowestIdAndCompletePulls) {
+    const uint64_t removed = 1000000, grace = 3600000, due = removed + grace;
+    const std::vector<std::string> peers = {"node-c", "node-d"};
+    const std::unordered_map<std::string, uint64_t> pulled = {{"node-c", due}, {"node-d", due + 5}};
+
+    EXPECT_TRUE(SyncManager::shouldCleanupRemovedPeer("node-b", peers, pulled, removed, grace, due + 10));
+    // Grace time not over yet.
+    EXPECT_FALSE(SyncManager::shouldCleanupRemovedPeer("node-b", peers, pulled, removed, grace, due - 1));
+    // A peer with a lower id cleans up.
+    EXPECT_FALSE(SyncManager::shouldCleanupRemovedPeer("node-e", peers, pulled, removed, grace, due + 10));
+    // A peer not pulled completely since the grace time ended may still hold a newer assignment.
+    EXPECT_FALSE(SyncManager::shouldCleanupRemovedPeer("node-b", peers, {{"node-c", due}, {"node-d", due - 1}}, removed, grace, due + 10));
+    EXPECT_FALSE(SyncManager::shouldCleanupRemovedPeer("node-b", peers, {{"node-c", due}}, removed, grace, due + 10));
+    // Last node of the cluster: nothing to wait for.
+    EXPECT_TRUE(SyncManager::shouldCleanupRemovedPeer("node-b", {}, {}, removed, grace, due));
+    EXPECT_FALSE(SyncManager::shouldCleanupRemovedPeer("", {}, {}, removed, grace, due));
+}
+
+// A removed media server leaves open assignments, a speaker and bookmarks behind: the camera nobody took
+// over and the speaker are deleted, the camera moved to another node only loses the stale assignment.
+TEST_F(SyncApplyTest, RemovedPeerCleanupReleasesAndRemovesOrphans) {
+    const std::string gone = "node-gone";
+    auto &m = SyncManager::Instance();
+    auto res_imp = std::make_shared<VmsResourceImp>();
+    auto status_imp = std::make_shared<VmsResourceStatusImp>();
+    auto assign_imp = std::make_shared<VmsResourceAssignmentImp>();
+    auto bookmark_imp = std::make_shared<BookmarkIndexImp>();
+
+    auto addResource = [&](const std::string &guid, const std::string &parent, const std::string &xtype) {
+        VmsResource r;
+        r.guid = guid;
+        r.parent_guid = parent;
+        r.name = guid;
+        r.xtype_guid = xtype;
+        res_imp->add(r, false);
+        VmsResourceStatus st;
+        st.guid = guid;
+        st.status = static_cast<int>(ResourceStatus::ONLINE);
+        status_imp->add(st, false);
+    };
+    auto addAssignment = [&](const std::string &guid, const std::string &resource, const std::string &owner, int64_t at) {
+        auto a = makeAssignment(guid, resource, at, 0);
+        a.owner_peer_id = owner;
+        assign_imp->add(a, false);
+    };
+    const std::string speaker_type = ResourceTypeManager::Instance().getResourceTypeGuid(RESOURCE_TYPE_SPEAKER);
+    ASSERT_FALSE(speaker_type.empty());
+
+    addResource("cam-orphan", gone, "camera-type");
+    addAssignment("asg-orphan", "cam-orphan", gone, 1000);
+    addResource("cam-moved", gone, "camera-type");
+    addAssignment("asg-moved-old", "cam-moved", gone, 1000);
+    addAssignment("asg-moved-new", "cam-moved", kRemotePeer, 2000);
+    addResource("spk-orphan", gone, speaker_type);
+    BookmarkIndex bm;
+    bm.bookmark_guid = "bm-orphan";
+    bm.camera_guid = "cam-orphan";
+    bm.owner_peer_id = gone;
+    bookmark_imp->add(bm, false);
+
+    const uint64_t now_ms = toolkit::getCurrentMillisecond(true);
+    MiscData record;
+    record.key = std::string(MISC_DATA_REMOVED_PEER_PREFIX) + gone;
+    Json::Value state;
+    state["removed_at_ms"] = static_cast<Json::UInt64>(now_ms - 7200 * 1000);
+    record.value = Json::FastWriter().write(state);
+    std::make_shared<MiscDataImp>()->add(record);
+
+    auto &rm = ResourceManager::Instance();
+    const int self_seq = std::make_shared<TransactionSequenceImp>()->findSeqByPeerIdAndDbGuid(rm.getSelfNodeId(), rm.getSelfDbGuid());
+
+    // Not yet: grace time (3600 s by default) counted from a removal one minute ago.
+    state["removed_at_ms"] = static_cast<Json::UInt64>(now_ms - 60 * 1000);
+    MiscData recent = record;
+    recent.value = Json::FastWriter().write(state);
+    std::make_shared<MiscDataImp>()->add(recent);
+    SyncManagerTestPeer::cleanupRemovedPeers(m, {}, now_ms);
+    EXPECT_EQ(1u, res_imp->findByGuid("cam-orphan").size());
+
+    std::make_shared<MiscDataImp>()->add(record);
+    SyncManagerTestPeer::cleanupRemovedPeers(m, {}, now_ms);
+
+    EXPECT_TRUE(res_imp->findByGuid("cam-orphan").empty());
+    EXPECT_EQ(0, status_imp->findStatus("cam-orphan")); // 0 = no row
+    VmsResourceAssignment last;
+    ASSERT_TRUE(rm.getLastResourceAssignment("cam-orphan", last));
+    EXPECT_NE(0, last.released_at);
+
+    EXPECT_EQ(1u, res_imp->findByGuid("cam-moved").size());
+    auto current = assign_imp->findCurrentAssignment("cam-moved");
+    ASSERT_EQ(1u, current.size());
+    EXPECT_EQ("asg-moved-new", current[0].assignment_guid);
+    EXPECT_TRUE(assign_imp->findOpenByOwner(gone).empty());
+
+    EXPECT_TRUE(res_imp->findByGuid("spk-orphan").empty());
+    EXPECT_TRUE(bookmark_imp->findByBookmarkGuid("bm-orphan").empty());
+    EXPECT_TRUE(std::make_shared<MiscDataImp>()->findByKey(record.key).empty());
+
+    // Every change is logged, so the rest of the cluster applies it too.
+    EXPECT_GT(std::make_shared<TransactionSequenceImp>()->findSeqByPeerIdAndDbGuid(rm.getSelfNodeId(), rm.getSelfDbGuid()), self_seq);
+}
+
+TEST_F(SyncApplyTest, DecommissionedNodeAppendsNoLog) {
+    auto &m = SyncManager::Instance();
+    auto &rm = ResourceManager::Instance();
+    auto seq = [&rm]() {
+        return std::make_shared<TransactionSequenceImp>()->findSeqByPeerIdAndDbGuid(rm.getSelfNodeId(), rm.getSelfDbGuid());
+    };
+    BookmarkIndex bm;
+    bm.bookmark_guid = "bm-decommissioned";
+    bm.owner_peer_id = rm.getSelfNodeId();
+
+    const int before = seq();
+    m.setDecommissioned(true);
+    std::make_shared<BookmarkIndexImp>()->add(bm);
+    m.setDecommissioned(false);
+    EXPECT_EQ(before, seq());
+    EXPECT_EQ(1u, std::make_shared<BookmarkIndexImp>()->findByBookmarkGuid("bm-decommissioned").size());
+
+    std::make_shared<BookmarkIndexImp>()->add(bm);
+    EXPECT_EQ(before + 1, seq());
 }

@@ -16,9 +16,11 @@ using namespace mediakit;
 namespace Peer {
 #define PEER_FIELD "peer."
 const std::string kPeerList = PEER_FIELD"peer_list";
+const std::string kDecommissionedSince = PEER_FIELD"decommissioned_since";
 
 static onceToken token([]() {
     mINI::Instance()[kPeerList] = "[]";
+    mINI::Instance()[kDecommissionedSince] = 0;
 });
 }
 
@@ -167,6 +169,9 @@ void ClusterManager::addMediaServer(const std::string &id, const MediaServerInfo
     }
 
     if (new_peer) {
+#ifdef ENABLE_SYNC_CHANGES
+        SyncManager::Instance().onPeerAddedToCluster(id);
+#endif
         auto origin_urls = buildOrginUrls(info);
         std::weak_ptr<ClusterManager> weak_self = shared_from_this();
         WorkThreadPool::Instance().getPoller()->async([weak_self, id, origin_urls]() {
@@ -180,15 +185,25 @@ void ClusterManager::addMediaServer(const std::string &id, const MediaServerInfo
 }
     
 void ClusterManager::removeMediaServer(const std::string &id) {
+    bool same_group = false;
     {
         std::lock_guard<std::mutex> lck(_mtx);
-        _map_server_info.erase(id);
+        auto it = _map_server_info.find(id);
+        if (it != _map_server_info.end()) {
+            GET_CONFIG(int, self_server_group_id, Cluster::kServerLocationId);
+            same_group = it->second.serverGroupId == self_server_group_id;
+            _map_server_info.erase(it);
+        }
         _map_peer_url.erase(id);
         savePeerList(_map_server_info);
         DebugL << "Removed media server: " << id;
     }
 #ifdef ENABLE_SYNC_CHANGES
     SyncManager::Instance().removePeer(id);
+    if (same_group) {
+        // Only peers of this server group share the ESC data synced here.
+        SyncManager::Instance().onPeerRemovedFromCluster(id);
+    }
 #endif
 }
 
@@ -228,15 +243,19 @@ void ClusterManager::healthCheck(const std::string &id, const std::string &origi
             auto url = urls[idx];
             DebugL << "Health check succeeded for " << url;
             int server_group_id = 0;
+            bool known = false;
             {
                 std::lock_guard<std::mutex> lck(self->_mtx);
-                if (self->_map_server_info.find(id) != self->_map_server_info.end()) {
+                auto it = self->_map_server_info.find(id);
+                if (it != self->_map_server_info.end()) {
+                    known = true;
                     self->_map_peer_url[id] = urls[idx];
-                    server_group_id = self->_map_server_info[id].serverGroupId;
+                    server_group_id = it->second.serverGroupId;
                 }
             }
             GET_CONFIG(int, self_server_group_id, Cluster::kServerLocationId);
-            if (server_group_id == self_server_group_id) {
+            // A health check still in flight when the peer was removed must not add it back.
+            if (known && server_group_id == self_server_group_id) {
                 // If the server group ID matches, add the peer to SyncManager for syncing data
 #ifdef ENABLE_SYNC_CHANGES
                 SyncManager::Instance().addPeer(id, url);

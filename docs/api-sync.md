@@ -63,6 +63,36 @@ Service API loại camera khỏi danh sách phân phối của mọi node.
 
 Nếu service API không gửi cấu hình failover, DB sync một mình không làm camera chạy trên node khác.
 
+### Node bị bỏ khỏi cluster
+
+Service API chuyển (hoặc xoá) camera của node X rồi bỏ X khỏi `list_media_server`.
+
+Trên X: `server_load`/`server_started` trả HTTP 412 với `code = cluster.notQualifiedCode` (mặc định
+689501). Lỗi mạng, 5xx hay timeout không tính. Khi 412 kéo dài liên tục `cluster.decommissionAfterSec`
+(mặc định 300 s), X vào trạng thái decommissioned (lưu `peer.decommissioned_since`, giữ qua khởi động lại):
+- không ghi `transaction_log` nữa, dừng SyncManager: nếu X được thêm lại, cluster không nhận dữ liệu cũ của X;
+- tắt mọi camera đang chạy (inactive + failover, lưu local), bỏ mọi loa. Bản ghi trên đĩa giữ nguyên.
+
+Khi `server_load` thành công trở lại, X chạy lại SyncManager từ cursor cũ (log đã bị prune thì cơ chế gap tự
+resync từ snapshot) nhưng chưa ghi log và **chưa áp cấu hình API**: dữ liệu ESC của X đang cũ, áp ngay thì X có
+thể xoá bản ghi ESC của camera mà node khác đã nhận. Chỉ khi X đã pull hết từ mọi peer (sau lúc chạy lại sync)
+thì X mới thoát trạng thái decommissioned và áp cấu hình ở lần `server_load` đó.
+
+Trên các node còn lại (cùng `serverLocationId`): X bị bỏ thì ghi `misc_data` `REMOVED_PEER:<X>`; X được
+thêm lại trước hạn thì huỷ. Sau `cluster.removedPeerCleanupSec` (mặc định 3600 s), node có id nhỏ nhất trong
+nhóm, khi đã pull hết từ mọi peer sau mốc đó, dọn dữ liệu ESC của X (mọi thay đổi đều ghi log để sync):
+- assignment chưa đóng của X: đóng (`released_at`); nếu đó là assignment cuối của camera (không ai nhận
+  camera) thì xoá luôn `vms_resource`/`vms_kvpair`/`vms_resource_status` của camera;
+- loa có `parent_guid = X`: xoá;
+- `bookmark_index` có `owner_peer_id = X`: xoá.
+
+`transaction_sequence` và `peer_ack_log` của X được giữ (ack của X không chặn prune log).
+
+`/media/esc/sync/changes` và `/media/esc/sync/snapshot` chỉ phục vụ media server có trong `list_media_server`
+của node được gọi và cùng `serverLocationId`. Người gọi là `peer` (changes) hoặc `mediaServerId` (snapshot);
+không phải thành viên thì trả HTTP 403 (`CODE_PERMISSION_DENIED`) và không ghi ack. Vì vậy X bị bỏ mà vẫn
+chạy không đọc được dữ liệu cluster nữa, kể cả trước khi nó vào trạng thái decommissioned.
+
 ### Dữ liệu ESC
 
 `vms_kvpair` chỉ chứa cấu hình camera shared, trong đó `streamUrls` là cấu hình link RTSP và phải được đồng bộ. Các runtime statistic như stream status, transport và storage statistic không được ghi vào ESC resource KV.

@@ -20,6 +20,10 @@ void TransactionLogImp::appendLocalDataMutation(const std::string &table, const 
     (void)payload;
     return;
 #else
+    if (SyncManager::Instance().isDecommissioned()) {
+        // Removed from the cluster: nothing written now may reach the other nodes later.
+        return;
+    }
     // Serialize all callers (across every TransactionLogImp instance) to prevent
     // a read-modify-write race where two concurrent calls both read the same
     // current_seq, compute the same next sequence, and then one INSERT succeeds

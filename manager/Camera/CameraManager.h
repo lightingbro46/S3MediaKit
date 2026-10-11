@@ -18,6 +18,10 @@ public:
 
     bool delCamera(const std::string &key);
 
+    // Stops every running camera as delCamera() does for a camera moved away (inactive + failover,
+    // saved locally). Inactive cameras and their recordings are left alone. Returns the count.
+    size_t deactivateAll();
+
     void clear();
 
     std::vector<std::string> getCameraKeys();

@@ -12,6 +12,8 @@
 #                                        # offline, move back, cross-node timeline, retention
 #   run_cluster.sh [work_dir] speaker    # speaker config sync: add, change, move, restart,
 #                                        # sync_config_to_db=0, delete
+#   run_cluster.sh [work_dir] removal    # node-b removed from the cluster (HTTP 412), cleanup of
+#                                        # its ESC data on node-a, node-b added back
 #
 # Env: MEDIASERVER_DIR (default: <repo>/release/linux/Debug), WAIT_SEC (default: 60)
 #      failover: FO_WAIT_SEC (default: 90), FO_KEEP_HOURS (default: 1),
@@ -111,9 +113,14 @@ stop_all
 mkdir -p "$WORK"
 # failover: production default of cluster.failoverActiveDelaySec (phase4 needs a short one).
 [ "${2:-}" = "failover" ] && export FAILOVER_ACTIVE_DELAY_SEC=1800
+# removal: short decommission/cleanup delays instead of the production 300 s / 3600 s.
+if [ "${2:-}" = "removal" ]; then
+    export DECOMMISSION_AFTER_SEC="${DECOMMISSION_AFTER_SEC:-15}"
+    export REMOVED_PEER_CLEANUP_SEC="${REMOVED_PEER_CLEANUP_SEC:-30}"
+fi
 python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" || exit 1
 
-nohup python3 "$HERE/mock_api.py" 18090 > "$WORK/mock_api.log" 2>&1 &
+nohup python3 "$HERE/mock_api.py" 18090 "$WORK/not_qualified.txt" > "$WORK/mock_api.log" 2>&1 &
 echo $! > "$WORK/mock_api.pid"
 trap stop_all EXIT
 
@@ -168,6 +175,21 @@ if [ "${2:-}" = "failover" ]; then
     check retention
     report fo4_retention
     echo "failover scenario: $fail check(s) failed"
+    exit "$fail"
+fi
+
+if [ "${2:-}" = "removal" ]; then
+    fail=0
+    check() { python3 "$HERE/check_removal.py" "$WORK" "$@" || fail=$((fail + $?)); }
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" rm1
+    for n in $NODES; do start_node "$n" init; done
+
+    echo "rm1: node-b runs 2 cameras and a speaker"; check rm1; report rm1
+    echo "rm2: camera moved to node-a, node-b removed from the cluster (412)"
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" rm2; check rm2
+    echo "rm3: node-b added back"
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" rm3; check rm3; report rm3
+    echo "removal scenario: $fail check(s) failed"
     exit "$fail"
 fi
 

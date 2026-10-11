@@ -900,6 +900,9 @@ const string kRetryCount = CLUSTER_FIELD "retry_count";
 const string kServerLocationId = CLUSTER_FIELD "serverLocationId";
 const string kEnableFailover = CLUSTER_FIELD "enableFailover";
 const string kFailoverActiveDelaySec = CLUSTER_FIELD "failoverActiveDelaySec";
+const string kNotQualifiedCode = CLUSTER_FIELD "notQualifiedCode";
+const string kDecommissionAfterSec = CLUSTER_FIELD "decommissionAfterSec";
+const string kRemovedPeerCleanupSec = CLUSTER_FIELD "removedPeerCleanupSec";
 
 static onceToken token([]() {
     mINI::Instance()[kOriginUrl] = "";
@@ -908,6 +911,9 @@ static onceToken token([]() {
     mINI::Instance()[kServerLocationId] = 1;
     mINI::Instance()[kEnableFailover] = false;
     mINI::Instance()[kFailoverActiveDelaySec] = 1800;
+    mINI::Instance()[kNotQualifiedCode] = 689501;
+    mINI::Instance()[kDecommissionAfterSec] = 300;
+    mINI::Instance()[kRemovedPeerCleanupSec] = 3600;
 });
 } // namespace Cluster
 
