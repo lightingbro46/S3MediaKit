@@ -1,6 +1,7 @@
 # Plan: đẩy sự kiện ONVIF lên Service API qua Kafka
 
-Trạng thái: **K1–K4 xong** (2026-10-11): librdkafka vào build, `OnvifEventKafka`, `EventSpool`, `KafkaProducer` có unit test nhưng chưa gắn vào luồng sự kiện (K5). K0, K5–K8 chưa làm. Nối tiếp phần nhận sự kiện ONVIF (PullPoint, đã merge develop): sự kiện đã
+Trạng thái: **K1–K5 xong** (2026-10-11): librdkafka, `OnvifEventKafka`, `EventSpool`, `KafkaProducer`, `EventBus` đã gắn vào `OnvifEventHub`; chưa có chỗ gọi `EventBus::apply()` (K6) nên bản build hiện tại vẫn không gửi gì. K0, K6–K8 chưa làm; làm tiếp từ K6 (mục 9), dev dùng
+`kafka.devOverride` trong lúc chờ tên topic. Nối tiếp phần nhận sự kiện ONVIF (PullPoint, đã merge develop): sự kiện đã
 được nhận, chuẩn hoá, dedup và phát qua `kBroadcastOnvifEvent`, hiện chỉ ghi log. Đợt này thêm **producer Kafka**
 trong MediaServer để gửi các sự kiện đó lên Service API; Service API là consumer.
 
@@ -437,6 +438,31 @@ Kết quả K2–K4 (2026-10-11), các lớp đứng riêng, chưa có chỗ g�
   `classify()` gom mã lỗi thành `broker_down/auth/topic/queue_full/fatal/purged` cho cảnh báo; lỗi cấu hình không
   in giá trị (mật khẩu). Unit `unit_kafka_producer` 6/6 trên mock cluster: thứ tự theo key, header + `replayed=1` tới
   broker, `QUEUE_FULL` không chặn, purge trả DR, broker chết → DR `broker_down` → sống lại gửi được.
+
+Kết quả K5 (2026-10-11):
+
+- `manager/Common/EventBus.*`: LIVE/SPOOL/DRAIN như mục 6.1; khoá `kafka.*` mục 5.2 (trừ `devOverride`/`brokers`/
+  `deviceEventTopic`/`securityProtocol`/`lastEnabled`, thuộc K6) đăng ký ở đây, mô tả trong `conf/config.ini`;
+  `onvif.eventMaxStateKeys` (256) ở `OnvifDeviceControl.cpp`. `OnvifEventHub::onEvent` gọi `publish()` trước giới
+  hạn log; bảng `_sent_states` chỉ cập nhật khi bus nhận record. `kBroadcastEventBusAlert` + listener
+  `on_system_alert` trong `WebHook.cpp` (body: `eventCode`, `eventTime`, `currentValue`, `threshold`, `reason`,
+  `lastError`, `pendingEvents`, `spoolBytes`, `droppedEvents`, `replayedEvents`, `durationSec`).
+  `EventBus::Instance().shutdown()` trong `main.cpp` sau `unInstallWebHook()`.
+- Khác plan, chốt khi làm:
+  - `enable.sparse.connections=false` cố định trong `KafkaProducer`: khi đang SPOOL không có gì được gửi, client
+    sparse không bao giờ nối lại broker nên `brokersUp` mãi 0 và bus kẹt SPOOL (test bắt được, chập chờn).
+  - Lần gửi bù đầu chạy ngay khi có broker `UP`; backoff 5 s → 5 phút chỉ áp khi gửi bù lại lỗi.
+  - Record live nào rơi vào spool (kể cả bị purge khi đổi cấu hình) cũng chuyển bus sang SPOOL, nếu không spool
+    còn record mà bus vẫn LIVE, không bao giờ gửi bù.
+  - `EventBusUnavailable` chỉ phát khi không ở LIVE quá `kafka.spoolAfterSec` (đổi cấu hình, hàng đợi đầy chốc lát
+    không báo); `EventBusRecovered` chỉ khi đã báo Unavailable.
+  - Callback DR của `KafkaProducer` trả lại record dựng từ message khi lỗi: không giữ bản sao record đang bay.
+- Còn hở: `_sent_states` không xoá khi camera bị xoá khỏi node (tối đa `eventMaxStateKeys` khoá / camera đã từng có).
+- Unit `unit_event_bus` 7/7 (mock cluster, chạy lặp ổn định): tắt khi chưa cấu hình, giới hạn tốc độ, broker chết →
+  SPOOL → sống lại → DRAIN → LIVE không mất record + thứ tự theo key + `replayed=1`, tắt chương trình khi broker chết
+  rồi lần chạy sau gửi bù, đổi cấu hình khi đang gửi, tắt bus giữ spool, `OnvifEventHub` → Kafka (Initialized bỏ /
+  resync / Deleted). Bộ unit 340/340. MediaServer thật (`run_cluster.sh workerapis`): khởi động và tắt bình thường,
+  dòng `EventBus stopped`.
 
 Phụ thuộc: K0 → K1 → (K2, K3, K4) → K5 → K6 → K7 → K8. K1–K6 làm được trước khi có tên topic (dev dùng
 `kafka.devOverride`). Mỗi bước: `cmake --build build -j2` + `ctest --test-dir build-test -R unit.` (build dir test
