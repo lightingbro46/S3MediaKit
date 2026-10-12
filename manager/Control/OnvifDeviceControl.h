@@ -51,6 +51,7 @@ extern const std::string kSubscribeFilter;        // 0 subscribes without a topi
 extern const std::string kMaxTopics;              // topics kept from GetEventProperties
 extern const std::string kLogPerCameraPerMin;     // event log lines per camera per minute
 extern const std::string kStatsIntervalSec;       // statistics log period, 0 = off
+extern const std::string kMaxStateKeys;           // states remembered per camera for the event bus resync
 } // namespace OnvifEventCfg
 
 namespace managerkit {

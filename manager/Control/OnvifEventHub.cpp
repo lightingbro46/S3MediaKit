@@ -7,6 +7,7 @@
 #include "Control/OnvifDeviceControl.h"
 #include "Control/OnvifEventHub.h"
 #include "Control/OnvifEventSubscriber.h"
+#include "Common/EventBus.h"
 
 using namespace std;
 using namespace toolkit;
@@ -107,8 +108,45 @@ void OnvifEventHub::onReload() {
     }
 }
 
+void OnvifEventHub::publish(const string &device_id, const OnvifEventMessage &event, int64_t lag_ms) {
+    auto &bus = EventBus::Instance();
+    if (!bus.enabled()) {
+        return;
+    }
+    OnvifEventKafka::Decision decision;
+    {
+        lock_guard<mutex> lck(_mtx);
+        decision = OnvifEventKafka::decide(event, _sent_states[device_id]);
+    }
+    if (event.propertyOp == "Initialized") {
+        bus.noteInitialized(decision == OnvifEventKafka::Decision::SendResync);
+    }
+    if (decision == OnvifEventKafka::Decision::Drop) {
+        return;
+    }
+    GET_CONFIG(string, media_server_id, General::kMediaServerId);
+    GET_CONFIG(string, project_id, Manager::kMediaServerProjectId);
+    GET_CONFIG(size_t, max_keys, OnvifEventCfg::kMaxStateKeys);
+    OnvifEventKafka::Context ctx;
+    ctx.mediaServerId = media_server_id;
+    ctx.projectId = project_id;
+    ctx.deviceId = device_id;
+    ctx.bootId = bus.bootId();
+    ctx.seq = bus.nextSeq();
+    ctx.serverTimeMs = static_cast<int64_t>(getCurrentMillisecond(true));
+    ctx.lagMs = lag_ms;
+    auto record = OnvifEventKafka::toRecord(event, ctx, decision == OnvifEventKafka::Decision::SendResync);
+    if (bus.publish(record, device_id)) {
+        // Only what the consumer will get counts as sent.
+        lock_guard<mutex> lck(_mtx);
+        OnvifEventKafka::remember(event, _sent_states[device_id], max_keys);
+    }
+}
+
 void OnvifEventHub::onEvent(const string &device_id, const string &address, const OnvifEventMessage &event,
                             int64_t lag_ms) {
+    // Before the log limit: a quiet log must not lose events.
+    publish(device_id, event, lag_ms);
     GET_CONFIG(int, per_min, OnvifEventCfg::kLogPerCameraPerMin);
     {
         const uint64_t minute = getCurrentMillisecond() / 60000;

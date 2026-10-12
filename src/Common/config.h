@@ -259,6 +259,13 @@ extern const std::string kBroadcastRetentionForecastAlert;
 
 #define BroadcastPoolThroughputAlertArgs const std::string &pool_id, const std::string &pool_name, const std::string &tier, const float &capacity_mbps, const float &demand_mbps, const float &required_mbps, const int64_t &backlog_bytes, const int64_t &eta_sec, const bool &is_low
 
+// The event bus (Kafka) changed state. event_code: "EventBusUnavailable" (records go to the disk
+// spool; repeated while it lasts), "EventBusSpoolHigh", "EventBusSpoolFull" (records are being lost),
+// "EventBusRecovered" (spool replayed, sending live again). reason: broker_down, auth, topic,
+// queue_full, fatal / max_size, max_age, disk, memory; empty when not applicable.
+extern const std::string kBroadcastEventBusAlert;
+#define BroadcastEventBusAlertArgs const std::string &event_code, const std::string &reason, const std::string &last_error, const int64_t &current_value, const int64_t &threshold, const int64_t &pending_events, const int64_t &spool_bytes, const int64_t &dropped_events, const int64_t &replayed_events, const int64_t &duration_sec
+
 // Broadcast for stream reader alert events. Control server emit stream reader alert through this event.
 extern const std::string kBroadcastStreamReaderAlert;
 #define BroadcastStreamReaderAlertArgs const std::string &camera_id, int &usage, int &threshold, bool &is_critical

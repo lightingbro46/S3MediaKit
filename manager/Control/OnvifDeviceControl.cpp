@@ -67,6 +67,7 @@ const string kSubscribeFilter = ONVIF_CTRL_FIELD"eventSubscribeFilter";
 const string kMaxTopics = ONVIF_CTRL_FIELD"eventMaxTopics";
 const string kLogPerCameraPerMin = ONVIF_CTRL_FIELD"eventLogPerCameraPerMin";
 const string kStatsIntervalSec = ONVIF_CTRL_FIELD"eventStatsIntervalSec";
+const string kMaxStateKeys = ONVIF_CTRL_FIELD"eventMaxStateKeys";
 
 static onceToken token([]() {
     mINI::Instance()[kEventEnable] = 1;
@@ -85,6 +86,7 @@ static onceToken token([]() {
     mINI::Instance()[kMaxTopics] = 512;
     mINI::Instance()[kLogPerCameraPerMin] = 60;
     mINI::Instance()[kStatsIntervalSec] = 60;
+    mINI::Instance()[kMaxStateKeys] = 256;
 });
 } // namespace OnvifEventCfg
 

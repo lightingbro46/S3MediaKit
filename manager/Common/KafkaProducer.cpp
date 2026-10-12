@@ -1,5 +1,6 @@
 #if defined(ENABLE_KAFKA)
 
+#include <string.h>
 #include <librdkafka/rdkafka.h>
 #include <json/json.h>
 #include "Util/logger.h"
@@ -27,8 +28,29 @@ struct KafkaCallbacks {
             return;
         }
         const auto id = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(msg->_private));
-        string reason = msg->err ? rd_kafka_err2str(msg->err) : "";
-        self->_on_delivery(id, msg->err, KafkaProducer::classify(msg->err), reason);
+        EventRecord record;
+        string reason;
+        if (msg->err) {
+            reason = rd_kafka_err2str(msg->err);
+            if (msg->key) {
+                record.key.assign(static_cast<const char *>(msg->key), msg->key_len);
+            }
+            if (msg->payload) {
+                record.value.assign(static_cast<const char *>(msg->payload), msg->len);
+            }
+            rd_kafka_headers_t *hdrs = nullptr;
+            if (rd_kafka_message_headers(msg, &hdrs) == RD_KAFKA_RESP_ERR_NO_ERROR) {
+                const char *name;
+                const void *value;
+                size_t size;
+                for (size_t i = 0; rd_kafka_header_get_all(hdrs, i, &name, &value, &size) == RD_KAFKA_RESP_ERR_NO_ERROR; ++i) {
+                    if (strcmp(name, "replayed") != 0) {
+                        record.headers.emplace_back(name, string(static_cast<const char *>(value), size));
+                    }
+                }
+            }
+        }
+        self->_on_delivery(id, msg->err, KafkaProducer::classify(msg->err), reason, record);
     }
 
     static void onError(rd_kafka_t *rk, int err, const char *reason, void *opaque) {
@@ -151,7 +173,10 @@ KafkaProducer::Ptr KafkaProducer::create(const KafkaSettings &settings, string &
         return true;
     };
     bool ok = set("bootstrap.servers", settings.brokers) && set("enable.idempotence", "true") && set("acks", "all") &&
-              set("allow.auto.create.topics", "false") && set("compression.codec", settings.compression) &&
+              set("allow.auto.create.topics", "false") &&
+              // Keep a connection to every broker: while events are spooled nothing is produced, and a
+              // sparse client would never reconnect, so brokersUp() would stay 0 after the outage.
+              set("enable.sparse.connections", "false") && set("compression.codec", settings.compression) &&
               set("linger.ms", to_string(settings.lingerMs)) &&
               set("queue.buffering.max.kbytes", to_string(settings.queueMaxKBytes)) &&
               set("message.timeout.ms", to_string(settings.messageTimeoutMs)) &&

@@ -1923,6 +1923,30 @@ void installWebHook() {
         do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
     });
 
+    // The event bus (Kafka) cannot deliver device events (spooling to disk), the spool fills up or
+    // loses events, or it recovered.
+    NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastEventBusAlert, [](BroadcastEventBusAlertArgs) {
+        GET_CONFIG(string, hook_system_alert, Hook::kOnSystemAlert);
+        GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+        if (!hook_enable || hook_system_alert.empty() || hook_api_url.empty()) {
+            return;
+        }
+
+        ArgsType body;
+        body["eventCode"] = event_code;
+        body["eventTime"] = time(nullptr);
+        body["currentValue"] = static_cast<Json::Int64>(current_value);
+        body["threshold"] = static_cast<Json::Int64>(threshold);
+        body["reason"] = reason;
+        body["lastError"] = last_error;
+        body["pendingEvents"] = static_cast<Json::Int64>(pending_events);
+        body["spoolBytes"] = static_cast<Json::Int64>(spool_bytes);
+        body["droppedEvents"] = static_cast<Json::Int64>(dropped_events);
+        body["replayedEvents"] = static_cast<Json::Int64>(replayed_events);
+        body["durationSec"] = static_cast<Json::Int64>(duration_sec);
+        do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
+    });
+
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastVideoExtractionResult, [](BroadcastVideoExtractionResultArgs) {
         GET_CONFIG(string, hook_video_extraction_result, Hook::kOnVideoExtractionResult);
         GET_CONFIG(string, hook_api_url, Hook::kApiUrl);

@@ -44,8 +44,10 @@ public:
     // Why records cannot be delivered, for alerts.
     enum class ErrorKind { None, BrokerDown, Auth, Topic, QueueFull, Fatal, Purged, Other };
 
-    // `id` as given to produce(); `error` 0 = delivered.
-    using DeliveryCallback = std::function<void(uint64_t id, int error, ErrorKind kind, const std::string &reason)>;
+    // `id` as given to produce(); `error` 0 = delivered. On error `record` is the record rebuilt from
+    // the message (without the "replayed" header) so it can be kept elsewhere; empty on success.
+    using DeliveryCallback = std::function<void(uint64_t id, int error, ErrorKind kind, const std::string &reason,
+                                                const EventRecord &record)>;
     // Errors not tied to one record (all brokers down, authentication, fatal idempotence error).
     using ErrorCallback = std::function<void(int error, ErrorKind kind, bool fatal, const std::string &reason)>;
 

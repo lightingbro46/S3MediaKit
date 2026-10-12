@@ -10,6 +10,7 @@
 #include <vector>
 #include "Poller/EventPoller.h"
 #include "Onvif/OnvifEvent.h"
+#include "Control/OnvifEventKafka.h"
 
 namespace managerkit {
 
@@ -17,8 +18,9 @@ class OnvifEventSubscriber;
 
 /**
  * Node-wide side of the ONVIF event subscriptions: the limit on subscriptions being created at once
- * (onvif.eventMaxConcurrentSubscribe), the default event logger (listener of kBroadcastOnvifEvent,
- * rate limited per camera), the periodic statistics line, and onvif.eventEnable reloads.
+ * (onvif.eventMaxConcurrentSubscribe), the event bus publisher and the default event logger (listeners
+ * of kBroadcastOnvifEvent, the log rate limited per camera), the periodic statistics line, and
+ * onvif.eventEnable reloads.
  * Any thread.
  */
 class OnvifEventHub {
@@ -36,6 +38,8 @@ private:
     OnvifEventHub();
     void onEvent(const std::string &device_id, const std::string &address, const mediakit::OnvifEventMessage &event,
                  int64_t lag_ms);
+    // Event bus (Kafka): Initialized dropped or resent as a resync (OnvifEventKafka::decide).
+    void publish(const std::string &device_id, const mediakit::OnvifEventMessage &event, int64_t lag_ms);
     void onReload();
     void logStats();
     std::vector<std::shared_ptr<OnvifEventSubscriber>> subscribers();
@@ -53,6 +57,8 @@ private:
     };
     std::unordered_map<std::string, LogBucket> _log_buckets;
     std::unordered_map<std::string, uint64_t> _last_counts; // event count at the last statistics line
+    // Per camera: state values the event bus took last (what the consumer holds).
+    std::unordered_map<std::string, OnvifEventKafka::SentStates> _sent_states;
     toolkit::EventPoller::DelayTask::Ptr _stats_timer;
 };
 

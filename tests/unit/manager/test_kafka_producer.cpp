@@ -122,7 +122,8 @@ TEST(KafkaProducerTest, DeliversEveryRecordInOrderPerKey) {
     ASSERT_TRUE(producer) << err;
 
     std::vector<Delivery> deliveries;
-    producer->setDeliveryCallback([&](uint64_t id, int error, KafkaProducer::ErrorKind kind, const std::string &) {
+    producer->setDeliveryCallback([&](uint64_t id, int error, KafkaProducer::ErrorKind kind, const std::string &,
+                                       const EventRecord &) {
         deliveries.push_back({ id, error, kind });
     });
     const int total = 300;
@@ -155,7 +156,8 @@ TEST(KafkaProducerTest, HeadersKeyAndValueReachTheBroker) {
     auto producer = KafkaProducer::create(settingsFor(mc, "device-events"), err);
     ASSERT_TRUE(producer) << err;
     int delivered = 0;
-    producer->setDeliveryCallback([&](uint64_t, int error, KafkaProducer::ErrorKind, const std::string &) {
+    producer->setDeliveryCallback([&](uint64_t, int error, KafkaProducer::ErrorKind, const std::string &,
+                                       const EventRecord &) {
         EXPECT_EQ(0, error);
         ++delivered;
     });
@@ -236,8 +238,11 @@ TEST(KafkaProducerTest, PurgeHandsQueuedRecordsBack) {
     auto producer = KafkaProducer::create(settingsFor(mc, "device-events"), err);
     ASSERT_TRUE(producer) << err;
     std::vector<Delivery> deliveries;
-    producer->setDeliveryCallback([&](uint64_t id, int error, KafkaProducer::ErrorKind kind, const std::string &) {
+    std::vector<EventRecord> records;
+    producer->setDeliveryCallback([&](uint64_t id, int error, KafkaProducer::ErrorKind kind, const std::string &,
+                                       const EventRecord &record) {
         deliveries.push_back({ id, error, kind });
+        records.push_back(record);
     });
     for (int i = 0; i < 10; ++i) {
         ASSERT_EQ(KafkaProducer::ProduceResult::Ok, producer->produce(makeRecord("cam-1", i), 100 + i, false));
@@ -249,6 +254,10 @@ TEST(KafkaProducerTest, PurgeHandsQueuedRecordsBack) {
         EXPECT_NE(0, deliveries[i].error);
         EXPECT_EQ(KafkaProducer::ErrorKind::Purged, deliveries[i].kind);
     }
+    ASSERT_EQ(10u, records.size());
+    EXPECT_EQ("cam-1", records[3].key);
+    EXPECT_EQ("{\"seq\":3}", records[3].value);
+    EXPECT_EQ(makeRecord("cam-1", 3).headers, records[3].headers);
     EXPECT_EQ(0, producer->queued());
 }
 
@@ -264,7 +273,8 @@ TEST(KafkaProducerTest, BrokerDownTimesOutThenRecovers) {
     auto producer = KafkaProducer::create(s, err);
     ASSERT_TRUE(producer) << err;
     std::vector<Delivery> deliveries;
-    producer->setDeliveryCallback([&](uint64_t id, int error, KafkaProducer::ErrorKind kind, const std::string &) {
+    producer->setDeliveryCallback([&](uint64_t id, int error, KafkaProducer::ErrorKind kind, const std::string &,
+                                       const EventRecord &) {
         deliveries.push_back({ id, error, kind });
     });
     ASSERT_EQ(KafkaProducer::ProduceResult::Ok, producer->produce(makeRecord("cam-1", 0), 0, false));

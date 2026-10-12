@@ -264,6 +264,20 @@ if(ENABLE_KAFKA)
   target_link_libraries(unit_kafka_producer PRIVATE rdkafka::rdkafka jsoncpp)
   add_test(NAME unit.kafka_producer_all COMMAND unit_kafka_producer)
   set_tests_properties(unit.kafka_producer_all PROPERTIES LABELS unit TIMEOUT 90)
+
+  add_s3_unit_test(unit_event_bus
+    manager/test_event_bus.cpp
+    "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
+  target_link_libraries(unit_event_bus PRIVATE
+    -Wl,--start-group
+    S3MediaKit::MediaKit
+    S3MediaKit::ManagerKit
+    S3MediaKit::ext-codec
+    -Wl,--end-group
+    rdkafka::rdkafka)
+  target_include_directories(unit_event_bus PRIVATE "${PROJECT_SOURCE_DIR}/server")
+  add_test(NAME unit.event_bus_all COMMAND unit_event_bus)
+  set_tests_properties(unit.event_bus_all PROPERTIES LABELS unit TIMEOUT 120)
 endif()
 
 # CameraManager collects camera online/offline changes into one report; server/ symbols come from the

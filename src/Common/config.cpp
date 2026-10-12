@@ -85,6 +85,7 @@ const string kBroadcastDiskUsageAlert = "kBroadcastDiskUsageAlert";
 const string kBroadcastDiskWriteAlert = "kBroadcastDiskWriteAlert";
 const string kBroadcastPoolThroughputAlert = "kBroadcastPoolThroughputAlert";
 const string kBroadcastRetentionForecastAlert = "kBroadcastRetentionForecastAlert";
+const string kBroadcastEventBusAlert = "kBroadcastEventBusAlert";
 const string kBroadcastSystemAuditLog = "kBroadcastSystemAuditLog";
 const string kBroadcastUserAuditLog = "kBroadcastUserAuditLog";
 const string kBroadcastStreamReaderAlert = "kBroadcastStreamReaderAlert";

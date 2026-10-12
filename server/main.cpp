@@ -39,6 +39,7 @@
 
 #include "System.h"
 #include "Common/BlockingExecutors.h"
+#include "Common/EventBus.h"
 #if defined(ENABLE_FFMPEG)
 #include "Codec/HwCodec.h"
 #endif
@@ -545,6 +546,8 @@ int start_main(int argc,char *argv[]) {
     }
     unInstallWebApi();
     unInstallWebHook();
+    // Events still queued for Kafka are sent or written to the disk spool.
+    managerkit::EventBus::Instance().shutdown();
     onProcessExited();
     unInstallManagerHook();
 
