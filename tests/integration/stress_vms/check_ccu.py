@@ -74,7 +74,8 @@ LIVE_KINDS = ("fmp4-sub", "fmp4-main", "rtsp")
 STRUCTURAL_OBJECTS = ("MediaSource", "MultiMediaSourceMuxer", "Socket", "TcpClient", "TcpServer",
                       "TcpSession", "UdpServer", "UdpSession")
 HZ = os.sysconf("SC_CLK_TCK")
-NCPU = os.cpu_count() or 1
+# MediaServer bị ghim vào một nhóm lõi (MS_CPUSET) thì CPU% tính trên số lõi đó.
+NCPU = int(os.environ.get("MS_NCPU") or 0) or os.cpu_count() or 1
 FILE_TIME = re.compile(r"(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})")
 
 
@@ -260,10 +261,20 @@ def cpu_iowait_ticks():
 
 
 def mem_total_kb():
+    total = 0
     for line in open("/proc/meminfo"):
         if line.startswith("MemTotal:"):
-            return int(line.split()[1])
-    return 0
+            total = int(line.split()[1])
+            break
+    # Trong container giới hạn RAM (docker --memory), /proc/meminfo vẫn là RAM của host.
+    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            v = open(path).read().strip()
+        except OSError:
+            continue
+        if v.isdigit() and 0 < int(v) // 1024 < total:
+            return int(v) // 1024
+    return total
 
 
 class Sampler(object):

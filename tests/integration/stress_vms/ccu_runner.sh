@@ -22,7 +22,13 @@
 #   --only a,b,...               chi chay cac kich ban nay (ten o cuoi --help)
 #   --work DIR                   thu muc lam viec, can nhieu dung luong [./ccu_work]
 #   --accept N                   muc nghiem thu [400, suite live500: 500]
-#   --profile full|mid|smoke     so camera: 300 / 120 / 30 [full]
+#   --profile full|mid|smoke|N   so camera: 300 / 120 / 30 / N [full]
+#   --cameras N                  nhu --profile N
+#   --cam-steps a,b,...          bac so camera cua kich ban cam_step (moi bac 0 viewer, ghi 24/7
+#                                ca 2 luong, giu CAM_HOLD_SEC [600] giay; dung sau 2 bac truot)
+#                                [100,200,300,400,500,600,700,800,1000]
+#   --ms-cpus LIST               ghim MediaServer vao cac loi nay (taskset), vd 0-15; tu dat -t
+#   --gen-cpus LIST              ghim bo sinh tai (nguon RTSP, viewer, mock) vao cac loi nay, vd 16-31
 #   --viewer-hosts h1,h2         chay them worker viewer tren may khac qua ssh (khong mat khau)
 #   --nic IFACE                  card mang phuc vu viewer (mac dinh lo, hoac tu do khi co --viewer-hosts)
 #   --soak-hours H               thoi luong soak [4]
@@ -54,11 +60,14 @@ BIN=""
 STRESS_INI="${STRESS_INI:-}"
 MS_EXTRA_ARGS="${MS_EXTRA_ARGS:-}"
 TAG=""
+CAM_STEPS="100,200,300,400,500,600,700,800,1000"
+MS_CPUS=""
+GEN_CPUS=""
 
-ALL_SCENARIOS="step_hot step_uniform storm churn admission mix_fmp4-sub mix_fmp4-main mix_rtsp mix_hls mix_replay soak live_step live_uniform live_storm live_replay live_soak"
+ALL_SCENARIOS="cam_step step_hot step_uniform storm churn admission mix_fmp4-sub mix_fmp4-main mix_rtsp mix_hls mix_replay soak live_step live_uniform live_storm live_replay live_soak"
 
 usage() {
-    sed -n '2,35p' "$SELF" | sed 's/^# \{0,1\}//'
+    sed -n '2,41p' "$SELF" | sed 's/^# \{0,1\}//'
     echo "Kich ban: $ALL_SCENARIOS"
     exit "${1:-0}"
 }
@@ -70,6 +79,10 @@ while [ $# -gt 0 ]; do
         --work) WORK="$2"; shift 2 ;;
         --accept) ACCEPT="$2"; shift 2 ;;
         --profile) PROFILE="$2"; shift 2 ;;
+        --cameras) PROFILE="$2"; shift 2 ;;
+        --cam-steps) CAM_STEPS="$2"; shift 2 ;;
+        --ms-cpus) MS_CPUS="$2"; shift 2 ;;
+        --gen-cpus) GEN_CPUS="$2"; shift 2 ;;
         --viewer-hosts) VIEWER_HOSTS="$2"; shift 2 ;;
         --nic) NIC="$2"; shift 2 ;;
         --soak-hours) SOAK_HOURS="$2"; shift 2 ;;
@@ -89,8 +102,10 @@ done
 [ -x "$BIN" ] || { echo "Khong thay MediaServer chay duoc: $BIN"; exit 2; }
 BIN_DIR="$(cd "$(dirname "$BIN")" && pwd)"
 [ "$(basename "$BIN")" = MediaServer ] || { echo "Binary phai ten MediaServer (harness goi <thu muc>/MediaServer)"; exit 2; }
-case "$PROFILE" in full|mid|smoke) ;; *) echo "--profile khong hop le"; exit 2 ;; esac
-case "$PROFILE" in full) CAMERAS=300 ;; mid) CAMERAS=120 ;; smoke) CAMERAS=30 ;; esac
+case "$PROFILE" in full|mid|smoke) ;; [1-9]*[!0-9]*|*[!0-9a-z]*) echo "--profile khong hop le"; exit 2 ;;
+    [1-9]*) ;; *) echo "--profile khong hop le"; exit 2 ;; esac
+case "$PROFILE" in full) CAMERAS=300 ;; mid) CAMERAS=120 ;; smoke) CAMERAS=30 ;; *) CAMERAS=$PROFILE ;; esac
+case "$CAM_STEPS" in ''|*[!0-9,]*) echo "--cam-steps khong hop le"; exit 2 ;; esac
 
 case "$SUITE" in
     quick)    SCENARIOS="step_hot storm admission" ;;
@@ -122,6 +137,29 @@ done
 [ -z "$missing" ] || { echo "Thieu lenh:$missing"; exit 2; }
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 6) else 1)' \
     || { echo "Can python3 >= 3.6"; exit 2; }
+# so loi trong danh sach kieu "0-7,16-23"
+cpulist_count() {
+    local n=0 part
+    for part in ${1//,/ }; do
+        case "$part" in *-*) n=$(( n + ${part#*-} - ${part%-*} + 1 )) ;; *) n=$(( n + 1 )) ;; esac
+    done
+    echo "$n"
+}
+if [ -n "$MS_CPUS$GEN_CPUS" ]; then
+    command -v taskset > /dev/null || { echo "Thieu lenh taskset (util-linux)"; exit 2; }
+fi
+if [ -n "$MS_CPUS" ]; then
+    export MS_CPUSET="$MS_CPUS" MS_NCPU
+    MS_NCPU=$(cpulist_count "$MS_CPUS")
+    # MediaServer mac dinh tao so poller = so loi cua may, khong theo affinity
+    case " $MS_EXTRA_ARGS " in *" -t "*) ;; *) MS_EXTRA_ARGS="$MS_EXTRA_ARGS -t $MS_NCPU" ;; esac
+fi
+if [ -n "$GEN_CPUS" ]; then
+    # moi tien trinh con (nguon RTSP, viewer, mock, python check) ke thua affinity nay;
+    # MediaServer duoc taskset lai sang MS_CPUS khi khoi dong
+    taskset -pc "$GEN_CPUS" $$ > /dev/null || { echo "--gen-cpus khong hop le: $GEN_CPUS"; exit 2; }
+    export CCU_WORKERS="${CCU_WORKERS:-$(( $(cpulist_count "$GEN_CPUS") / 2 > 0 ? $(cpulist_count "$GEN_CPUS") / 2 : 1 ))}"
+fi
 ulimit -n 1048576 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
 if [ "$(ulimit -n)" -lt 65536 ]; then
     say "CANH BAO: ulimit -n = $(ulimit -n) (< 65536). 300 camera + nhieu viewer se het fd."
@@ -174,6 +212,15 @@ fi
     echo "== dia (work)";  df -h "$WORK"
     echo "== /dev/shm";    df -h /dev/shm 2>/dev/null
     echo "== block";       lsblk -d -o NAME,ROTA,SIZE,MODEL 2>/dev/null
+    echo "== dia ghi hinh (work)"
+    src=$(df -P "$WORK" | awk 'NR==2 {print $1}'); echo "  device=$src"
+    findmnt -T "$WORK" 2>/dev/null
+    lsblk -s -o NAME,ROTA,TYPE,SIZE,MODEL "$src" 2>/dev/null
+    echo "== cgroup";      echo "memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null)"
+    echo "cpu.max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null) cpuset=$(cat /sys/fs/cgroup/cpuset.cpus.effective 2>/dev/null)"
+    echo "io.max=$(cat /sys/fs/cgroup/io.max 2>/dev/null | tr '\n' ' ')"
+    [ -f /.dockerenv ] && echo "docker=1"
+    echo "nproc(affinity)=$(nproc) ms_cpus=${MS_CPUS:--} gen_cpus=${GEN_CPUS:--}"
     echo "== mang";        ip -br addr 2>/dev/null
     for i in $(ls /sys/class/net 2>/dev/null); do
         echo "  $i speed=$(cat /sys/class/net/$i/speed 2>/dev/null || echo ?)Mbps"
@@ -182,15 +229,21 @@ fi
     echo "== python";      python3 --version
     echo "== sysctl";      sysctl vm.dirty_ratio vm.dirty_background_ratio net.core.somaxconn 2>/dev/null
     echo "== PSI";         for k in cpu io memory; do echo "$k: $(tr '\n' ' ' < /proc/pressure/$k 2>/dev/null)"; done
-    echo "== tham so";     echo "suite=$SUITE scenarios=$SCENARIOS accept=$ACCEPT profile=$PROFILE nic=$NIC viewer_hosts=$VIEWER_HOSTS"
+    echo "== tham so";     echo "suite=$SUITE scenarios=$SCENARIOS accept=$ACCEPT profile=$PROFILE cam_steps=$CAM_STEPS nic=$NIC viewer_hosts=$VIEWER_HOSTS"
     echo "== tinh chinh";  echo "tag=${TAG#_} set=$STRESS_INI args=$MS_EXTRA_ARGS"
 } > "$OUT/system.txt" 2>&1
 
 # ------------------------------------------------------------------ ước lượng dung lượng
 # 300 camera × (3,7 + 0,5) Mbps ≈ 160 MB/s ghi đĩa. Mỗi kịch bản xoá bản ghi khi xong
 # (trừ --keep-records), nên chỉ cần đủ cho kịch bản dài nhất.
-per_sec_mb=$(( CAMERAS * 42 / 80 ))
+EST_CAMERAS=$CAMERAS
+[ "$(echo $SCENARIOS)" = cam_step ] && EST_CAMERAS=0
+case " $SCENARIOS " in *" cam_step "*)
+    for n in ${CAM_STEPS//,/ }; do [ "$n" -gt "$EST_CAMERAS" ] && EST_CAMERAS=$n; done ;;
+esac
+per_sec_mb=$(( EST_CAMERAS * 42 / 80 ))
 longest_min=60
+case " $SCENARIOS " in *" cam_step "*) longest_min=$(( ${CAM_HOLD_SEC:-600} / 60 + 6 )) ;; esac
 case " $SCENARIOS " in *" churn "*) longest_min=45 ;; esac
 case " $SCENARIOS " in *" step_hot "*) longest_min=75 ;; esac
 case " $SCENARIOS " in *" soak "*|*" live_soak "*) longest_min=$(( SOAK_HOURS * 60 + 15 )) ;; esac
@@ -208,10 +261,10 @@ fi
 
 # HLS cua node nam tren /dev/shm nhu production (setup_stress.py hls_dir). Moi camera
 # ~15 MB segment (main 4 Mbps + sub); docker mac dinh chi cho /dev/shm 64 MB.
-shm_need_mb=$(( CAMERAS * 15 ))
+shm_need_mb=$(( EST_CAMERAS * 15 ))
 shm_avail_mb=$(df -Pk /dev/shm 2>/dev/null | awk 'NR==2 {print int($4/1024)}')
 if [ -n "$shm_avail_mb" ] && [ "$shm_avail_mb" -lt "$shm_need_mb" ]; then
-    say "CANH BAO: /dev/shm con ${shm_avail_mb} MB, HLS cua ${CAMERAS} camera can ~${shm_need_mb} MB."
+    say "CANH BAO: /dev/shm con ${shm_avail_mb} MB, HLS cua ${EST_CAMERAS} camera can ~${shm_need_mb} MB."
     say "          Thieu thi HLS ghi loi va viewer hls truot. Chay docker voi --shm-size=$(( shm_need_mb / 1024 + 2 ))g."
     if [ "$ASSUME_YES" != 1 ] && [ -t 0 ]; then
         read -r -p "Tiep tuc? [y/N] " ans
@@ -260,6 +313,68 @@ trap 'say "bi ngat - dong goi phan da co"; finish; exit 130' INT TERM
 
 # ------------------------------------------------------------------ chạy một kịch bản
 declare -A RC DURATION
+RAN=""
+CAM_OK=""
+CAM_FAIL=""
+CAM_INVALID=""
+
+# bậc 0 (không viewer) của một lần cam_<N>: 0 = đạt (nền online, ghi hình không hở, healthcheck),
+# 1 = trượt, 2 = không hợp lệ (nguồn RTSP/bộ sinh tải quá tải - không nói gì về MediaServer)
+cam_level_ok() {
+    python3 - "$OUT/$1/ccu_report.json" <<'PY'
+import json, sys
+try:
+    rows = json.load(open(sys.argv[1]))["rows"]
+except Exception:
+    sys.exit(1)
+if rows and rows[0].get("invalid"):
+    sys.exit(2)
+sys.exit(0 if rows and rows[0].get("ok") else 1)
+PY
+}
+
+# bảng một dòng mỗi bậc camera, lấy từ bậc 0 của từng ccu_report.json
+cam_table() {
+    python3 - "$OUT" $RAN <<'PY'
+import json, os, sys
+out, names = sys.argv[1], [n for n in sys.argv[2:] if n.startswith("cam_")]
+print("| camera | luong online | CPU % (loi MS) | poller max % | RSS MB | ghi dia MB/s | IO full % | NIC Mbps | healthcheck p95 ms | ket luan |")
+print("|---|---|---|---|---|---|---|---|---|---|")
+for n in names:
+    try:
+        r = json.load(open(os.path.join(out, n, "ccu_report.json")))["rows"][0]
+    except Exception:
+        print("| %s | - | - | - | - | - | - | - | - | khong co bao cao |" % n[4:])
+        continue
+    why = "; ".join(r.get("invalid", []) + r.get("failures", []))
+    print("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+        n[4:], r.get("live_streams"), r.get("cpu_pct_total"), r.get("poller_load_max"), r.get("rss_mb"),
+        r.get("disk_write_mbps"), r.get("io_full_pct"), r.get("nic_tx_mbps"), r.get("healthcheck_p95_ms"),
+        r.get("verdict", "?") + (": " + why if why else "")))
+PY
+}
+
+run_cam_steps() {
+    # khong dung ten n: collect() lap "for n in node-*" khong local
+    local cams fails=0 r
+    for cams in ${CAM_STEPS//,/ }; do
+        RUN_PROFILE=$cams run_one "cam_$cams"
+        cam_level_ok "cam_$cams"; r=$?
+        if [ "$r" = 0 ]; then
+            CAM_OK=$cams; fails=0
+            say "cam_$cams: DAT"
+        elif [ "$r" = 2 ]; then
+            CAM_INVALID=$cams
+            say "cam_$cams: KHONG HOP LE (bo sinh tai qua tai) - dung cam_step; can them loi cho --gen-cpus"
+            break
+        else
+            [ -z "$CAM_FAIL" ] && CAM_FAIL=$cams
+            fails=$((fails + 1))
+            say "cam_$cams: TRUOT"
+            [ "$fails" -ge 2 ] && { say "2 bac camera truot lien tiep - dung cam_step"; break; }
+        fi
+    done
+}
 
 scenario_env() {
     # In ra biến môi trường của kịch bản, mỗi dòng một biến. Biến đã đặt sẵn từ ngoài
@@ -282,6 +397,10 @@ scenario_env() {
         soak)      echo "CCU_MIX=vms"; echo "CCU_DIST=hot"
                    echo "CCU_DURATION=${CCU_SOAK_SEC:-$(( SOAK_HOURS * 3600 ))}" ;;
         admission) echo "CCU_MIX=vms"; echo "CCU_DIST=uniform" ;;
+        # cam_step: bac so camera, 0 viewer, moi camera ghi 24/7 ca main va sub
+        cam_*)
+            echo "STRESS_COHORT=always"; echo "CCU_MIX=live"; echo "CCU_DIST=hot"; echo "CCU_PERF_SEC=0"
+            echo "CCU_STEPS=0"; echo "CCU_HOLD_SEC=${CAM_HOLD_SEC:-600}"; args="--bisect 0" ;;
         # live500: moi camera ghi 24/7 ca main va sub, nguoi xem chi HLS + HTTP-MP4 live
         live_step)
             echo "STRESS_COHORT=always"; echo "CCU_MIX=live"; echo "CCU_DIST=hot"
@@ -307,7 +426,7 @@ scenario_env() {
 
 harness_scenario() {
     case "$1" in
-        step_*|mix_*|live_step|live_uniform) echo ccu ;;
+        step_*|mix_*|live_step|live_uniform|cam_*) echo ccu ;;
         storm|live_storm) echo ccu_storm ;;
         live_soak) echo ccu_soak ;;
         live_replay) echo ccu_replay ;;
@@ -365,9 +484,10 @@ run_one() {
         export CCU_CTL_HOST="$CTL_HOST" VIEWER_HOSTS="$VIEWER_HOSTS"
         export STRESS_INI MS_EXTRA_ARGS
         while IFS= read -r kv; do export "$kv"; done < <(scenario_env "$s")
-        bash "$H/run_stress.sh" "$WORK/$s" "$PROFILE" "$hs"
+        bash "$H/run_stress.sh" "$WORK/$s" "${RUN_PROFILE:-$PROFILE}" "$hs"
     ) > "$OUT/$s.console.log" 2>&1
     rc=$?
+    RAN="$RAN $s"
     RC[$s]=$rc
     DURATION[$s]=$(( ($(date +%s) - t0) / 60 ))
     rm -f "$CURRENT_FILE"
@@ -388,10 +508,17 @@ finish() {
         echo "- Viewer: $([ -n "$VIEWER_HOSTS" ] && echo "may nay + $VIEWER_HOSTS (NIC $NIC)" || echo "chay cung may (loopback)")"
         echo "- Tinh chinh: tag=${TAG#_} set=${STRESS_INI:--} args=${MS_EXTRA_ARGS:--}"
         echo "- Tong thoi gian: $(( ($(date +%s) - START_TS) / 60 )) phut"
+        echo "- Ghim CPU: MediaServer=${MS_CPUS:-khong} (${MS_NCPU:-tat ca} loi), bo sinh tai=${GEN_CPUS:-khong}"
+        case " $SCENARIOS " in *" cam_step "*)
+            echo
+            cam_table
+            echo
+            echo "- **Nguong camera (0 viewer, ghi 24/7 2 luong): ${CAM_OK:-chua co bac dat}** (bac truot dau tien: ${CAM_FAIL:--}; khong hop le tu: ${CAM_INVALID:--}; bac: $CAM_STEPS)" ;;
+        esac
         echo
         echo "| Kich ban | rc | phut | Ket luan |"
         echo "|---|---|---|---|"
-        for s in $SCENARIOS; do
+        for s in $RAN; do
             local line=""
             if [ -f "$OUT/$s/ccu_report.md" ] || ls "$OUT/$s"/ccu_*_report.md > /dev/null 2>&1; then
                 line=$(grep -hE "^\- \*\*(CCU đạt|Nghiệm thu|Yếu tố)|^\- \*\*[0-9A]" "$OUT/$s"/ccu*_report.md 2>/dev/null \
@@ -401,7 +528,7 @@ finish() {
             echo "| $s | ${RC[$s]:--} | ${DURATION[$s]:--} | ${line:-chua chay / khong co bao cao} |"
         done
         echo
-        for s in $SCENARIOS; do
+        for s in $RAN; do
             for f in "$OUT/$s"/ccu*_report.md; do
                 [ -f "$f" ] || continue
                 echo "## $s"
@@ -419,7 +546,7 @@ finish() {
 
 say "chay: $SCENARIOS (profile $PROFILE, nghiem thu $ACCEPT, viewer NIC $NIC)"
 for s in $SCENARIOS; do
-    run_one "$s"
+    if [ "$s" = cam_step ]; then run_cam_steps; else run_one "$s"; fi
 done
 finish
 exit 0

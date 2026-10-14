@@ -7,7 +7,7 @@
 #
 # Dùng:
 #   run_stress.sh [work_dir] [profile] [scenario]
-#     profile : smoke (30 cam) | mid (120 cam) | full (300 cam)   [mặc định: mid]
+#     profile : smoke (30 cam) | mid (120 cam) | full (300 cam) | <N> (N camera)  [mặc định: mid]
 #     scenario: all | ramp | steady | onvif | flap | schedule | retention
 #               | failover | storage | recover | soak | videorule
 #               | ccu | ccu_storm | ccu_churn | ccu_soak | ccu_admission | ccu_replay  [mặc định: all]
@@ -29,6 +29,7 @@
 #   STRESS_COHORT    dồn mọi camera vào một cohort, vd always = ghi 24/7 cả hai luồng
 #   STRESS_INI       ghi đè config.ini sau cùng: "hls.segDur=4;http.sendBufSize=262144"
 #   MS_EXTRA_ARGS    tham số thêm cho MediaServer, vd "-t 16" (số poller)
+#   MS_CPUSET        ghim MediaServer vào các lõi này (taskset -c), vd "0-15"; nên đi kèm "-t <số lõi>"
 #   CCU_DIST         hot | uniform                                       [hot]
 #   CCU_STEPS        danh sách bậc                     [0,100,200,300,400,500,600,800,...]
 #   CCU_HOLD_SEC     giữ mỗi bậc (bậc nghiệm thu giữ CCU_ACCEPT_HOLD_SEC)  [150]
@@ -61,7 +62,7 @@ PROFILE="${2:-mid}"
 SCENARIO="${3:-all}"
 BIN_DIR="${MEDIASERVER_DIR:-$REPO/release/linux/Debug}"
 
-RTSP_PORT=18554
+RTSP_PORT="${STRESS_RTSP_PORT:-18554}"
 ONVIF_PORT=18580
 API_PORT=18590
 
@@ -70,7 +71,9 @@ case "$PROFILE" in
     mid)   CAMERAS=120; DEF_PHASE=120 ;;
     full)  CAMERAS=300; DEF_PHASE=180 ;;
     stop)  CAMERAS=0;   DEF_PHASE=0   ;;
-    *)     echo "profile không hợp lệ: $PROFILE (smoke|mid|full)"; exit 2 ;;
+    [1-9]*[!0-9]*) echo "profile không hợp lệ: $PROFILE (smoke|mid|full|<số camera>)"; exit 2 ;;
+    [1-9]*) CAMERAS=$PROFILE; DEF_PHASE=180 ;;
+    *)     echo "profile không hợp lệ: $PROFILE (smoke|mid|full|<số camera>)"; exit 2 ;;
 esac
 PHASE_SEC="${PHASE_SEC:-$DEF_PHASE}"
 NODES="${NODES:-2}"
@@ -203,7 +206,9 @@ start_node() {
     local threads="-t 4 --affinity 0"
     [ "${CCU_PRODUCTION_ARGS:-0}" = 1 ] && threads=""
     threads="$threads ${MS_EXTRA_ARGS:-}"
-    LD_LIBRARY_PATH="$BIN_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" nohup "$BIN_DIR/MediaServer" -c "$d/config.ini" \
+    local pin=""
+    [ -n "${MS_CPUSET:-}" ] && pin="taskset -c $MS_CPUSET"
+    LD_LIBRARY_PATH="$BIN_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" nohup $pin "$BIN_DIR/MediaServer" -c "$d/config.ini" \
         -s "$PEM" -l 1 $threads --log-dir "$d/log/" \
         > "$d/stdout.log" 2>&1 &
     echo $! > "$d/server.pid"
