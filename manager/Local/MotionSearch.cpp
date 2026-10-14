@@ -1,6 +1,7 @@
 #if defined(ENABLE_MOTION)
 
 #include "MotionSearch.h"
+#include "TimeDemuxer.h"
 
 #include "Motion/MotionBitmap.h"
 #include "Common/config.h"
@@ -16,7 +17,7 @@ using namespace mediakit;
 
 namespace managerkit {
 
-MotionSearch::MotionSearch(const MediaTuple &tuple, const string &base_path)
+MotionSearch::MotionSearch(const MediaTuple &tuple, const string &base_path, uint64_t start_time, uint64_t end_time)
     : _tuple(tuple) {
     if (!base_path.empty()) {
         _base_path = base_path;
@@ -34,7 +35,19 @@ MotionSearch::MotionSearch(const MediaTuple &tuple, const string &base_path)
     }
 
     _demuxer = make_shared<MultiMotionDemuxer>();
-    _demuxer->openDir(_base_path);
+    if (!end_time) {
+        _demuxer->openDir(_base_path);
+        return;
+    }
+    if (!File::is_dir(_base_path)) {
+        return;
+    }
+    File::scanDir(_base_path, [&](const string &path, bool is_dir) {
+        if (!is_dir && end_with(path, ".mblk") && dayFileInWindow(path, start_time, end_time)) {
+            _demuxer->addFile(path);
+        }
+        return true;
+    });
 }
 
 void MotionSearch::query(uint64_t start_ms, uint64_t end_ms,

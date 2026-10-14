@@ -48,6 +48,7 @@ protected:
     uint64_t _first_stamp;
     uint64_t _read_limit_bytes = 0;
     TimeFileIO::Reader _reader;
+    std::string _buffer;
 };
 
 class TimeDemuxer final : public TimerDemuxerInterface {
@@ -79,13 +80,23 @@ private:
     TimeMakerImp::Ptr _maker;
 };
 
+/**
+ * Whether a day file ("YYYY-MM-DD.<ext>") may hold blocks overlapping [start_time, end_time].
+ * end_time 0 means no window; a name that is not a date is always kept.
+ */
+bool dayFileInWindow(const std::string &path, uint64_t start_time, uint64_t end_time);
+
 class MultiTimeDemuxer final {
 public:
     using Ptr = std::shared_ptr<MultiTimeDemuxer>;
 
     ~MultiTimeDemuxer() = default;
 
-    void openFile(const std::string &file);
+    /**
+     * Open a timefile, a ';'-separated list, or every timefile of a directory. With end_time > 0
+     * only the day files of a directory that can overlap [start_time, end_time] are opened.
+     */
+    void openFile(const std::string &file, uint64_t start_time = 0, uint64_t end_time = 0);
 
     void closeFile();
 

@@ -46,13 +46,14 @@ void TimerDemuxerInterface::readBlock(TimeBlock &block, bool &eof) {
         eof = true;
         return;
     }
-    string buffer(size, '\0');
-    ret = _reader->read(reinterpret_cast<char*>(&buffer[0]), size);
+    // Reused across blocks: a long timeline reads hundreds of thousands of them.
+    _buffer.resize(size);
+    ret = _reader->read(&_buffer[0], size);
     if (ret < 0) {
         eof = true;
         return;
     }
-    if (!block.ParseFromString(buffer)) {
+    if (!block.ParseFromArray(_buffer.data(), static_cast<int>(size))) {
         throw std::runtime_error("Parse from buffer failed");
     }
 }
@@ -141,11 +142,25 @@ uint64_t TimeDemuxer::findFirstStamp() {
 
 ////////////////////////////////////MultiTimeDemuxer/////////////////////////////////////////////
 
-void MultiTimeDemuxer::openFile(const string &files_string) {
+bool dayFileInWindow(const string &path, uint64_t start_time, uint64_t end_time) {
+    if (end_time == 0) {
+        return true;
+    }
+    auto name = path.substr(path.rfind('/') + 1);
+    auto day = StrTimeUtils::getTsFromDateStr(name.substr(0, name.find('.')));
+    if (day == 0) {
+        return true;
+    }
+    // A day file holds the blocks starting on that local day (23-25 h with DST); the last one
+    // may run into the next day.
+    return day <= end_time && day + 2 * 86400 > start_time;
+}
+
+void MultiTimeDemuxer::openFile(const string &files_string, uint64_t start_time, uint64_t end_time) {
     std::vector<std::string> files;
     if (File::is_dir(files_string)) {
         File::scanDir(files_string, [&](const string &path, bool is_dir) {
-            if (!is_dir && end_with(path, ".s3db")) {
+            if (!is_dir && end_with(path, ".s3db") && dayFileInWindow(path, start_time, end_time)) {
                 files.emplace_back(path);
             }
             return true;

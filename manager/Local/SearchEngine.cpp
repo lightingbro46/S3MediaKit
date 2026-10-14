@@ -3,6 +3,7 @@
 #include "Common/config.h"
 #include "Util/logger.h"
 #include "Util/NoticeCenter.h"
+#include "Util/TimeTicker.h"
 #include "server/WebApiErrCode.h"
 #include "Storage/VmsResourceAssignment.h"
 #include "Storage/BookmarkIndex.h"
@@ -16,6 +17,7 @@
 #include "Server/ClusterManager.h"
 
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <set>
 #include <vector>
@@ -29,31 +31,6 @@ using namespace toolkit;
 using namespace mediakit;
 
 namespace managerkit {
-
-#ifndef ENABLE_TIER_STORAGE
-static std::vector<TimeRange> splitRangeByTier(const std::string &,
-                                               const std::string &,
-                                               uint64_t start_time,
-                                               uint64_t end_time) {
-    std::vector<TimeRange> result;
-    if (start_time >= end_time)
-        return result;
-    TimeRange tr;
-    tr.startTime = start_time;
-    tr.duration = static_cast<uint32_t>(end_time - start_time);
-    tr.tier = "HOT";
-    tr.restoreRequired = false;
-    result.push_back(tr);
-    return result;
-}
-
-static std::vector<TimeRange> splitRangeByTier(const std::string &camera_id,
-                                               const std::string &stream_id,
-                                               const TimeRange &range) {
-    return splitRangeByTier(camera_id, stream_id, range.startTime,
-                            range.startTime + range.duration);
-}
-#endif // ENABLE_TIER_STORAGE
 
 // ---------------------------------------------------------------------------
 // Internal helper: resolve owner peer from VmsResourceAssignment.
@@ -130,98 +107,163 @@ struct MotionPeriodEntry {
     uint64_t end;           // exclusive
 };
 
+// ---------------------------------------------------------------------------
+// Tier ranges of one camera over a query window, read once per request.
+// Splitting each recorded period with its own segment_tier_ranges query cost
+// one query per stream and hour (~8 600 for a 6-month hourly timeline).
+// ---------------------------------------------------------------------------
 #ifdef ENABLE_TIER_STORAGE
-static std::vector<TimeRange> splitRangeByTier(const std::string &camera_id,
-                                               const std::string &stream_id,
-                                               uint64_t start_time,
-                                               uint64_t end_time) {
-    std::vector<TimeRange> result;
-    if (start_time >= end_time)
-        return result;
-
-    SegmentTierRangeImp range_imp;
-    auto ranges = range_imp.queryByCamera(camera_id, start_time, end_time);
-    std::vector<SegmentTierRange> matched;
-    for (const auto &r : ranges) {
-        if (!stream_id.empty() && r.stream_id != stream_id)
-            continue;
-        if (r.end_time <= static_cast<int64_t>(start_time) ||
-            r.start_time >= static_cast<int64_t>(end_time))
-            continue;
-        matched.push_back(r);
-    }
-
-    std::sort(matched.begin(), matched.end(), [](const SegmentTierRange &a, const SegmentTierRange &b) {
-        if (a.start_time != b.start_time) return a.start_time < b.start_time;
-        return a.updated_at < b.updated_at;
-    });
-
-    StoragePoolImp pool_imp;
-    std::unordered_map<std::string, bool> restore_required_by_pool;
-    auto is_restore_required_pool = [&](const std::string &pool_id) {
-        if (pool_id.empty())
-            return false;
-        auto it = restore_required_by_pool.find(pool_id);
-        if (it != restore_required_by_pool.end())
-            return it->second;
-        auto pools = pool_imp.findByPoolId(pool_id);
-        const bool required = !pools.empty() && poolTypeIsObjectStorage(pools.front().type);
-        restore_required_by_pool[pool_id] = required;
-        return required;
-    };
-
-    uint64_t cursor = start_time;
-    auto append_piece = [&result](uint64_t piece_start,
-                                  uint64_t piece_end,
-                                  const std::string &tier,
-                                  bool restore_required) {
-        if (piece_start >= piece_end)
+class TierRangeIndex {
+public:
+    TierRangeIndex(const std::string &camera_id, uint64_t start_time, uint64_t end_time) {
+        if (start_time >= end_time)
             return;
-        if (!result.empty() &&
-            result.back().tier == tier &&
-            result.back().restoreRequired == restore_required &&
-            result.back().startTime + result.back().duration == piece_start) {
-            result.back().duration = static_cast<uint32_t>(piece_end - result.back().startTime);
-            return;
+        SegmentTierRangeImp range_imp;
+        StoragePoolImp pool_imp;
+        std::unordered_map<std::string, bool> restore_required_by_pool;
+        auto is_restore_required_pool = [&](const std::string &pool_id) {
+            if (pool_id.empty())
+                return false;
+            auto it = restore_required_by_pool.find(pool_id);
+            if (it != restore_required_by_pool.end())
+                return it->second;
+            auto pools = pool_imp.findByPoolId(pool_id);
+            const bool required = !pools.empty() && poolTypeIsObjectStorage(pools.front().type);
+            restore_required_by_pool[pool_id] = required;
+            return required;
+        };
+
+        for (const auto &r : range_imp.queryByCamera(camera_id, start_time, end_time)) {
+            Entry e;
+            e.start = r.start_time;
+            e.end = r.end_time;
+            e.updated_at = r.updated_at;
+            e.tier = r.tier;
+            e.terminal = r.status == segmentStatusToString(SegmentStatus::DELETED) ||
+                         r.status == segmentStatusToString(SegmentStatus::EXPIRED) ||
+                         r.status == segmentStatusToString(SegmentStatus::MISSING);
+            e.restore_required = !e.terminal && is_restore_required_pool(r.pool_id);
+            _all.entries.push_back(e);
+            _by_stream[r.stream_id].entries.push_back(e);
         }
-        TimeRange tr;
-        tr.startTime = piece_start;
-        tr.duration = static_cast<uint32_t>(piece_end - piece_start);
-        tr.tier = tier.empty() ? "HOT" : tier;
-        tr.restoreRequired = restore_required;
-        result.push_back(tr);
+        finish(_all);
+        for (auto &it : _by_stream)
+            finish(it.second);
+    }
+
+    // Pieces of [start_time, end_time) by tier; time without a range is HOT. An empty stream_id
+    // matches the ranges of every stream.
+    std::vector<TimeRange> split(const std::string &stream_id, uint64_t start_time, uint64_t end_time) const {
+        std::vector<TimeRange> result;
+        if (start_time >= end_time)
+            return result;
+
+        auto append_piece = [&result](uint64_t piece_start,
+                                      uint64_t piece_end,
+                                      const std::string &tier,
+                                      bool restore_required) {
+            if (piece_start >= piece_end)
+                return;
+            if (!result.empty() &&
+                result.back().tier == tier &&
+                result.back().restoreRequired == restore_required &&
+                result.back().startTime + result.back().duration == piece_start) {
+                result.back().duration = static_cast<uint32_t>(piece_end - result.back().startTime);
+                return;
+            }
+            TimeRange tr;
+            tr.startTime = piece_start;
+            tr.duration = static_cast<uint32_t>(piece_end - piece_start);
+            tr.tier = tier.empty() ? "HOT" : tier;
+            tr.restoreRequired = restore_required;
+            result.push_back(tr);
+        };
+
+        const List *list = &_all;
+        if (!stream_id.empty()) {
+            auto it = _by_stream.find(stream_id);
+            list = it == _by_stream.end() ? nullptr : &it->second;
+        }
+
+        uint64_t cursor = start_time;
+        if (list) {
+            // First entry that can end after start_time; entries are sorted by start.
+            auto first = std::upper_bound(list->max_end.begin(), list->max_end.end(),
+                                          static_cast<int64_t>(start_time)) - list->max_end.begin();
+            for (size_t i = first; i < list->entries.size(); ++i) {
+                const auto &r = list->entries[i];
+                if (r.start >= static_cast<int64_t>(end_time))
+                    break;
+                if (r.end <= static_cast<int64_t>(start_time))
+                    continue;
+                uint64_t rs = static_cast<uint64_t>(std::max<int64_t>(r.start, static_cast<int64_t>(start_time)));
+                uint64_t re = static_cast<uint64_t>(std::min<int64_t>(r.end, static_cast<int64_t>(end_time)));
+                if (re <= cursor)
+                    continue;
+                if (rs > cursor)
+                    append_piece(cursor, rs, "HOT", false);
+                if (!r.terminal)
+                    append_piece(std::max(cursor, rs), re, r.tier, r.restore_required);
+                cursor = re;
+            }
+        }
+        if (cursor < end_time)
+            append_piece(cursor, end_time, "HOT", false);
+
+        if (result.empty())
+            append_piece(start_time, end_time, "HOT", false);
+        return result;
+    }
+
+private:
+    struct Entry {
+        int64_t start = 0;
+        int64_t end = 0;
+        int64_t updated_at = 0;
+        std::string tier;
+        bool terminal = false;
+        bool restore_required = false;
     };
 
-    for (const auto &r : matched) {
-        uint64_t rs = static_cast<uint64_t>(std::max<int64_t>(r.start_time, static_cast<int64_t>(start_time)));
-        uint64_t re = static_cast<uint64_t>(std::min<int64_t>(r.end_time, static_cast<int64_t>(end_time)));
-        if (re <= cursor)
-            continue;
-        if (rs > cursor)
-            append_piece(cursor, rs, "HOT", false);
-        const bool terminal = r.status == segmentStatusToString(SegmentStatus::DELETED) ||
-                              r.status == segmentStatusToString(SegmentStatus::EXPIRED) ||
-                              r.status == segmentStatusToString(SegmentStatus::MISSING);
-        if (!terminal)
-            append_piece(std::max(cursor, rs), re, r.tier, is_restore_required_pool(r.pool_id));
-        cursor = re;
+    struct List {
+        std::vector<Entry> entries;
+        std::vector<int64_t> max_end; // max end of entries[0..i]
+    };
+
+    static void finish(List &list) {
+        std::sort(list.entries.begin(), list.entries.end(), [](const Entry &a, const Entry &b) {
+            if (a.start != b.start) return a.start < b.start;
+            return a.updated_at < b.updated_at;
+        });
+        int64_t max_end = std::numeric_limits<int64_t>::min();
+        list.max_end.reserve(list.entries.size());
+        for (const auto &e : list.entries) {
+            max_end = std::max(max_end, e.end);
+            list.max_end.push_back(max_end);
+        }
     }
-    if (cursor < end_time)
-        append_piece(cursor, end_time, "HOT", false);
 
-    if (result.empty())
-        append_piece(start_time, end_time, "HOT", false);
-    return result;
-}
+    List _all;
+    std::unordered_map<std::string, List> _by_stream;
+};
+#else
+class TierRangeIndex {
+public:
+    TierRangeIndex(const std::string &, uint64_t, uint64_t) {}
 
-static std::vector<TimeRange> splitRangeByTier(const std::string &camera_id,
-                                               const std::string &stream_id,
-                                               const TimeRange &range) {
-    return splitRangeByTier(camera_id,
-                            stream_id,
-                            range.startTime,
-                            range.startTime + range.duration);
-}
+    std::vector<TimeRange> split(const std::string &, uint64_t start_time, uint64_t end_time) const {
+        std::vector<TimeRange> result;
+        if (start_time >= end_time)
+            return result;
+        TimeRange tr;
+        tr.startTime = start_time;
+        tr.duration = static_cast<uint32_t>(end_time - start_time);
+        tr.tier = "HOT";
+        tr.restoreRequired = false;
+        result.push_back(tr);
+        return result;
+    }
+};
 #endif // ENABLE_TIER_STORAGE
 
 // Resolve overlaps (later startTime wins) then merge consecutive same-server/tier periods.
@@ -724,11 +766,56 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
     }
 }
 
+// Per-phase timing of one findTimePeriodLocal call, logged when the call is slow. Also owns the
+// tier ranges of the call, loaded on the first split.
+struct TimelineProfile {
+    TimelineProfile(const std::string &camera_id, uint64_t start_time, uint64_t end_time)
+        : camera_id(camera_id), start_time(start_time), end_time(end_time) {}
+
+    std::string camera_id;
+    uint64_t start_time, end_time;
+    std::shared_ptr<TierRangeIndex> tiers;
+    uint64_t begin_us = getCurrentMicrosecond();
+    uint64_t mark_us = begin_us;
+    uint64_t motion_us = 0, build_us = 0;
+    uint64_t split_us = 0, split_calls = 0;
+
+    uint64_t lap() {
+        auto now = getCurrentMicrosecond();
+        auto ret = now - mark_us;
+        mark_us = now;
+        return ret;
+    }
+
+    std::vector<TimeRange> split(const std::string &stream_id, uint64_t piece_start, uint64_t piece_end) {
+        auto start = getCurrentMicrosecond();
+        if (!tiers) {
+            tiers = std::make_shared<TierRangeIndex>(camera_id, start_time, end_time);
+        }
+        auto ret = tiers->split(stream_id, piece_start, piece_end);
+        split_us += getCurrentMicrosecond() - start;
+        ++split_calls;
+        return ret;
+    }
+
+    void log(const MediaTuple &tuple, uint64_t start_time, uint64_t end_time, int period_type, int detail) {
+        auto total_ms = (getCurrentMicrosecond() - begin_us) / 1000;
+        if (total_ms < 500) {
+            return;
+        }
+        InfoL << "Slow timeline " << tuple.app << " [" << start_time << "," << end_time << "] type " << period_type
+              << " detail " << detail << ": " << total_ms << " ms (motion "
+              << motion_us / 1000 << ", build " << build_us / 1000 << " incl. tier split " << split_us / 1000
+              << " ms/" << split_calls << " calls)";
+    }
+};
+
 // ---------------------------------------------------------------------------
 // Local-only query (all period_types / detail modes).  Returns result via cb.
 // ---------------------------------------------------------------------------
 static void findTimePeriodLocal(
     const MediaTuple &tuple,
+    const TimeQuery::Ptr &query,
     uint64_t start_time, uint64_t end_time,
     int period_type, int detail, bool include_motion, bool include_status,
     const function<void(const SockException &, const Value &)> &cb)
@@ -738,15 +825,7 @@ static void findTimePeriodLocal(
             << ". Detail: " << detail << ". Include motion: " << include_motion;
     GET_CONFIG(string, mediaServerId, General::kMediaServerId)
     Value result;
-
-    TimeQuery::Ptr query;
-    try {
-        // TimeFile is the source of truth for timeline and motion filtering.
-        // CameraStatistic may be stale and must not clamp this query.
-        query = std::make_shared<TimeQuery>(tuple);
-    } catch (const std::exception &ex) {
-        WarnL << "TimeQuery init failed: " << ex.what();
-    }
+    TimelineProfile prof(tuple.app, start_time, end_time);
 
 #if defined(ENABLE_MOTION)
     vector<MotionTimeRange> filtered_motion;
@@ -760,7 +839,7 @@ static void findTimePeriodLocal(
                 }
             });
 
-            MotionSearch ms(tuple);
+            MotionSearch ms(tuple, "", start_time, end_time);
             ms.getMotionTimePeriod(start_time, end_time, [&](vector<MotionTimeRange> &ret) {
                 filtered_motion = MotionRangeUtils::filterByRecordedRanges(ret, recorded_ranges);
             });
@@ -769,6 +848,7 @@ static void findTimePeriodLocal(
         }
     }
 #endif
+    prof.motion_us = prof.lap();
 
     if (period_type == 1) {
         if (detail == 0) {
@@ -777,7 +857,7 @@ static void findTimePeriodLocal(
             if (query) {
                 query->getRecordedTimePeriod(start_time, end_time, [&](vector<TimeRange> &ret) {
                     for (auto const &p : ret) {
-                        for (const auto &tp : splitRangeByTier(tuple.app, "", p)) {
+                        for (const auto &tp : prof.split("", p.startTime, p.startTime + p.duration)) {
                             Value period;
                             period["startTime"] = (Json::UInt64)tp.startTime;
                             period["duration"] = tp.duration;
@@ -817,7 +897,7 @@ static void findTimePeriodLocal(
                             stream["streamId"] = it.first;
                             stream["periods"] = arrayValue;
                             for (auto const &p : it.second) {
-                                for (const auto &tp : splitRangeByTier(tuple.app, it.first, p)) {
+                                for (const auto &tp : prof.split(it.first, p.startTime, p.startTime + p.duration)) {
                                     Value period;
                                     period["startTime"] = (Json::UInt64)tp.startTime;
                                     period["duration"] = tp.duration;
@@ -935,7 +1015,7 @@ static void findTimePeriodLocal(
                                     auto it_hour = hour_map.find(i);
                                     if (it_hour != hour_map.end()) {
                                         for (auto const &p : it_hour->second) {
-                                            for (const auto &tp : splitRangeByTier(tuple.app, it_stream.first, p)) {
+                                            for (const auto &tp : prof.split(it_stream.first, p.startTime, p.startTime + p.duration)) {
                                                 Value period;
                                                 period["startTime"] = (Json::UInt64)tp.startTime;
                                                 period["duration"] = tp.duration;
@@ -1028,7 +1108,7 @@ static void findTimePeriodLocal(
                 for (auto const &p : ret) {
                     auto block_start = std::max<uint64_t>(p.start_time(), start_time);
                     auto block_end = std::min<uint64_t>(p.start_time() + p.time_len(), end_time);
-                    for (const auto &tp : splitRangeByTier(p.app(), p.stream(), block_start, block_end)) {
+                    for (const auto &tp : prof.split(p.stream(), block_start, block_end)) {
                         Value period;
                         period["cameraId"] = p.app();
                         period["streamId"] = p.stream();
@@ -1077,6 +1157,8 @@ static void findTimePeriodLocal(
         }
     }
 
+    prof.build_us = prof.lap();
+    prof.log(tuple, start_time, end_time, period_type, detail);
     return cb(SockException(Err_success), result);
 }
 
@@ -1147,8 +1229,29 @@ void SearchEngine::findTimePeriod(
     auto merged = make_shared<Value>(Json::objectValue);
     (*merged)["cameraId"] = tuple.app;
 
+    // One TimeQuery for every local sub-range, opening only the day files they cover.
+    TimeQuery::Ptr query;
+    if (!local_ranges.empty()) {
+        uint64_t open_start = local_ranges.front().first, open_end = local_ranges.front().second;
+        for (const auto &lr : local_ranges) {
+            open_start = MIN(open_start, lr.first);
+            open_end = MAX(open_end, lr.second);
+        }
+        Ticker ticker;
+        try {
+            // TimeFile is the source of truth for timeline and motion filtering.
+            // CameraStatistic may be stale and must not clamp this query.
+            query = std::make_shared<TimeQuery>(tuple, "", open_start, open_end);
+        } catch (const std::exception &ex) {
+            WarnL << "TimeQuery init failed: " << ex.what();
+        }
+        if (ticker.elapsedTime() > 500) {
+            InfoL << "Slow timeline " << tuple.app << ": opening timefiles took " << ticker.elapsedTime() << " ms";
+        }
+    }
+
     for (const auto &lr : local_ranges) {
-        findTimePeriodLocal(tuple, lr.first, lr.second, period_type, detail, include_motion, include_status,
+        findTimePeriodLocal(tuple, query, lr.first, lr.second, period_type, detail, include_motion, include_status,
             [&](const SockException &ex, const Value &data) {
                 if (!ex) {
                     mergeTimePeriodResult(*merged, data, period_type, detail);
