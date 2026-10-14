@@ -103,6 +103,8 @@ private:
 
     bool startTimelineReplay(uint64_t sample_ms, bool ref_self, bool file_repeat);
     bool readTimelineTick();
+    void requestNextBatch();
+    void appendBatch(uint32_t generation, std::vector<Broadcast::ReplayClip> clips, uint64_t end_s);
     bool openTimelineClip(size_t index);
     void prepareNextClip(size_t index);
     void resetPreparedClip();
@@ -168,6 +170,21 @@ private:
     bool _timeline_priming = false;
     uint64_t _timeline_discard_before_ms = 0;
     bool _timeline_mode = false;
+
+    // The timeline is planned in batches (at most an hour, cut before recordings still in object
+    // storage): the next one is asked for on "replay next" before this one ends, and the whole
+    // timeline again from a seek outside it.
+    std::string _timeline_app;
+    std::string _timeline_main;
+    std::string _timeline_sub;
+    std::string _timeline_quality;
+    std::string _timeline_preferred;
+    uint64_t _timeline_max_duration_s = 0;
+    uint64_t _timeline_begin_s = 0; // first second planned
+    uint64_t _timeline_end_s = 0;   // end of the planned batches
+    uint32_t _timeline_generation = 0; // bumped when a seek plans the timeline again
+    bool _next_batch_pending = false;
+    bool _timeline_exhausted = false; // no batch after _timeline_end_s
 
     bool _enable_audio = true;
     bool _add_mute_audio = true;

@@ -15,6 +15,7 @@
 #include "Record/MP4Demuxer.h"
 #include "Record/MP4Muxer.h"
 #include "Record/MergedMP4Reader.h"
+#include "Record/MP4Reader.h"
 #include "Record/MP4Recorder.h"
 #include "Util/File.h"
 #include "Util/util.h"
@@ -223,6 +224,141 @@ TEST_F(MergedReplayOpenTest, NextFileOfSameStreamPlaysWithoutGap) {
     File::delete_file(second);
 }
 
+namespace {
+// Timeline listener answering by batch: `batches` maps a requested stamp to its clips. Records the
+// stamps asked for and the thread of each request after the first.
+struct BatchedTimeline {
+    map<uint64_t, vector<Broadcast::ReplayClip>> batches;
+    mutex mtx;
+    vector<uint64_t> stamps;
+    vector<string> threads;
+};
+
+void provideBatches(void *tag, const shared_ptr<BatchedTimeline> &timeline) {
+    NoticeCenter::Instance().addListener(tag, Broadcast::kBroadcastGetStreamQuality,
+        [](BroadcastGetStreamQualityArgs) { invoker({{0, "main"}, {1, "sub"}}); });
+    NoticeCenter::Instance().addListener(tag, Broadcast::kBroadcastGetReplayTimeline,
+        [timeline](BroadcastGetReplayTimelineArgs) {
+            vector<Broadcast::ReplayClip> clips;
+            {
+                lock_guard<mutex> lck(timeline->mtx);
+                timeline->stamps.push_back(stamp);
+                timeline->threads.push_back(getThreadName());
+                auto it = timeline->batches.find(stamp);
+                if (it != timeline->batches.end()) clips = it->second;
+            }
+            const uint64_t total = clips.empty() ? 0 : clips.back().start_time + clips.back().duration - stamp;
+            invoker(clips, total);
+        });
+}
+
+// Plays the replay at 10x and returns the FMP4 packet stamps up to `until_ms` (or 5 s of waiting).
+shared_ptr<vector<uint64_t>> playUntil(const MediaTuple &tuple, uint64_t until_ms,
+                                       const function<void(const MediaSource::Ptr &)> &on_start = nullptr) {
+    auto stamps = make_shared<vector<uint64_t>>();
+    auto src = dynamic_pointer_cast<FMP4MediaSource>(MediaSource::find(FMP4_SCHEMA, tuple.vhost, tuple.app, tuple.stream));
+    if (!src) return stamps;
+    auto poller = EventPollerPool::Instance().getPoller();
+    auto mtx = make_shared<mutex>();
+    FMP4MediaSource::RingType::RingReader::Ptr reader;
+    poller->sync([&]() {
+        reader = src->getRing()->attach(poller);
+        reader->setReadCB([stamps, mtx](const FMP4MediaSource::RingDataType &list) {
+            lock_guard<mutex> lck(*mtx);
+            list->for_each([&](const FMP4Packet::Ptr &packet) { stamps->push_back(packet->time_stamp); });
+        });
+    });
+    src->speed(10.0f);
+    if (on_start) on_start(src);
+    for (int i = 0; i < 100; ++i) {
+        {
+            lock_guard<mutex> lck(*mtx);
+            if (!stamps->empty() && stamps->back() >= until_ms) break;
+        }
+        this_thread::sleep_for(chrono::milliseconds(50));
+    }
+    poller->sync([&]() { reader.reset(); });
+    lock_guard<mutex> lck(*mtx);
+    return make_shared<vector<uint64_t>>(*stamps);
+}
+
+MediaTuple fmp4Tuple(const string &stream, ProtocolOption &option) {
+    GET_CONFIG(string, record_app, Record::kAppName);
+    option.enable_mp4 = option.enable_rtsp = option.enable_rtmp = false;
+    option.enable_hls = option.enable_hls_fmp4 = option.enable_ts = false;
+    option.enable_fmp4 = true;
+    option.fmp4_demand = false;
+    option.max_track = 16;
+    option.modify_stamp = ProtocolOption::kModifyStampOff;
+    return MediaTuple{DEFAULT_VHOST, record_app, stream, "quality=auto&prefered=hi&duration=0"};
+}
+} // namespace
+
+// The timeline is planned in batches: the next one is asked for on "replay next" before the
+// current one ends and plays on from it without a hole.
+TEST_F(MergedReplayOpenTest, PlaysOnIntoTheNextBatch) {
+    const string first = exeDir() + "merged_replay_batch_a.mp4";
+    const string second = exeDir() + "merged_replay_batch_b.mp4";
+    writeRecording(first, 6000, 2000);
+    writeRecording(second, 6000, 2000);
+    const uint64_t start = 1790000500;
+    auto timeline = make_shared<BatchedTimeline>();
+    timeline->batches[start] = {clipOf(0, first, start, start, 6)};
+    timeline->batches[start + 6] = {clipOf(0, second, start + 6, start + 6, 6)};
+    provideBatches(this, timeline);
+
+    ProtocolOption option;
+    auto tuple = fmp4Tuple("cam/vod/" + to_string(start) + ".replay.batch", option);
+    _reader = make_shared<MergedMP4Reader>(tuple, option);
+    ASSERT_TRUE(_reader->openForReplay());
+    ASSERT_GE(waitRegistered(tuple, 5000), 0);
+    auto stamps = playUntil(tuple, 11500);
+
+    ASSERT_GE(stamps->size(), 2u);
+    uint64_t max_gap = 0, gap_at = 0;
+    for (size_t i = 1; i < stamps->size(); ++i) {
+        if ((*stamps)[i] > (*stamps)[i - 1] && (*stamps)[i] - (*stamps)[i - 1] > max_gap) {
+            max_gap = (*stamps)[i] - (*stamps)[i - 1];
+            gap_at = (*stamps)[i - 1];
+        }
+    }
+    EXPECT_GE(stamps->back(), 11000u) << "replay did not play on into the next batch";
+    EXPECT_LE(max_gap, 200u) << "gap of " << max_gap << " ms after " << gap_at << " ms";
+    lock_guard<mutex> lck(timeline->mtx);
+    ASSERT_GE(timeline->stamps.size(), 2u);
+    EXPECT_EQ(start + 6, timeline->stamps[1]);
+    EXPECT_EQ(0u, timeline->threads[1].find("replay next")) << "asked on " << timeline->threads[1];
+    File::delete_file(first);
+    File::delete_file(second);
+}
+
+// A seek past the planned batches plans the timeline again from the seek position.
+TEST_F(MergedReplayOpenTest, SeekPastThePlanPlansAgain) {
+    const string first = exeDir() + "merged_replay_seek_a.mp4";
+    const string later = exeDir() + "merged_replay_seek_b.mp4";
+    writeRecording(first, 6000, 2000);
+    writeRecording(later, 6000, 2000);
+    const uint64_t start = 1790000600;
+    auto timeline = make_shared<BatchedTimeline>();
+    timeline->batches[start] = {clipOf(0, first, start, start, 6)}; // nothing right after it
+    timeline->batches[start + 20] = {clipOf(0, later, start + 20, start + 20, 6)};
+    provideBatches(this, timeline);
+
+    ProtocolOption option;
+    auto tuple = fmp4Tuple("cam/vod/" + to_string(start) + ".replay.seek", option);
+    _reader = make_shared<MergedMP4Reader>(tuple, option);
+    ASSERT_TRUE(_reader->openForReplay());
+    ASSERT_GE(waitRegistered(tuple, 5000), 0);
+    auto stamps = playUntil(tuple, 25000, [](const MediaSource::Ptr &src) { EXPECT_TRUE(src->seekTo(20000)); });
+
+    ASSERT_FALSE(stamps->empty());
+    EXPECT_GE(stamps->back(), 24000u) << "replay did not play the batch planned at the seek";
+    lock_guard<mutex> lck(timeline->mtx);
+    EXPECT_NE(timeline->stamps.end(), find(timeline->stamps.begin(), timeline->stamps.end(), start + 20));
+    File::delete_file(first);
+    File::delete_file(later);
+}
+
 // Per-stream replay (".../vod/<stamp>") opened with ?duration=N stops at the end
 // of [stamp, stamp + N] instead of reading on into later recordings.
 class PerStreamReplayDurationTest : public ::testing::Test {
@@ -254,18 +390,175 @@ protected:
         demuxer.setMaxDuration(duration_s);
         demuxer.openMP4("/rec/record/cam/main/vod/" + to_string(kFileStart + 4));
         int64_t last = -1;
-        bool key = false, eof = false;
-        for (int i = 0; i < 5000 && !eof; ++i) {
-            auto frame = demuxer.readFrame(key, eof);
-            if (frame && frame->getTrackType() == TrackVideo) last = frame->dts();
-        }
+        bool eof = false;
+        readVideo(demuxer, [&](int64_t dts) { last = dts; return false; }, eof);
         EXPECT_TRUE(eof);
         return last;
+    }
+
+    // Reads video frames until `stop(dts)` or the end, sleeping while a batch is looked up.
+    static void readVideo(MultiMP4Demuxer &demuxer, const function<bool(int64_t)> &stop, bool &eof) {
+        bool key = false;
+        eof = false;
+        for (int i = 0; i < 20000 && !eof; ++i) {
+            auto frame = demuxer.readFrame(key, eof);
+            if (!frame && demuxer.waiting()) {
+                this_thread::sleep_for(chrono::milliseconds(5));
+                continue;
+            }
+            if (frame && frame->getTrackType() == TrackVideo && stop(frame->dts())) return;
+        }
+    }
+
+    // Answers like SetUp() up to file_start + 20, then `later` (10 s) at file_start + 20 when
+    // `with_later`, nothing after file_start + 30. Counts the lookups that resolve paths per stamp.
+    struct Lookups {
+        mutex mtx;
+        vector<pair<uint64_t, string>> calls; // stamp, thread
+    };
+    shared_ptr<Lookups> answerWithLater(bool with_later) {
+        NoticeCenter::Instance().delListener(this, Broadcast::kBroadcastMediaSeeked2);
+        auto lookups = make_shared<Lookups>();
+        const auto first = _first, second = _second;
+        const uint64_t file_start = kFileStart;
+        NoticeCenter::Instance().addListener(this, Broadcast::kBroadcastMediaSeeked2,
+            [first, second, file_start, with_later, lookups](BroadcastMediaSeeked2Args) {
+                if (resolve_recorded_block_path) {
+                    lock_guard<mutex> lck(lookups->mtx);
+                    lookups->calls.emplace_back(stamp, getThreadName());
+                }
+                map<string, map<uint64_t, string>> files;
+                if (stamp >= file_start + 20) {
+                    if (with_later && stamp < file_start + 30) {
+                        files["main"][file_start + 20] = first;
+                        invoker(file_start + 30 - stamp, files);
+                    } else {
+                        invoker(0, files);
+                    }
+                    return;
+                }
+                files["main"][file_start] = first;
+                files["main"][file_start + 10] = second;
+                invoker(20 - (stamp - file_start), files);
+            });
+        return lookups;
+    }
+
+    size_t lookupsFrom(const shared_ptr<Lookups> &lookups, uint64_t stamp) {
+        lock_guard<mutex> lck(lookups->mtx);
+        size_t n = 0;
+        for (const auto &call : lookups->calls) n += call.first >= stamp;
+        return n;
     }
 
     static const uint64_t kFileStart = 1790000300;
     string _first, _second;
 };
+
+// The next batch is looked up kReplayNextBatchLeadMs before the loaded one ends, not when its last
+// file starts.
+TEST_F(PerStreamReplayDurationTest, LooksUpTheNextBatchALeadAhead) {
+    auto lookups = answerWithLater(true);
+    MultiMP4Demuxer demuxer;
+    demuxer.openMP4("/rec/record/cam/main/vod/" + to_string(kFileStart + 4));
+    bool eof = false;
+    readVideo(demuxer, [](int64_t dts) { return dts >= 2000; }, eof); // in the first file
+    for (int i = 0; i < 100 && !lookupsFrom(lookups, kFileStart + 20); ++i) this_thread::sleep_for(chrono::milliseconds(10));
+    EXPECT_EQ(1u, lookupsFrom(lookups, kFileStart + 20)) << "the batch ending 18 s later was not looked up";
+}
+
+// A seek inside the loaded batch stays there: no lookup, no wait.
+TEST_F(PerStreamReplayDurationTest, SeekInsideTheBatchDoesNotLookUp) {
+    auto lookups = answerWithLater(true);
+    MultiMP4Demuxer demuxer;
+    demuxer.openMP4("/rec/record/cam/main/vod/" + to_string(kFileStart + 4));
+    const size_t before = lookupsFrom(lookups, 0);
+    EXPECT_GE(demuxer.seekTo(8000), 0);
+    EXPECT_FALSE(demuxer.waiting());
+    EXPECT_EQ(before, lookupsFrom(lookups, 0));
+    int64_t first = -1;
+    bool eof = false;
+    readVideo(demuxer, [&](int64_t dts) { first = dts; return true; }, eof);
+    // stamp 8 s = 12 s from the first file's start: the second file's keyframe at 2 s
+    EXPECT_GE(first, 10000);
+    EXPECT_LE(first, 12000);
+}
+
+// A seek past the loaded batch looks the batch up again from there on "replay next"; the reader
+// waits for it, then plays from the seek position.
+TEST_F(PerStreamReplayDurationTest, SeekPastTheBatchLooksUpAgain) {
+    auto lookups = answerWithLater(true);
+    MultiMP4Demuxer demuxer;
+    demuxer.openMP4("/rec/record/cam/main/vod/" + to_string(kFileStart + 4));
+    EXPECT_GE(demuxer.seekTo(25000), 0); // stamp + 25 s = file_start + 29
+    EXPECT_TRUE(demuxer.waiting());
+    int64_t first = -1;
+    bool eof = false;
+    readVideo(demuxer, [&](int64_t dts) { first = dts; return true; }, eof);
+    // the first video frame is the keyframe at 8 s in the file at file_start + 20 (muxed 39 ms early)
+    EXPECT_NEAR(first, 28000, 100);
+    lock_guard<mutex> lck(lookups->mtx);
+    bool on_next = false;
+    for (const auto &call : lookups->calls) {
+        if (call.first == kFileStart + 29) on_next = call.second.find("replay next") == 0;
+    }
+    EXPECT_TRUE(on_next) << "the seek position was not looked up on replay next";
+}
+
+// A seek to where nothing is recorded ends the replay. It used to leave the demuxer without a file
+// to read (an end() iterator dereferenced by the next readFrame).
+TEST_F(PerStreamReplayDurationTest, SeekWithoutRecordingsEnds) {
+    answerWithLater(false);
+    MultiMP4Demuxer demuxer;
+    demuxer.openMP4("/rec/record/cam/main/vod/" + to_string(kFileStart + 4));
+    EXPECT_GE(demuxer.seekTo(40000), 0);
+    bool eof = false;
+    int frames = 0;
+    readVideo(demuxer, [&](int64_t) { ++frames; return false; }, eof);
+    EXPECT_TRUE(eof);
+    EXPECT_EQ(0, frames);
+}
+
+// Through MP4Reader: a seek past the batch plays on from the keyframe found on "replay next". The
+// demuxer counts from the first file's start, 9 s before the open stamp: the reader used to keep
+// its clock at the seek position and hold that batch back for those 9 s.
+TEST_F(PerStreamReplayDurationTest, ReaderPlaysOnAfterSeekPastTheBatch) {
+    answerWithLater(true);
+    ProtocolOption option;
+    auto tuple = fmp4Tuple("cam/main/vod/" + to_string(kFileStart + 9), option);
+    tuple.params.clear();
+    auto reader = make_shared<MP4Reader>(tuple, "/rec/record/cam/main/vod/" + to_string(kFileStart + 9), option);
+    reader->startReadMP4();
+    auto src = dynamic_pointer_cast<FMP4MediaSource>(MediaSource::find(FMP4_SCHEMA, tuple.vhost, tuple.app, tuple.stream));
+    ASSERT_TRUE(src);
+
+    auto poller = EventPollerPool::Instance().getPoller();
+    auto seeked = make_shared<atomic<bool>>(false);
+    auto first_after = make_shared<atomic<uint64_t>>(0);
+    auto last_after = make_shared<atomic<uint64_t>>(0);
+    FMP4MediaSource::RingType::RingReader::Ptr ring;
+    poller->sync([&]() {
+        ring = src->getRing()->attach(poller);
+        ring->setReadCB([seeked, first_after, last_after](const FMP4MediaSource::RingDataType &list) {
+            list->for_each([&](const FMP4Packet::Ptr &packet) {
+                if (!*seeked) return;
+                if (!*first_after) *first_after = packet->time_stamp;
+                *last_after = packet->time_stamp;
+            });
+        });
+    });
+    src->speed(2.0f);
+    this_thread::sleep_for(chrono::milliseconds(300));
+    *seeked = true;
+    EXPECT_TRUE(src->seekTo(15000)); // file_start + 24: the later file (file_start + 20), 4 s in
+    for (int i = 0; i < 150 && (!*first_after || *last_after < *first_after + 1000); ++i) {
+        this_thread::sleep_for(chrono::milliseconds(20));
+    }
+    EXPECT_GT(first_after->load(), 0u) << "nothing was played after the seek";
+    EXPECT_GE(last_after->load(), first_after->load() + 1000) << "the batch at the seek was held back";
+    poller->sync([&]() { ring.reset(); });
+    reader->stopReadMP4();
+}
 
 TEST_F(PerStreamReplayDurationTest, StopsAtStampPlusDuration) {
     // Timestamps count from the first file's start: the window [4 s, 10 s).

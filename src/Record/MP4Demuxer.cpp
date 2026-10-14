@@ -363,28 +363,13 @@ void MultiMP4Demuxer::openMP4WithTimeline(const std::string &file_path) {
     if (offset >= 0) {
         _it->second->seekTo(offset * 1000);
     }
-    if (_stats.next_time && std::next(_it) == _demuxers.end()) {
-        prefetchNextSegment();
-    }
 }
 
+// Loads the batch from _stats.next_time (the open stamp when `first_segment`). The first one is
+// looked up here (a replay opens on "replay open"); the next ones are taken from the lookup made on
+// "replay next" and never read the recording index on the reader's poller. Returns the offset in
+// the first file, -1 at the end of the replay, kBatchPending while that lookup runs.
 int64_t MultiMP4Demuxer::findNextSegment(bool first_segment, uint64_t max_duration) {
-    if (first_segment) {
-        _consumed_timeline_segments.clear();
-    } else {
-        // Reaching this method during sequential reading means that every file
-        // in the current batch has reached EOF. Do not accept those files again
-        // when a second-granularity TimeQuery overlaps the previous block.
-        _consumed_timeline_segments.insert(_timeline_segments.begin(), _timeline_segments.end());
-    }
-    _timeline_segments.clear();
-
-    // clear map
-    if (_demuxers.size()) {
-        _demuxers.clear();
-        _it = _demuxers.end();
-    }
-    
     uint64_t start_segment = first_segment ? _stats.start_time : _stats.next_time;
     uint64_t next_time = 0;
 
@@ -398,35 +383,55 @@ int64_t MultiMP4Demuxer::findNextSegment(bool first_segment, uint64_t max_durati
 
     map<uint64_t, string> files;
     uint64_t duration = 0;
-    bool prefetched = false;
-    if (!first_segment) {
+    if (first_segment) {
+        _consumed_timeline_segments.clear();
+        duration = findSegmentFiles(files, _stats.tuple, start_segment, max_duration * 2);
+    } else {
+        // Reaching this point during sequential reading means that every file in the current
+        // batch has reached EOF. Do not accept those files again when a second-granularity
+        // TimeQuery overlaps the previous block.
+        _consumed_timeline_segments.insert(_timeline_segments.begin(), _timeline_segments.end());
         auto lookup = _next_lookup;
-        unique_lock<mutex> lck(lookup->mtx);
-        if (lookup->start == start_segment && lookup->max_duration == max_duration * 2 &&
-            (lookup->pending || lookup->ready)) {
-            // Rarely still running (the batch was shorter than the lookup): waiting costs no more
-            // than looking up again here.
-            lookup->done.wait(lck, [&]() { return !lookup->pending; });
-            if (lookup->ready) {
-                files.swap(lookup->files);
-                duration = lookup->duration;
-                // A lookup that found nothing new is stale for a replay that follows new
-                // recordings: look again now, as without the prefetch.
-                prefetched = duration > 0 && std::any_of(files.begin(), files.end(), [&](const pair<const uint64_t, string> &file) {
-                    return !_consumed_timeline_segments.count(std::make_pair(file.first, file.second));
-                });
-                if (!prefetched) {
-                    files.clear();
-                    duration = 0;
+        bool found = false;
+        {
+            lock_guard<mutex> lck(lookup->mtx);
+            if (lookup->start == start_segment && lookup->max_duration == max_duration * 2) {
+                if (lookup->pending) {
+                    return kBatchPending;
+                }
+                if (lookup->ready) {
+                    files.swap(lookup->files);
+                    duration = lookup->duration;
+                    found = true;
                 }
             }
+            lookup->ready = false;
+            lookup->start = 0;
         }
-        lookup->ready = false;
-        lookup->start = 0;
+        if (!found) {
+            prefetchNextSegment();
+            return kBatchPending;
+        }
+        // A lookup that found nothing new may predate recordings written since (a replay that
+        // follows new recordings): look once more before ending the replay.
+        const bool fresh = duration > 0 && std::any_of(files.begin(), files.end(), [&](const pair<const uint64_t, string> &file) {
+            return !_consumed_timeline_segments.count(std::make_pair(file.first, file.second));
+        });
+        if (!fresh && !_rechecked) {
+            _rechecked = true;
+            prefetchNextSegment();
+            return kBatchPending;
+        }
+        _rechecked = false;
     }
-    if (!prefetched) {
-        duration = findSegmentFiles(files, _stats.tuple, start_segment, max_duration * 2);
+    _timeline_segments.clear();
+
+    // clear map
+    if (_demuxers.size()) {
+        _demuxers.clear();
     }
+    _it = _demuxers.end();
+
     if (duration <= 0) {
         return -1;
     }
@@ -469,32 +474,42 @@ int64_t MultiMP4Demuxer::findNextSegment(bool first_segment, uint64_t max_durati
     return offset;
 }
 
+// Inside the loaded batch the seek stays there; outside it the batch is looked up again from the
+// seek position on "replay next" and readFrame() waits for it (waiting()).
 int64_t MultiMP4Demuxer::seekToWithTimeline(int64_t stamp_ms) {
-    if (stamp_ms >= (int64_t)getDurationMS()) {
+    if (_max_duration_s && stamp_ms >= (int64_t)_max_duration_s * 1000) {
         return -1;
     }
-    _stats.next_time = _stats.start_time + stamp_ms / 1000;
+    const int64_t diff_time_ms = ((int64_t)_stats.start_time - (int64_t)_stats.first_time) * 1000;
+    const int64_t batch_ms = stamp_ms + diff_time_ms; // timestamps count from the first file's start
+    if (!_demuxers.empty()) {
+        const int64_t begin = _demuxers.begin()->first;
+        const int64_t end = _demuxers.rbegin()->first + _demuxers.rbegin()->second->getDurationMS();
+        if (batch_ms >= begin && batch_ms < end) {
+            _it = std::prev(_demuxers.upper_bound(batch_ms));
+            _waiting = _seek_pending = false;
+            return _it->first - diff_time_ms + _it->second->seekTo(batch_ms - _it->first);
+        }
+    }
     // Seeking starts a new traversal and may intentionally revisit a block.
+    _demuxers.clear();
+    _it = _demuxers.end();
     _timeline_segments.clear();
     _consumed_timeline_segments.clear();
-    auto offset = findNextSegment();
-    if (offset < 0) {
-        return -1;
-    }
-    _it = _demuxers.begin();
-    if (std::next(_it) == _demuxers.end()) {
-        prefetchNextSegment();
-    }
-    auto diff_time_ms = (_stats.start_time - _stats.first_time) * 1000;
-    auto offset_ms = offset * 1000;
-    return _it->first - diff_time_ms +_it->second->seekTo(offset_ms);
+    _stats.next_time = _stats.start_time + stamp_ms / 1000;
+    _rechecked = false;
+    _waiting = _seek_pending = true;
+    _prefetched_start = 0;
+    prefetchNextSegment();
+    return stamp_ms;
 }
 
 // Looking up the next batch reads the recording index and resolves tiered segments. The reader
-// runs on a poller, so it is done here ahead of time. Intentionally leaked: lookups may still be
-// queued at exit.
-static ThreadPool &nextSegmentPool() {
-    static ThreadPool *pool = new ThreadPool(2, ThreadPool::PRIORITY_NORMAL, true, false, "replay next");
+// runs on a poller, so it is done here ahead of time (per-stream and merged replays). A batch in object storage waits here for
+// its restore (storage.replay_restore_wait_sec), hence more threads than CPU work needs.
+// Intentionally leaked: lookups may still be queued at exit.
+ThreadPool &replayNextPool() {
+    static ThreadPool *pool = new ThreadPool(8, ThreadPool::PRIORITY_NORMAL, true, false, "replay next");
     return *pool;
 }
 
@@ -507,7 +522,7 @@ void MultiMP4Demuxer::prefetchNextSegment() {
     auto lookup = _next_lookup;
     {
         lock_guard<mutex> lck(lookup->mtx);
-        if (lookup->pending || (lookup->ready && lookup->start == start)) {
+        if ((lookup->pending || lookup->ready) && lookup->start == start) {
             return;
         }
         lookup->pending = true;
@@ -517,7 +532,7 @@ void MultiMP4Demuxer::prefetchNextSegment() {
         lookup->files.clear();
     }
     const MediaTuple tuple = _stats.tuple;
-    nextSegmentPool().async([lookup, tuple, start, max_duration]() {
+    replayNextPool().async([lookup, tuple, start, max_duration]() {
         map<uint64_t, string> files;
         uint64_t duration = 0;
         try {
@@ -526,19 +541,45 @@ void MultiMP4Demuxer::prefetchNextSegment() {
             WarnL << "Next replay segment lookup failed: " << ex.what();
         }
         lock_guard<mutex> lck(lookup->mtx);
-        lookup->pending = false;
+        // A lookup for another start (superseded by a seek) is dropped.
         if (lookup->start == start && lookup->max_duration == max_duration) {
+            lookup->pending = false;
             lookup->ready = true;
             lookup->files.swap(files);
             lookup->duration = duration;
         }
-        lookup->done.notify_all();
     }, false);
 }
 
 Frame::Ptr MultiMP4Demuxer::readFrameWithTimeline(bool &keyFrame, bool &eof) {
     for (;;) {
+        if (_it == _demuxers.end()) {
+            // Every file of the batch was read, or a seek left none: take the next batch.
+            auto offset = findNextSegment();
+            _waiting = offset == kBatchPending;
+            if (_waiting) {
+                eof = false;
+                return nullptr;
+            }
+            if (offset < 0) {
+                // It's the last file
+                eof = true;
+                return nullptr;
+            }
+            _it = _demuxers.begin();
+            // The next batch starts from scratch, a seek's at the seek position: from its keyframe,
+            // as MP4Reader::seekTo() does for a seek inside the batch.
+            _it->second->seekTo(_seek_pending ? offset * 1000 : 0);
+            _seek_priming = _seek_pending && _tracks.count(TrackVideo);
+            _seek_pending = false;
+        }
         auto ret = _it->second->readFrame(keyFrame, eof);
+        if (ret && _seek_priming) {
+            if (ret->getTrackType() != TrackVideo || !keyFrame) {
+                continue;
+            }
+            _seek_priming = false;
+        }
         if (ret) {
             ret->setIndex(ret->getTrackType());
             auto it = _tracks.find(ret->getIndex());
@@ -547,6 +588,12 @@ Frame::Ptr MultiMP4Demuxer::readFrameWithTimeline(bool &keyFrame, bool &eof) {
                 eof = true;
                 return nullptr;
             }
+            const uint64_t batch_end = _demuxers.rbegin()->first + _demuxers.rbegin()->second->getDurationMS();
+            if (_stats.next_time != _prefetched_start &&
+                _it->first + ret->dts() + uint64_t(kReplayNextBatchLeadMs * _speed) >= batch_end) {
+                _prefetched_start = _stats.next_time;
+                prefetchNextSegment();
+            }
             if (it != _tracks.end()) {
                 auto ret2 = std::make_shared<FrameStamp>(ret);
                 ret2->setStamp(_it->first + ret->dts(), _it->first + ret->pts());
@@ -554,22 +601,12 @@ Frame::Ptr MultiMP4Demuxer::readFrameWithTimeline(bool &keyFrame, bool &eof) {
                 it->second->inputFrame(ret);
             } 
         }
-        if (eof && _it != _demuxers.end()) {
+        if (eof) {
             // Switch to the next file
-            if (++_it == _demuxers.end()) {
-                // Find next segment
-                auto offset = findNextSegment();
-                if (offset < 0) {
-                    // It's the last file
-                    eof = true;
-                    return nullptr;
-                }
-                _it = _demuxers.begin();
-            }
-            // The next file starts from scratch
-            _it->second->seekTo(0);
-            if (std::next(_it) == _demuxers.end()) {
-                prefetchNextSegment();
+            eof = false;
+            if (++_it != _demuxers.end()) {
+                // The next file starts from scratch
+                _it->second->seekTo(0);
             }
             continue;
         }

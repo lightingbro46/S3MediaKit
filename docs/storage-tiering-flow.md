@@ -1097,7 +1097,9 @@ Khi **tắt** tier storage, `StorageManager` làm việc tương tự cho thư m
 Các cấu hình và giá trị mặc định trong `src/Common/config.cpp`:
 
 ```ini
-storage.auto_restore_on_record_access=0
+storage.auto_restore_on_record_access=1
+storage.replay_restore_wait_sec=10
+storage.replay_restore_window_sec=300
 storage.auto_restore_max_concurrent=8
 storage.restore_save_path=/dev/shm/restore       # Linux
 # storage.restore_save_path=./www/restore        # Nền tảng khác

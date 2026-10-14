@@ -768,7 +768,14 @@ camera/timeline
   -> RESTORE_REQUIRED: thông báo chưa sẵn sàng
 ```
 
-Auto-restore chỉ chạy khi server bật `storage.auto_restore_on_record_access=1` và luồng replay truy vấn `TimeBlock`. FE có thể poll `restoreJob/list/detail` để quan sát job do backend tự tạo, sau đó retry playback.
+Xem lại tự restore (`storage.auto_restore_on_record_access`, mặc định `1`): khi mở replay (per-stream hoặc gộp Main/Sub) hoặc khi reader tra trước lô kế tiếp mà gặp segment trên object storage, server gọi `requestRestoreWindow` (reason `REPLAY_AUTO`) cho window `[stamp, stamp + storage.replay_restore_window_sec)` (mặc định 300 s, không quá `duration` nếu request có), rồi chờ job xong tối đa `storage.replay_restore_wait_sec` (mặc định 10 s, phải nhỏ hơn `general.maxStreamWaitMS`). Một job cho một window query: mở lại cùng URL dùng lại job đang chạy hoặc job DONE còn cache (gia hạn TTL). Replay gộp chỉ restore luồng timeline ưu tiên (`quality=hi|lo` là luồng đó); ở chế độ `auto`, luồng ưu tiên không phủ kín window (còn khoảng hở dài hơn `record.replayMaxGapSec`, ví dụ Main chỉ ghi khi có chuyển động) thì restore cả luồng kia.
+
+- Replay per-stream: mỗi lô dừng trước segment còn trên object storage, lô kế tiếp restore window chứa nó; lô kế được tra trên pool "replay next" khoảng 30 s (tính theo tốc độ phát) trước khi hết lô, reader không tra index trên poller. Hết hạn chờ thì replay dừng ở segment đó; nếu đó là segment đầu thì mở trả 404 như khi không có bản ghi, client mở lại cùng URL sau vài giây sẽ dùng lại job.
+- Seek trong replay per-stream: trong lô đã nạp thì seek ngay tại chỗ; ngoài lô thì tra lại lô từ vị trí seek trên "replay next" (restore window chứa nó nếu cần), API seek trả thành công ngay, replay chờ rồi phát tiếp từ keyframe của vị trí đó. Lô rỗng (seek vào chỗ không có bản ghi, hoặc vẫn chưa restore xong khi hết hạn chờ) thì replay dừng. Seek không còn bị giới hạn trong khoảng ghi liền mạch lúc mở (trừ `duration`).
+- Replay gộp: timeline được lập theo lô, mỗi lô tối đa 1 giờ (cố định trong code) và dừng trước segment đầu tiên còn trên object storage của luồng được restore (không lấp bằng luồng kia). Khoảng 30 s (tính theo tốc độ phát) trước khi hết lô, reader tra lô kế trên pool "replay next"; lô kế restore window chứa segment đó rồi nối tiếp, không hở. Hết hạn chờ mà segment đầu lô vẫn chưa restore thì replay dừng ở đó (lô đầu thì mở trả 404). Khoảng hở ở đầu lô không quá `record.replayMaxGapSec` được bỏ qua như khoảng hở giữa lô.
+- Seek trong replay gộp ra ngoài phần đã lập (trước đầu lô hoặc từ cuối lô trở đi) lập lại lô từ vị trí seek trên "replay next"; trong lúc đó replay chờ, không xuất frame. Lô mới rỗng (seek vào khoảng không có bản ghi) thì replay dừng.
+
+FE có thể poll `restoreJob/list/detail` để quan sát job do backend tự tạo.
 
 Có thể dùng `restoreJob/create` làm trigger chủ động và poll detail/list để theo dõi parent job.
 
