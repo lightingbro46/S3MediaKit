@@ -631,6 +631,8 @@ const string kLimitPercentUsage = STORAGE_FIELD "limitPercentUsage";
 // When the disk usage exceeds the limit percentage, the server will start to delete files according to the file deletion strategy until the disk usage is below this percentage. This configuration is used to set an extra percentage of disk usage that needs to be reclaimed when the disk usage exceeds the limit percentage. The value range is 0~99, and the default value is 5.
 const string kRemovePercentExtra = STORAGE_FIELD "removePercentExtra";
 const string kAutoRestoreOnRecordAccess = STORAGE_FIELD "auto_restore_on_record_access";
+const string kReplayRestoreWaitSec = STORAGE_FIELD "replay_restore_wait_sec";
+const string kReplayRestoreWindowSec = STORAGE_FIELD "replay_restore_window_sec";
 const string kAutoRestoreMaxConcurrent = STORAGE_FIELD "auto_restore_max_concurrent";
 const string kRestoreSavePath = STORAGE_FIELD "restore_save_path";
 const string kRestoreTTLSeconds = STORAGE_FIELD "restore_ttl_seconds";
@@ -708,7 +710,9 @@ const string kDecryptSavePath = STORAGE_FIELD "decrypt_save_path";
 static onceToken token([]() {
     mINI::Instance()[kLimitPercentUsage] = 90;
     mINI::Instance()[kRemovePercentExtra] = 5;
-    mINI::Instance()[kAutoRestoreOnRecordAccess] = 0;
+    mINI::Instance()[kAutoRestoreOnRecordAccess] = 1;
+    mINI::Instance()[kReplayRestoreWaitSec] = 10;
+    mINI::Instance()[kReplayRestoreWindowSec] = 300;
     mINI::Instance()[kAutoRestoreMaxConcurrent] = 8;
 #if defined(__linux__)
     mINI::Instance()[kRestoreSavePath] = "/dev/shm/restore";

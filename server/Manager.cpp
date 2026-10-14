@@ -1,7 +1,10 @@
 #include <algorithm>
 #include <cmath>
 #include <ctime>
+#include <set>
 #include <sstream>
+#include <thread>
+#include <chrono>
 #include "Util/logger.h"
 #include "Util/onceToken.h"
 #include "Util/base64.h"
@@ -105,7 +108,8 @@ static void restartActiveJobs() {
 static void *manager_hook_tag = nullptr;
 
 #ifdef ENABLE_MP4
-static std::string resolveRecordedBlockPath(const TimeBlock &block) {
+// `cold` (optional): set when the block is in object storage and has to be restored first.
+static std::string resolveRecordedBlockPath(const TimeBlock &block, bool *cold = nullptr) {
     std::string timefile_path;
     if (!block.file_path().empty())
         timefile_path = decodeBase64(block.file_path());
@@ -113,23 +117,22 @@ static std::string resolveRecordedBlockPath(const TimeBlock &block) {
         return "";
 
 #ifdef ENABLE_TIER_STORAGE
-    GET_CONFIG(bool, auto_restore, Storage::kAutoRestoreOnRecordAccess);
-    const int64_t block_size = static_cast<int64_t>(block.file_size());
-    auto resolved = TierStorageManager::Instance().accessRecordedSegment(
-        block.app(), block.stream(), static_cast<int64_t>(block.start_time()),
-        timefile_path, block_size, auto_restore, "AUTO_RECORD_ACCESS", false,
-        true /* async_enqueue: runs on the media poller; the job is written on the restore pool */);
+    // Nothing is queued per segment: a replay restores the window it is about to play
+    // (restoreReplayWindow), a merged timeline covers up to a day.
+    auto resolved = TierStorageManager::Instance().resolvePlaybackSegmentPath(
+        block.app(), block.stream(), static_cast<int64_t>(block.start_time()), timefile_path);
 
     if (resolved.ready && !resolved.read_path.empty())
         return resolved.read_path;
 
-    if (resolved.restore_required && auto_restore) {
-        WarnL << "Recorded MP4 segment requires restore before playback, camera=" << block.app()
-              << " stream=" << block.stream()
-              << " start_time=" << block.start_time()
-              << " pool=" << resolved.pool_id
-              << " range=" << resolved.range_id
-              << " status=" << resolved.restore_status;
+    if (resolved.restore_required) {
+        if (cold)
+            *cold = true;
+        DebugL << "Recorded MP4 segment is in object storage, camera=" << block.app()
+               << " stream=" << block.stream()
+               << " start_time=" << block.start_time()
+               << " pool=" << resolved.pool_id
+               << " range=" << resolved.range_id;
     } else {
         WarnL << "Recorded MP4 segment path is not ready, camera=" << block.app()
               << " stream=" << block.stream()
@@ -139,6 +142,89 @@ static std::string resolveRecordedBlockPath(const TimeBlock &block) {
     return "";
 #else
     return timefile_path;
+#endif
+}
+
+// The blocks of [start, end) to restore before a replay plays them: the streams (of `block`) found
+// in object storage are added to `cold_streams`.
+static void noteColdBlock(const TimeBlock &block, bool cold, uint64_t start, uint64_t end,
+                          std::set<std::string> &cold_streams) {
+    if (cold && block.start_time() < end && block.start_time() + block.time_len() > start)
+        cold_streams.insert(block.stream());
+}
+
+// Whether `stream`'s recordings cover the part of a replay window where any stream has recordings,
+// with no hole longer than `max_gap`: `spans` holds each stream's [begin, end) in that window.
+static bool coversRecordedWindow(const std::map<std::string, std::vector<std::pair<uint64_t, uint64_t>>> &spans,
+                                 const std::string &stream, uint64_t max_gap) {
+    auto it = spans.find(stream);
+    if (it == spans.end())
+        return false;
+    uint64_t begin = UINT64_MAX, end = 0;
+    for (const auto &pr : spans) {
+        for (const auto &span : pr.second) {
+            begin = std::min(begin, span.first);
+            end = std::max(end, span.second);
+        }
+    }
+    auto own = it->second;
+    std::sort(own.begin(), own.end());
+    uint64_t covered = begin;
+    for (const auto &span : own) {
+        if (span.first > covered + max_gap)
+            return false;
+        covered = std::max(covered, span.second);
+    }
+    return covered + max_gap >= end;
+}
+
+// Restores [start, end) of the camera's `streams` from object storage for a replay and waits for
+// it, at most storage.replay_restore_wait_sec. The same window reuses its restore job
+// (requestRestoreWindow), so a player retrying the same URL picks up the job it started. Returns
+// false when there is nothing to wait for. Blocks: the replays look their recordings up on "replay
+// open"/"replay next", and on a poller (seeking) it does nothing.
+static bool restoreReplayWindow(const std::string &camera, const std::set<std::string> &streams,
+                                uint64_t start, uint64_t end) {
+#ifdef ENABLE_TIER_STORAGE
+    GET_CONFIG(bool, auto_restore, Storage::kAutoRestoreOnRecordAccess);
+    GET_CONFIG(uint32_t, wait_sec, Storage::kReplayRestoreWaitSec);
+    if (!auto_restore || streams.empty() || end <= start || EventPoller::getCurrentPoller())
+        return false;
+    auto &tier = TierStorageManager::Instance();
+    std::vector<std::string> jobs;
+    for (const auto &stream : streams) {
+        auto restore = tier.requestRestoreWindow(camera, stream, static_cast<int64_t>(start),
+                                                 static_cast<int64_t>(end), "REPLAY_AUTO");
+        if (restore.handled)
+            jobs.push_back(restore.job_id);
+        else
+            WarnL << "Cannot restore replay window camera=" << camera << " stream=" << stream
+                  << " [" << start << ", " << end << "): " << restore.message;
+    }
+    if (jobs.empty())
+        return false;
+    const auto begin = getCurrentMillisecond();
+    for (;;) {
+        for (auto it = jobs.begin(); it != jobs.end();) {
+            RestoreJobSnapshot snapshot;
+            const bool running = tier.getRestoreJobSnapshot(*it, snapshot) &&
+                                 snapshot.playback_status == "RESTORING";
+            it = running ? std::next(it) : jobs.erase(it);
+        }
+        if (jobs.empty())
+            break;
+        if (getCurrentMillisecond() - begin >= wait_sec * 1000ULL) {
+            WarnL << "Replay of camera=" << camera << " [" << start << ", " << end
+                  << ") goes on without the recordings still being restored, job=" << jobs.front();
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    InfoL << "Replay restore window camera=" << camera << " [" << start << ", " << end << ") waited "
+          << getCurrentMillisecond() - begin << " ms";
+    return true;
+#else
+    return false;
 #endif
 }
 #endif
@@ -221,13 +307,36 @@ void installManagerHook () {
                 // when both hi and lo blocks exist for the same timestamps.
                 duration = first_range.duration;
                 if (resolve_recorded_block_path) {
-                    query->getRecordedTimePeriod(first_range.startTime, first_range.startTime + first_range.duration, [&](vector<TimeBlock> &ret) {
-                        for (const auto &block : ret) {
-                            auto resolved_path = resolveRecordedBlockPath(block);
-                            if (!resolved_path.empty())
-                                files[block.stream()][block.start_time()] = resolved_path;
-                        }
-                    });
+                    // The batch the reader plays next: restored first when it is in object storage.
+                    GET_CONFIG(uint32_t, window_sec, Storage::kReplayRestoreWindowSec);
+                    const uint64_t window_end = stamp + std::min<uint64_t>(max_duration, window_sec);
+                    std::set<std::string> cold_streams;
+                    std::map<std::string, uint64_t> first_cold;
+                    auto resolve = [&]() {
+                        files.clear();
+                        first_cold.clear();
+                        query->getRecordedTimePeriod(first_range.startTime, first_range.startTime + first_range.duration, [&](vector<TimeBlock> &ret) {
+                            for (const auto &block : ret) {
+                                bool cold = false;
+                                auto resolved_path = resolveRecordedBlockPath(block, &cold);
+                                noteColdBlock(block, cold, stamp, window_end, cold_streams);
+                                if (cold && (!first_cold.count(block.stream()) || block.start_time() < first_cold[block.stream()]))
+                                    first_cold[block.stream()] = block.start_time();
+                                if (!resolved_path.empty())
+                                    files[block.stream()][block.start_time()] = resolved_path;
+                            }
+                        });
+                    };
+                    resolve();
+                    if (restoreReplayWindow(args.app, cold_streams, stamp, window_end))
+                        resolve();
+                    // The batch stops before a recording still in object storage: the lookup of the
+                    // next batch restores it, and once the wait is over, the replay ends there instead
+                    // of skipping it (or fails to open when it is the first one).
+                    for (const auto &cold : first_cold) {
+                        auto &stream_files = files[cold.first];
+                        stream_files.erase(stream_files.lower_bound(cold.second), stream_files.end());
+                    }
                 }
             }
         }
@@ -372,11 +481,20 @@ void installManagerHook () {
         invoker(files);
     });
 
-    // Resolve recorded Main/Sub blocks into the first contiguous replay range.
-    // MergedMP4Reader consumes only the selected data and has no motion
-    // dependency.
+    // Resolve recorded Main/Sub blocks into the first contiguous replay range, one batch of at most
+    // an hour: MergedMP4Reader asks for the next batch before this one ends. MergedMP4Reader
+    // consumes only the selected data and has no motion dependency.
     NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastGetReplayTimeline, [](BroadcastGetReplayTimelineArgs) {
-        const uint64_t query_end = stamp + (max_duration ? max_duration : 24 * 60 * 60);
+        static const uint64_t kReplayBatchSec = 60 * 60;
+        const uint64_t query_end = stamp + (max_duration ? std::min<uint64_t>(max_duration, kReplayBatchSec) : kReplayBatchSec);
+        // Restored before opening when in object storage: the first window of the batch. The
+        // batch ends at the first recording still in object storage: the next batch starts there
+        // and restores its window.
+        GET_CONFIG(uint32_t, window_sec, Storage::kReplayRestoreWindowSec);
+        const uint64_t window_end = std::min<uint64_t>(query_end, stamp + window_sec);
+        std::set<std::string> cold_streams;
+        std::map<std::string, std::vector<std::pair<uint64_t, uint64_t>>> window_spans;
+        std::map<std::string, uint64_t> first_cold; // per stream, from stamp
         std::vector<ReplayBlock> blocks;
 
         auto collect = [&](int source, const std::string &stream_id) {
@@ -386,7 +504,19 @@ void installManagerHook () {
                 TimeQuery query(tuple);
                 query.getRecordedTimePeriod(stamp, query_end, [&](std::vector<TimeBlock> &ret) {
                     for (const auto &block : ret) {
-                        auto path = resolveRecordedBlockPath(block);
+                        bool cold = false;
+                        auto path = resolveRecordedBlockPath(block, &cold);
+                        noteColdBlock(block, cold, stamp, window_end, cold_streams);
+                        if (cold && block.start_time() + block.time_len() > stamp) {
+                            const uint64_t from = std::max<uint64_t>(stamp, block.start_time());
+                            auto it = first_cold.find(block.stream());
+                            if (it == first_cold.end() || from < it->second)
+                                first_cold[block.stream()] = from;
+                        }
+                        if (block.start_time() < window_end && block.start_time() + block.time_len() > stamp)
+                            window_spans[block.stream()].emplace_back(
+                                std::max<uint64_t>(stamp, block.start_time()),
+                                std::min<uint64_t>(window_end, block.start_time() + block.time_len()));
                         if (path.empty() || block.time_len() <= 0) continue;
                         const uint64_t begin = std::max<uint64_t>(stamp, block.start_time());
                         const uint64_t finish = std::min<uint64_t>(query_end, block.start_time() + block.time_len());
@@ -409,18 +539,57 @@ void installManagerHook () {
 
         collect(0, main_stream_id);
         collect(1, sub_stream_id);
+        // Only the quality the timeline prefers is restored. In auto mode the other one too when the
+        // preferred one leaves holes in the window (e.g. Main recorded on motion only): the timeline
+        // fills them with it, and a hole longer than the max gap would end the replay.
+        GET_CONFIG(uint32_t, replay_max_gap_s, Record::kReplayMaxGapSec);
+        const bool low = quality == "lo" || (quality != "hi" && preferred == "lo");
+        const bool fixed = quality == "hi" || quality == "lo";
+        const bool other_too = !fixed && !coversRecordedWindow(window_spans, low ? sub_stream_id : main_stream_id, replay_max_gap_s);
+        if (!other_too)
+            cold_streams.erase(low ? main_stream_id : sub_stream_id);
+        if (restoreReplayWindow(app, cold_streams, stamp, window_end)) {
+            blocks.clear();
+            first_cold.clear();
+            collect(0, main_stream_id);
+            collect(1, sub_stream_id);
+        }
+        // Cut before the first recording still in object storage of a stream this replay restores,
+        // instead of filling it with the other stream or ending the replay at the hole.
+        uint64_t plan_end = query_end;
+        for (const auto &cold : first_cold) {
+            const bool restores = cold.first == (low ? sub_stream_id : main_stream_id) || other_too;
+            if (restores && cold.second < plan_end)
+                plan_end = cold.second;
+        }
+        if (plan_end < query_end) {
+            for (auto it = blocks.begin(); it != blocks.end();) {
+                if (it->start_time >= plan_end) {
+                    it = blocks.erase(it);
+                    continue;
+                }
+                it->end_time = std::min<uint64_t>(it->end_time, plan_end);
+                ++it;
+            }
+        }
 
         if (blocks.empty()) {
             invoker(std::vector<Broadcast::ReplayClip>(), 0);
             return;
         }
-        GET_CONFIG(uint32_t, replay_max_gap_s, Record::kReplayMaxGapSec);
         GET_CONFIG(uint32_t, replay_min_switch_s, Record::kReplayMinSwitchSec);
         ReplayPlanOptions plan_options;
         plan_options.max_gap_s = replay_max_gap_s;
         plan_options.min_switch_s = replay_min_switch_s;
         const auto mode = ReplayTimelinePlanner::resolveMode(quality, preferred);
-        const auto clips = ReplayTimelinePlanner::build(blocks, stamp, query_end, mode, plan_options);
+        // A hole at the stamp up to the max gap is skipped like a later one: the next batch starts
+        // where the previous one's last recording ended.
+        uint64_t plan_start = plan_end;
+        for (const auto &block : blocks)
+            plan_start = std::min<uint64_t>(plan_start, block.start_time);
+        if (plan_start <= stamp || plan_start - stamp > replay_max_gap_s)
+            plan_start = stamp;
+        const auto clips = ReplayTimelinePlanner::build(blocks, plan_start, plan_end, mode, plan_options);
         const uint64_t total = clips.empty()
             ? 0 : clips.back().start_time + clips.back().duration - stamp;
         invoker(clips, total);

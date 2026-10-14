@@ -73,16 +73,31 @@ bool MP4Reader::readSample() {
         return true;
     }
 
+    if (_demuxer->waiting()) {
+        // A batch is still looked up on "replay next": the timeline waits for it
+        _seek_to = getCurrentStamp();
+        _seek_ticker.resetTime();
+    }
+
     bool keyFrame = false;
     bool eof = false;
-    while (!eof && _last_dts < getCurrentStamp()) {
+    // While waiting, readFrame() is still called: it takes the batch once it is found.
+    while (!eof && (_last_dts < getCurrentStamp() || _demuxer->waiting())) {
         auto frame = _demuxer->readFrame(keyFrame, eof);
         if (!frame) {
+            if (_demuxer->waiting()) {
+                break;
+            }
             continue;
         }
         _last_dts = frame->dts();
         if (_muxer) {
             _muxer->inputFrame(frame);
+        }
+        if (_seek_waiting) {
+            // The seek's keyframe, looked up on "replay next": the timeline goes on from it
+            _seek_waiting = false;
+            setCurrentStamp(frame->dts());
         }
     }
 
@@ -198,13 +213,14 @@ bool MP4Reader::speed(MediaSource &sender, float speed) {
         return true;
     }
     _speed = speed;
+    _demuxer->setSpeed(speed);
     TraceL << getOriginUrl(sender) << ",speed:" << speed;
     return true;
 }
 
 bool MP4Reader::seekTo(uint32_t stamp_seek) {
     lock_guard<recursive_mutex> lck(_mtx);
-    if (stamp_seek > _demuxer->getDurationMS()) {
+    if (!_demuxer->isTimeline() && stamp_seek > _demuxer->getDurationMS()) {
         // Exceeds the file length
         return false;
     }
@@ -212,6 +228,12 @@ bool MP4Reader::seekTo(uint32_t stamp_seek) {
     if (stamp == -1) {
         // Seek failed
         return false;
+    }
+    if (_demuxer->waiting()) {
+        // Outside the loaded batch: it is looked up on "replay next" and lands on a keyframe; the
+        // replay goes on from there once it is found (readSample()).
+        _seek_waiting = true;
+        return true;
     }
 
     if (!_have_video) {
@@ -225,6 +247,11 @@ bool MP4Reader::seekTo(uint32_t stamp_seek) {
     while (!eof) {
         auto frame = _demuxer->readFrame(keyFrame, eof);
         if (!frame) {
+            if (_demuxer->waiting()) {
+                // The batch ended before a keyframe: the next one is still looked up
+                _seek_waiting = true;
+                return true;
+            }
             // The file has been read but the next keyframe has not been found
             continue;
         }

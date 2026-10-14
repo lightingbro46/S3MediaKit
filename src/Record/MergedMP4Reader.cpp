@@ -5,6 +5,7 @@
 #include "Common/config.h"
 #include "Extension/Factory.h"
 #include "Extension/Frame.h"
+#include "Thread/ThreadPool.h"
 #include "Thread/WorkThreadPool.h"
 #include "Util/logger.h"
 
@@ -418,14 +419,23 @@ void MergedMP4Reader::configureTimelineAudio() {
 bool MergedMP4Reader::readTimelineTick() {
     // seekTo() runs on the caller's thread and rebuilds the clip state.
     lock_guard<recursive_mutex> lck(_mtx);
-    if (!_muxer || _timeline_clips.empty()) return false;
+    if (!_muxer || (_timeline_clips.empty() && _timeline_exhausted)) return false;
     if (_replay_paused) return true;
 
     GET_CONFIG(uint32_t, sample_ms, Record::kSampleMS);
     uint64_t target_ms = _replay_current_ms + uint64_t(sample_ms * _replay_speed);
+    const uint64_t planned_ms = (_timeline_end_s - _replay_start_time_s) * 1000;
+    if (!_next_batch_pending && !_timeline_exhausted &&
+        _replay_current_ms + uint64_t(kReplayNextBatchLeadMs * _replay_speed) >= planned_ms) {
+        requestNextBatch();
+    }
 
     for (;;) {
         if (_timeline_clip_idx >= _timeline_clips.size()) {
+            if (!_timeline_exhausted) {
+                if (!_next_batch_pending) requestNextBatch();
+                if (!_timeline_exhausted) return true; // waits for the next batch
+            }
             if (!_replay_file_repeat) return false;
             _timeline_clip_idx = 0;
             _replay_current_ms = 0;
@@ -528,6 +538,12 @@ bool MergedMP4Reader::startTimelineReplay(uint64_t sample_ms, bool ref_self, boo
     const uint64_t max_duration = params.count("duration")
         ? strtoull(params["duration"].data(), nullptr, 10) : 0;
 
+    _timeline_app = app;
+    _timeline_main = main_stream_id;
+    _timeline_sub = sub_stream_id;
+    _timeline_quality = quality;
+    _timeline_preferred = preferred;
+    _timeline_max_duration_s = max_duration;
     Broadcast::ReplayTimelineInvoker timeline_invoker = [&](const vector<Broadcast::ReplayClip> &clips, uint64_t total) {
         _timeline_clips = clips;
         _replay_total_dur_s = total;
@@ -541,6 +557,10 @@ bool MergedMP4Reader::startTimelineReplay(uint64_t sample_ms, bool ref_self, boo
     }
 
     _timeline_mode = true;
+    _timeline_begin_s = _replay_start_time_s;
+    _timeline_end_s = _replay_start_time_s + _replay_total_dur_s;
+    _next_batch_pending = false;
+    _timeline_exhausted = false;
     configureTimelineAudio();
     _timeline_clip_idx = 0;
     _replay_current_ms = 0;
@@ -566,6 +586,59 @@ bool MergedMP4Reader::startTimelineReplay(uint64_t sample_ms, bool ref_self, boo
     return true;
 }
 
+// Asks for the batch after _timeline_end_s on "replay next" (it may wait for a restore from object
+// storage); appendBatch() takes it on the reader's poller.
+void MergedMP4Reader::requestNextBatch() {
+    uint64_t duration = 0;
+    if (_timeline_max_duration_s) {
+        const uint64_t end_s = _replay_start_time_s + _timeline_max_duration_s;
+        if (_timeline_end_s >= end_s) {
+            _timeline_exhausted = true;
+            return;
+        }
+        duration = end_s - _timeline_end_s;
+    }
+    _next_batch_pending = true;
+    weak_ptr<MergedMP4Reader> weak_self = shared_from_this();
+    const uint32_t generation = _timeline_generation;
+    const uint64_t stamp = _timeline_end_s;
+    const string vhost = _tuple.vhost, app = _timeline_app, main = _timeline_main, sub = _timeline_sub;
+    const string quality = _timeline_quality, preferred = _timeline_preferred;
+    replayNextPool().async([weak_self, generation, stamp, duration, vhost, app, main, sub, quality, preferred]() {
+        vector<Broadcast::ReplayClip> clips;
+        uint64_t total = 0;
+        Broadcast::ReplayTimelineInvoker invoker = [&](const vector<Broadcast::ReplayClip> &ret, uint64_t dur) {
+            clips = ret;
+            total = dur;
+        };
+        NOTICE_EMIT(BroadcastGetReplayTimelineArgs, Broadcast::kBroadcastGetReplayTimeline,
+                    vhost, app, main, sub, stamp, duration, quality, preferred, invoker);
+        auto self = weak_self.lock();
+        if (!self) return;
+        self->_poller->async([weak_self, generation, clips, stamp, total]() {
+            auto self = weak_self.lock();
+            if (self) self->appendBatch(generation, clips, stamp + total);
+        });
+    });
+}
+
+void MergedMP4Reader::appendBatch(uint32_t generation, vector<Broadcast::ReplayClip> clips, uint64_t end_s) {
+    lock_guard<recursive_mutex> lck(_mtx);
+    if (!_timeline_mode || generation != _timeline_generation) return;
+    _next_batch_pending = false;
+    if (clips.empty()) {
+        _timeline_exhausted = true;
+        return;
+    }
+    DebugL << "Replay next batch " << clips.front().start_time << "-" << end_s << " (" << clips.size()
+           << " clips): " << _tuple.shortUrl();
+    const bool at_tail = _timeline_demuxer && _timeline_clip_idx + 1 == _timeline_clips.size();
+    _timeline_clips.insert(_timeline_clips.end(), clips.begin(), clips.end());
+    _timeline_end_s = end_s;
+    _replay_total_dur_s = end_s - _replay_start_time_s;
+    if (at_tail && !_timeline_next.demuxer) prepareNextClip(_timeline_clip_idx);
+}
+
 bool MergedMP4Reader::openForReplay(uint64_t sample_ms, bool ref_self, bool file_repeat) {
     if (!_replay_mode) {
         WarnL << "Replay mode is unavailable for app=" << _tuple.app;
@@ -586,6 +659,8 @@ void MergedMP4Reader::stopReplay() {
     _timeline_tracks.clear();
     _timeline_discard_before_ms = 0;
     _timeline_mode = false;
+    ++_timeline_generation;
+    _next_batch_pending = false;
     closeTimelineClip();
     resetPreparedClip();
 }
@@ -634,7 +709,24 @@ int MergedMP4Reader::totalReaderCount(MediaSource &sender) {
 bool MergedMP4Reader::seekTo(uint32_t stamp_seek) {
     lock_guard<recursive_mutex> lck(_mtx);
     if (!_timeline_mode) return false;
-    if (stamp_seek > _replay_total_dur_s * 1000) return false;
+    if (_timeline_max_duration_s && stamp_seek > _timeline_max_duration_s * 1000) return false;
+    const uint64_t planned_begin_ms = (_timeline_begin_s - _replay_start_time_s) * 1000;
+    const uint64_t planned_end_ms = (_timeline_end_s - _replay_start_time_s) * 1000;
+    if (stamp_seek < planned_begin_ms || stamp_seek >= planned_end_ms) {
+        // Outside the planned batches: plan the timeline again from there, on "replay next".
+        _replay_current_ms = stamp_seek;
+        _timeline_discard_before_ms = stamp_seek;
+        closeTimelineClip();
+        resetPreparedClip();
+        _timeline_clips.clear();
+        _timeline_clip_idx = 0;
+        _timeline_begin_s = _timeline_end_s = _replay_start_time_s + stamp_seek / 1000;
+        ++_timeline_generation;
+        _next_batch_pending = false;
+        _timeline_exhausted = false;
+        requestNextBatch();
+        return true;
+    }
 
     size_t target = _timeline_clips.size();
     for (size_t i = 0; i < _timeline_clips.size(); ++i) {

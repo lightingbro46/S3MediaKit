@@ -886,8 +886,15 @@ extern const std::string kLimitPercentUsage;
 // When the disk usage exceeds the limit percentage, the server will start to delete files according to the file deletion strategy until the disk usage is below this percentage. 
 // This configuration is used to set an extra percentage of disk usage that needs to be reclaimed when the disk usage exceeds the limit percentage. The value range is 0~99, and the default value is 5.
 extern const std::string kRemovePercentExtra;
-// Whether to enable restore on cold tier, when enabled, the server will restore files from cold tier to warm tier when they are accessed. The default value is 0 (disabled).
+// Whether a replay restores the recordings it plays from object storage (cold tier) by itself, so
+// the client does not have to create a restore job first. The default value is 1 (enabled).
 extern const std::string kAutoRestoreOnRecordAccess;
+// Seconds a replay open (or the lookup of its next batch) waits for that restore before going on
+// without those recordings. Keep it below general.maxStreamWaitMS. The default value is 10.
+extern const std::string kReplayRestoreWaitSec;
+// Seconds of recordings, from the replay position, restored at once when the request has no
+// duration. The default value is 300.
+extern const std::string kReplayRestoreWindowSec;
 // Maximum number of concurrent restore operations on cold tier, when enabled, the server will restore files from cold tier to warm tier when they are accessed. The default value is 5.
 extern const std::string kAutoRestoreMaxConcurrent;
 // Temporary directory for restore on cold tier, when enabled, the server will restore files from cold tier to warm tier when they are accessed. The default value is "/dev/shm/restore".

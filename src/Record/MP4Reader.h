@@ -66,6 +66,7 @@ private:
     float _speed = 1.0;
     uint32_t _last_dts = 0;
     uint32_t _seek_to = 0;
+    bool _seek_waiting = false; // a seek waits for its batch: the timeline restarts at its keyframe
     std::string _file_path;
     std::recursive_mutex _mtx;
     toolkit::Ticker _seek_ticker;

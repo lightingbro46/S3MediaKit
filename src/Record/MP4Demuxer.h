@@ -5,11 +5,14 @@
 #include <map>
 #include <set>
 #include <mutex>
-#include <condition_variable>
 #include "MP4.h"
 #include "Extension/Track.h"
 #include "Util/ResourcePool.h"
 #include "Common/MediaSource.h"
+
+namespace toolkit {
+class ThreadPool;
+}
 
 namespace mediakit {
 
@@ -131,7 +134,20 @@ public:
      */
     uint64_t getDurationMS() const;
 
+    // A ".../vod/<stamp>" replay read batch by batch from the recording index.
+    bool isTimeline() const { return _use_timeline; }
+
+    // Playback speed of the reader: the next batch is looked up kReplayNextBatchLeadMs of replay
+    // (at speed 1) before the loaded one ends.
+    void setSpeed(float speed) { _speed = speed; }
+
+    // readFrame() returned no frame because a batch is still looked up on "replay next" (after a
+    // seek outside the loaded batch, or at its end): read again later, the replay has not ended.
+    bool waiting() const { return _waiting; }
+
 private:
+    static const int64_t kBatchPending = -2; // findNextSegment(): the lookup still runs
+
     void openMP4WithTimeline(const std::string &files);
 
     int64_t findNextSegment(bool first_segment = false, uint64_t max_duration = 300);
@@ -146,7 +162,6 @@ private:
 
     struct NextSegmentLookup {
         std::mutex mtx;
-        std::condition_variable done;
         bool pending = false;
         bool ready = false;
         uint64_t start = 0;          // the stamp the lookup was made for
@@ -166,7 +181,21 @@ private:
     std::set<std::pair<uint64_t, std::string>> _consumed_timeline_segments;
     // Shared with the lookup task, which may outlive the demuxer.
     std::shared_ptr<NextSegmentLookup> _next_lookup = std::make_shared<NextSegmentLookup>();
+    float _speed = 1.0f;
+    bool _waiting = false;
+    bool _seek_pending = false;   // the awaited batch starts at a seek position, not at its start
+    bool _seek_priming = false;   // frames before the seek's keyframe are dropped
+    bool _rechecked = false;      // the next batch was looked up again after finding nothing new
+    uint64_t _prefetched_start = 0; // next_time the lead lookup was queued for
 };
+
+// Pool looking up a replay's next batch ahead of the reader's poller ("replay next").
+toolkit::ThreadPool &replayNextPool();
+
+// The next batch of a replay is looked up this long (of replay at speed 1) before the loaded one
+// ends: it covers its restore from object storage (storage.replay_restore_wait_sec) and the
+// index lookup.
+static const uint64_t kReplayNextBatchLeadMs = 30 * 1000;
 
 }//namespace mediakit
 #endif//ENABLE_MP4

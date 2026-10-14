@@ -580,9 +580,11 @@ static bool isReplaySchema(const string &schema) {
 
 // Opening a merged replay queries the recording index and parses MP4 headers.
 // It runs on a dedicated blocking pool, never on the session poller or on a
-// WorkThreadPool poller. Intentionally leaked: tasks may still be queued at exit.
+// WorkThreadPool poller. An open whose recordings are in object storage waits there for their
+// restore (storage.replay_restore_wait_sec), hence more threads than CPU work needs.
+// Intentionally leaked: tasks may still be queued at exit.
 static ThreadPool &replayOpenPool() {
-    static ThreadPool *pool = new ThreadPool(2, ThreadPool::PRIORITY_NORMAL, true, false, "replay open");
+    static ThreadPool *pool = new ThreadPool(8, ThreadPool::PRIORITY_NORMAL, true, false, "replay open");
     return *pool;
 }
 
