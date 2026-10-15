@@ -102,8 +102,8 @@ public:
     bool enableTimeSync = true;
 
     // whether the server subscribes to this camera's ONVIF events (cameraAdvanceConfig.onvif.enableEvent),
-    // default true; onvif.eventEnable=0 turns it off for every camera regardless
-    bool enableOnvifEvent = true;
+    // default false; onvif.eventEnable=0 turns it off for every camera regardless
+    bool enableOnvifEvent = false;
 
     // whether to reserve pan axis when ptz operation
     bool reversePanAxis = false;

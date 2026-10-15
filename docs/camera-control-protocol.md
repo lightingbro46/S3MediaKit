@@ -314,7 +314,7 @@ Camera ISAPI/PSIA/RTSP thuần: `isSupported=false`, mảng rỗng. Đổi `enab
 { "cameraAdvanceConfig": { "onvif": { "enableEvent": true } } }
 ```
 
-Thiếu field = `true`. Đổi giá trị không làm controller kết nối lại. Option đi theo `info.txt` và đồng bộ ESC
+Thiếu field = `false` (mặc định không nhận sự kiện). Đổi giá trị không làm controller kết nối lại. Option đi theo `info.txt` và đồng bộ ESC
 (`enableOnvifEvent`), không cần migration.
 
 ### Nhận sự kiện

@@ -699,9 +699,9 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
     option.enableFailover = ret["enableFailover"].asBool();
     option.preferedMediaServer = ret["preferedMediaServer"].asString();
     option.enablePTZControl = ret["enablePTZControl"].asBool();
-    // Absent in statistics written before the option existed: keep its default (on).
+    // Absent in statistics written before the option existed: keep its default (time sync on, events off).
     option.enableTimeSync = ret.isMember("enableTimeSync") ? ret["enableTimeSync"].asBool() : true;
-    option.enableOnvifEvent = ret.isMember("enableOnvifEvent") ? ret["enableOnvifEvent"].asBool() : true;
+    option.enableOnvifEvent = ret.isMember("enableOnvifEvent") ? ret["enableOnvifEvent"].asBool() : false;
     option.motionPreRecordSec = ret["motionPreRecordSec"].asInt();
     option.motionPostRecordSec = ret["motionPostRecordSec"].asInt();
     option.recordSchedules = ret["recordSchedules"].asString();

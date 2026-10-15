@@ -515,12 +515,12 @@ protected:
 } // namespace
 
 // The event capability and the per-camera event switch survive info.txt. isSupported is classified
-// again on load, and a file written before them gives no topics and the switch on.
+// again on load, and a file written before them gives no topics and the switch off.
 TEST(CameraStatisticJson, OnvifEventProfileRoundTrip) {
     CameraStatistic stats;
     stats.tuple.vhost = DEFAULT_VHOST;
     stats.tuple.device_id = "cam-json-events";
-    stats.option.enableOnvifEvent = false;
+    stats.option.enableOnvifEvent = true;
     auto &profile = stats.device_stats.device_caps.onvifProfile.eventProfile;
     profile.isEventSupported = true;
     profile.isPullPointSupported = true;
@@ -540,7 +540,7 @@ TEST(CameraStatisticJson, OnvifEventProfileRoundTrip) {
 
     CameraStatistic loaded;
     ASSERT_TRUE(CameraStatisticHelper::getParams(json, loaded));
-    EXPECT_FALSE(loaded.option.enableOnvifEvent);
+    EXPECT_TRUE(loaded.option.enableOnvifEvent);
     const auto &got = loaded.device_stats.device_caps.onvifProfile.eventProfile;
     EXPECT_TRUE(got.isEventSupported);
     EXPECT_TRUE(got.isPullPointSupported);
@@ -563,7 +563,7 @@ TEST(CameraStatisticJson, OnvifEventProfileRoundTrip) {
     }
     CameraStatistic old;
     ASSERT_TRUE(CameraStatisticHelper::getParams(legacy, old));
-    EXPECT_TRUE(old.option.enableOnvifEvent);
+    EXPECT_FALSE(old.option.enableOnvifEvent);
     EXPECT_FALSE(old.device_stats.device_caps.onvifProfile.eventProfile.isEventSupported);
     EXPECT_TRUE(old.device_stats.device_caps.onvifProfile.eventProfile.topics.empty());
 }
