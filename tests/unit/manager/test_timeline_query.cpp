@@ -240,14 +240,14 @@ std::string canonicalJson(Json::Value v) {
 
 // Fixed after the response format was checked once; any change of a response breaks these.
 const std::map<std::string, std::string> kGolden = {
-    {"full/t0/d0/m0/s0", "f456b5dfd6903d485038bcc8dd25a82b"},
-    {"full/t0/d0/m0/s1", "07433c42e28fbc1c3687383f105ef225"},
-    {"full/t0/d0/m1/s0", "dd8fbde2d27afffce7e4982ee885392d"},
-    {"full/t0/d0/m1/s1", "11b1abc4b76436316b241ed32180de06"},
-    {"full/t0/d1/m0/s0", "f456b5dfd6903d485038bcc8dd25a82b"},
-    {"full/t0/d1/m0/s1", "07433c42e28fbc1c3687383f105ef225"},
-    {"full/t0/d1/m1/s0", "dd8fbde2d27afffce7e4982ee885392d"},
-    {"full/t0/d1/m1/s1", "11b1abc4b76436316b241ed32180de06"},
+    {"full/t0/d0/m0/s0", "5074819859a104a566b1929ca07e5e7d"},
+    {"full/t0/d0/m0/s1", "5b209e4a8a1f19d193a89b7f76c0b303"},
+    {"full/t0/d0/m1/s0", "af4048ba17a6a698c4f3627fd02c39eb"},
+    {"full/t0/d0/m1/s1", "a265847c57fabd1e7a8471f7d82795fa"},
+    {"full/t0/d1/m0/s0", "5074819859a104a566b1929ca07e5e7d"},
+    {"full/t0/d1/m0/s1", "5b209e4a8a1f19d193a89b7f76c0b303"},
+    {"full/t0/d1/m1/s0", "af4048ba17a6a698c4f3627fd02c39eb"},
+    {"full/t0/d1/m1/s1", "a265847c57fabd1e7a8471f7d82795fa"},
     {"full/t1/d0/m0/s0", "91d377531740d0a4b9163037e50a81ff"},
     {"full/t1/d0/m0/s1", "91d377531740d0a4b9163037e50a81ff"},
     {"full/t1/d0/m1/s0", "4eb820cf6d145fb576cc12b220a652f3"},
@@ -264,14 +264,14 @@ const std::map<std::string, std::string> kGolden = {
     {"full/t2/d1/m0/s1", "74faee021fb6d4c9bc1044fab364b73d"},
     {"full/t2/d1/m1/s0", "8df1d8c5f5c5203ae35f76e7e88bf434"},
     {"full/t2/d1/m1/s1", "33a258597ce012939242477dc42517ae"},
-    {"partial/t0/d0/m0/s0", "9bd7b8a9561d23c74b93fca49a1be710"},
-    {"partial/t0/d0/m0/s1", "6a995823302acc386af3e7945477ca74"},
-    {"partial/t0/d0/m1/s0", "84b32dc70e1fa9c8332f6fb1757896fd"},
-    {"partial/t0/d0/m1/s1", "acb294d4ff669a8e2a79bd4b5f6c5ea5"},
-    {"partial/t0/d1/m0/s0", "9bd7b8a9561d23c74b93fca49a1be710"},
-    {"partial/t0/d1/m0/s1", "6a995823302acc386af3e7945477ca74"},
-    {"partial/t0/d1/m1/s0", "84b32dc70e1fa9c8332f6fb1757896fd"},
-    {"partial/t0/d1/m1/s1", "acb294d4ff669a8e2a79bd4b5f6c5ea5"},
+    {"partial/t0/d0/m0/s0", "db2e455357ad42d55261f9cb2c266d8b"},
+    {"partial/t0/d0/m0/s1", "12a66ea5d4091126faf390549d2822ef"},
+    {"partial/t0/d0/m1/s0", "7dd57d2f65fac6f54c789f5942f6d57e"},
+    {"partial/t0/d0/m1/s1", "50c263a4348005f4b93767d700de82de"},
+    {"partial/t0/d1/m0/s0", "db2e455357ad42d55261f9cb2c266d8b"},
+    {"partial/t0/d1/m0/s1", "12a66ea5d4091126faf390549d2822ef"},
+    {"partial/t0/d1/m1/s0", "7dd57d2f65fac6f54c789f5942f6d57e"},
+    {"partial/t0/d1/m1/s1", "50c263a4348005f4b93767d700de82de"},
     {"partial/t1/d0/m0/s0", "ac5bfd7a367d5d59ed968c54666a878c"},
     {"partial/t1/d0/m0/s1", "ac5bfd7a367d5d59ed968c54666a878c"},
     {"partial/t1/d0/m1/s0", "7b38aedd2237771140a0419acc3d24e9"},
@@ -288,14 +288,14 @@ const std::map<std::string, std::string> kGolden = {
     {"partial/t2/d1/m0/s1", "aa3c05d0a3c63c076630b400efc49c23"},
     {"partial/t2/d1/m1/s0", "a116de00e74e33fd4256b501efcd15bb"},
     {"partial/t2/d1/m1/s1", "b0f63c7180db46c9a6d7b4bfa9412e66"},
-    {"day2/t0/d0/m0/s0", "91b420642acaae3172a4c6665ddd4bf3"},
-    {"day2/t0/d0/m0/s1", "3176cdd17de436b86e451659c0d5caae"},
-    {"day2/t0/d0/m1/s0", "3ea4b4da6440c90d266484ad4651accd"},
-    {"day2/t0/d0/m1/s1", "9127eb087201d0326f36f3a247288d3a"},
-    {"day2/t0/d1/m0/s0", "91b420642acaae3172a4c6665ddd4bf3"},
-    {"day2/t0/d1/m0/s1", "3176cdd17de436b86e451659c0d5caae"},
-    {"day2/t0/d1/m1/s0", "3ea4b4da6440c90d266484ad4651accd"},
-    {"day2/t0/d1/m1/s1", "9127eb087201d0326f36f3a247288d3a"},
+    {"day2/t0/d0/m0/s0", "3cb7740c44e38a398dd24e319a1c236e"},
+    {"day2/t0/d0/m0/s1", "e35a277b6cd2916ea75caae223a8a4ca"},
+    {"day2/t0/d0/m1/s0", "dc94e80a03553c55bc0d76c1889fabd1"},
+    {"day2/t0/d0/m1/s1", "95dc7b4b8b0d835aedde7519dae7d11f"},
+    {"day2/t0/d1/m0/s0", "3cb7740c44e38a398dd24e319a1c236e"},
+    {"day2/t0/d1/m0/s1", "e35a277b6cd2916ea75caae223a8a4ca"},
+    {"day2/t0/d1/m1/s0", "dc94e80a03553c55bc0d76c1889fabd1"},
+    {"day2/t0/d1/m1/s1", "95dc7b4b8b0d835aedde7519dae7d11f"},
     {"day2/t1/d0/m0/s0", "b6a344a70ade83a19b26bd5cca85e67e"},
     {"day2/t1/d0/m0/s1", "b6a344a70ade83a19b26bd5cca85e67e"},
     {"day2/t1/d0/m1/s0", "c3e4f3c57c1e503d598c1fbc83baddf8"},
@@ -385,6 +385,63 @@ TEST(TimelineQueryTest, SplitsTiersAndMarksGaps) {
         ASSERT_EQ(1U, hour3.size());
         EXPECT_EQ(kBase + kDay + 3 * 3600 + 600, hour3[0]["startTime"].asUInt64());
         EXPECT_EQ(60U, hour3[0]["duration"].asUInt());
+    }
+}
+
+// Day 0 main hour 20 is replay-recorded and touches the live hour 19 and 21 periods: every
+// period type keeps it apart and flags it. The 30 s block at 20:07 splits it in two.
+TEST(TimelineQueryTest, KeepsReplayPeriodsApart) {
+    const std::string camera = "cam-replay";
+    buildCamera(camera, 1);
+    const uint64_t replay_start = kBase + 20 * 3600, replay_end = kBase + 21 * 3600;
+    auto check = [&](const Json::Value &p, uint64_t start, uint64_t len) {
+        bool inside = start >= replay_start && start + len <= replay_end;
+        bool outside = start + len <= replay_start || start >= replay_end;
+        EXPECT_TRUE(inside || outside) << start << "+" << len;
+        EXPECT_EQ(inside, p["isReplay"].asBool()) << start;
+        return inside;
+    };
+
+    auto blocks = findTimePeriod(camera, kBase + 19 * 3600, kBase + 22 * 3600, 0, 1, false, false);
+    int replay_blocks = 0, sub_blocks = 0;
+    for (const auto &p : blocks["periods"]) {
+        if (p["streamId"].asString() == "main") {
+            replay_blocks += check(p, p["startTime"].asUInt64(), p["timeLen"].asUInt64());
+        } else {
+            EXPECT_FALSE(p["isReplay"].asBool());
+            ++sub_blocks;
+        }
+    }
+    EXPECT_EQ(2, replay_blocks);
+    // Sub records the same seconds as main and is not trimmed by it.
+    EXPECT_GT(sub_blocks, 0);
+
+    auto flat = findTimePeriod(camera, kBase, kBase + kDay, 1, 1, false, false);
+    int replay_periods = 0;
+    for (const auto &stream : flat["streams"]) {
+        for (const auto &p : stream["periods"]) {
+            if (stream["streamId"].asString() == "main") {
+                replay_periods += check(p, p["startTime"].asUInt64(), p["duration"].asUInt64());
+            } else {
+                EXPECT_FALSE(p["isReplay"].asBool());
+            }
+        }
+    }
+    EXPECT_EQ(2, replay_periods);
+
+    auto hourly = findTimePeriod(camera, kBase, kBase + kDay, 2, 1, false, false);
+    for (const auto &stream : hourly["streams"]) {
+        if (stream["streamId"].asString() != "main") {
+            continue;
+        }
+        const auto &hour20 = stream["dates"]["2026-01-01"][20];
+        ASSERT_EQ(2U, hour20.size());
+        for (const auto &p : hour20) {
+            EXPECT_TRUE(p["isReplay"].asBool());
+        }
+        for (const auto &p : stream["dates"]["2026-01-01"][19]) {
+            EXPECT_FALSE(p["isReplay"].asBool());
+        }
     }
 }
 

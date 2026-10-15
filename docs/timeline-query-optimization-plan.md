@@ -173,7 +173,16 @@ Khác với plan khi làm:
 - Test: `unit.timeline_query_all` (golden 72 tổ hợp, tách tier, cửa sổ mở file, block qua nửa đêm). Test đặt `TZ=UTC` và
   gọi `toolkit::local_time_init()` vì `getTimeStr()` cache múi giờ lúc khởi tạo tĩnh.
 
-Phát hiện khi làm, chưa sửa (ngoài phạm vi, sửa sẽ đổi response):
+Lỗi phát hiện khi làm, đã sửa sau P3 (đổi response `periodType=0`, golden 24 tổ hợp `t0/*` cập nhật):
 
-- `periodType=0` luôn trả `isReplay=false`: giá trị lấy từ piece tier (`tp.isReplay`) chứ không phải từ block.
-- `StampUtils::getStartOfDay/getStartOfHour` dùng `std::localtime` (không reentrant) trong khi handler chạy trên pool `api()` nhiều luồng.
+- `periodType=0` luôn trả `isReplay=false`: giá trị lấy từ piece tier (`tp.isReplay`), nay lấy từ block (`p.is_replay()`).
+- `periodType=0` gộp block của mọi stream vào một lần `resolvePeriods`: main và sub ghi cùng giây nên cắt nhau thành mảnh
+  ~120 s, stream nào bắt đầu sau thắng phần chồng (3 ngày giả: 577 mảnh, tổng thời lượng bằng một stream). Nay resolve riêng
+  từng `(cameraId, streamId)` rồi sort theo `startTime` (50 period, mỗi stream đủ thời lượng).
+- `resolvePeriods` gộp đoạn liền kề không xét `isReplay`, đoạn replay sát đoạn ghi thường mất cờ. Nay giữ riêng, trừ danh sách
+  cấp camera `periodType=1&detail=0` (replay của stream này chồng ghi thường của stream kia, giữ riêng chỉ ra mảnh vụn).
+- `StampUtils::getStartOfDay/getStartOfHour/getStartOfMinute` và `StrTimeUtils::getWeekTime` dùng `std::localtime` (buffer
+  dùng chung mọi thread) rồi sửa tại chỗ trước `mktime`; nay dùng `localtime_r`/`localtime_s` trên biến cục bộ. Lỗi rộng hơn
+  timeline: tiering, rebuild, recorder, record policy cũng gọi song song.
+- Test: `TimelineQueryTest.KeepsReplayPeriodsApart` (giờ replay ở cả 3 periodType, sub không bị main cắt),
+  `StampUtilsTest.FloorsConsistentlyAcrossThreads`. Cần báo FE/ESC: `periodType=0` nay trả đủ từng stream và `isReplay` thật.

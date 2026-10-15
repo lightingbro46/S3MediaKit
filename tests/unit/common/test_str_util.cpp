@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <thread>
+#include <vector>
+
 #include "Common/StrUtil.h"
 
 using managerkit::StrJsonUtils;
@@ -73,6 +76,38 @@ TEST(StampUtilsTest, FloorsTimestampToCalendarBoundaries) {
     EXPECT_LE(StampUtils::getStartOfMinute(stamp), stamp);
     EXPECT_LE(StampUtils::getStartOfHour(stamp), StampUtils::getStartOfMinute(stamp));
     EXPECT_LE(StampUtils::getStartOfDay(stamp), StampUtils::getStartOfHour(stamp));
+}
+
+// Timeline handlers, tiering and the recorder floor stamps on many threads at once.
+TEST(StampUtilsTest, FloorsConsistentlyAcrossThreads) {
+    std::vector<uint64_t> stamps;
+    for (uint64_t i = 0; i < 64; ++i) {
+        stamps.push_back(1767225600ULL + i * 86400 * 7 + i * 3671);
+    }
+    std::vector<uint64_t> days, hours;
+    for (auto stamp : stamps) {
+        days.push_back(StampUtils::getStartOfDay(stamp));
+        hours.push_back(StampUtils::getStartOfHour(stamp));
+    }
+
+    std::vector<int> mismatches(8, 0);
+    std::vector<std::thread> threads;
+    for (size_t t = 0; t < mismatches.size(); ++t) {
+        threads.emplace_back([&, t]() {
+            for (int round = 0; round < 2000; ++round) {
+                auto i = (t * 7 + round) % stamps.size();
+                if (StampUtils::getStartOfDay(stamps[i]) != days[i] || StampUtils::getStartOfHour(stamps[i]) != hours[i]) {
+                    ++mismatches[t];
+                }
+            }
+        });
+    }
+    for (auto &thread : threads) {
+        thread.join();
+    }
+    for (auto count : mismatches) {
+        EXPECT_EQ(0, count);
+    }
 }
 
 TEST(StrUUIDTest, AppliesRequestedLengthAndAffixes) {

@@ -267,7 +267,9 @@ public:
 #endif // ENABLE_TIER_STORAGE
 
 // Resolve overlaps (later startTime wins) then merge consecutive same-server/tier periods.
-static std::vector<PeriodEntry> resolvePeriods(std::vector<PeriodEntry> inp) {
+// keep_replay_apart: false only for the camera-level list, where one stream's replay overlaps the
+// other's live recording and keeping them apart would only leave fragments.
+static std::vector<PeriodEntry> resolvePeriods(std::vector<PeriodEntry> inp, bool keep_replay_apart = true) {
     if (inp.empty()) return {};
     std::sort(inp.begin(), inp.end(), [](const PeriodEntry &a, const PeriodEntry &b) {
         return a.start < b.start;
@@ -311,6 +313,7 @@ static std::vector<PeriodEntry> resolvePeriods(std::vector<PeriodEntry> inp) {
             merged.back().serverId == p.serverId &&
             merged.back().tier     == p.tier &&
             merged.back().restoreRequired == p.restoreRequired &&
+            (!keep_replay_apart || merged.back().isReplay == p.isReplay) &&
             merged.back().cameraId == p.cameraId &&
             merged.back().streamId == p.streamId &&
             merged.back().end      == p.start) {
@@ -412,7 +415,19 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
                 periods.push_back(e);
             }
         }
-        auto resolved = resolvePeriods(periods);
+        // Overlaps are resolved per stream: main and sub record the same seconds and must not trim each other.
+        std::map<std::pair<std::string, std::string>, std::vector<PeriodEntry>> by_stream;
+        for (auto &e : periods) {
+            by_stream[std::make_pair(e.cameraId, e.streamId)].push_back(std::move(e));
+        }
+        std::vector<PeriodEntry> resolved;
+        for (auto &it : by_stream) {
+            auto stream_resolved = resolvePeriods(std::move(it.second));
+            resolved.insert(resolved.end(), stream_resolved.begin(), stream_resolved.end());
+        }
+        std::stable_sort(resolved.begin(), resolved.end(), [](const PeriodEntry &a, const PeriodEntry &b) {
+            return a.start < b.start;
+        });
         dst["periods"] = Json::arrayValue;
         for (const auto &e : resolved) {
             Value p;
@@ -433,7 +448,7 @@ static void mergeTimePeriodResult(Value &dst, const Value &src, int period_type,
             std::vector<PeriodEntry> periods;
             extractPeriods(dst["periods"], periods);
             if (src.isMember("periods")) extractPeriods(src["periods"], periods);
-            dst["periods"] = buildPeriodArray(resolvePeriods(periods));
+            dst["periods"] = buildPeriodArray(resolvePeriods(periods, false));
         } else {
             if (src.isMember("streams") && src["streams"].isArray()) {
                 for (const auto &src_stream : src["streams"]) {
@@ -1116,7 +1131,7 @@ static void findTimePeriodLocal(
                         period["timeLen"] = tp.duration;
                         period["tier"] = tp.tier;
                         period["restore_required"] = tp.restoreRequired;
-                        period["isReplay"] = tp.isReplay;
+                        period["isReplay"] = p.is_replay();
                         period["mediaServerId"] = mediaServerId;
                         result["periods"].append(period);
                     }
