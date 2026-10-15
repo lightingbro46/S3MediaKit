@@ -25,6 +25,7 @@
 #include "Util/File.h"
 #include "Util/local_time.h"
 #include "Util/MD5.h"
+#include "Util/NoticeCenter.h"
 #include "Util/mini.h"
 #include "Util/util.h"
 
@@ -59,6 +60,9 @@ public:
         mINI::Instance()[Database::kDbSavePath] = g_root;
         mINI::Instance()[Protocol::kMP4SavePath] = g_root + "/record";
         mINI::Instance()[General::kMediaServerId] = "ms-local";
+        // restore_required is reported only without auto restore; the goldens were taken with it.
+        mINI::Instance()[Storage::kAutoRestoreOnRecordAccess] = 0;
+        NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
         std::make_shared<MigrationHistoryImp>(Database::kMediaServerDb)->migrate(S3_MSERVER_MIGRATION_DIR);
         std::make_shared<MigrationHistoryImp>(Database::kEdgeStorageControllerDb)->migrate(S3_ESC_MIGRATION_DIR);
 
@@ -386,6 +390,21 @@ TEST(TimelineQueryTest, SplitsTiersAndMarksGaps) {
         EXPECT_TRUE(cold) << stream["streamId"].asString();
         EXPECT_TRUE(hot) << stream["streamId"].asString();
     }
+
+    // With auto restore the replay restores object storage itself: nothing is marked to restore.
+    mINI::Instance()[Storage::kAutoRestoreOnRecordAccess] = 1;
+    NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+    auto auto_data = findTimePeriod(camera, kBase, kBase + 3 * kDay, 1, 1, false, false);
+    mINI::Instance()[Storage::kAutoRestoreOnRecordAccess] = 0;
+    NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+    bool auto_cold = false;
+    for (const auto &stream : auto_data["streams"]) {
+        for (const auto &p : stream["periods"]) {
+            auto_cold |= p["tier"].asString() == "COLD";
+            EXPECT_FALSE(p["restore_required"].asBool()) << stream["streamId"].asString();
+        }
+    }
+    EXPECT_TRUE(auto_cold);
 
     // Day 1 main has no recording 03:00-04:00 except the gap-fill minute at 03:10.
     auto hours = findTimePeriod(camera, kBase + kDay, kBase + 2 * kDay, 2, 1, false, false);

@@ -120,9 +120,12 @@ public:
             return;
         SegmentTierRangeImp range_imp;
         StoragePoolImp pool_imp;
+        // With storage.auto_restore_on_record_access a replay restores object storage by itself:
+        // the client has nothing to restore first.
+        GET_CONFIG(bool, auto_restore, Storage::kAutoRestoreOnRecordAccess);
         std::unordered_map<std::string, bool> restore_required_by_pool;
         auto is_restore_required_pool = [&](const std::string &pool_id) {
-            if (pool_id.empty())
+            if (auto_restore || pool_id.empty())
                 return false;
             auto it = restore_required_by_pool.find(pool_id);
             if (it != restore_required_by_pool.end())

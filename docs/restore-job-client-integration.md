@@ -397,7 +397,10 @@ GET /media/esc/recordedTimePeriod?periodType=2&detail=1
 ```
 
 Một period được xem là cần restore khi `restoreRequired === true` hoặc
-`restore_required === true`. Khoảng của period được tính theo nửa kín:
+`restore_required === true`. Timeline chỉ trả `restore_required=true` khi
+`storage.auto_restore_on_record_access=0`; mặc định (`1`) replay tự restore nên mọi
+period đều `false` (vẫn còn `tier=COLD`) và client không cần tạo restore job.
+Khoảng của period được tính theo nửa kín:
 
 ```text
 [startTime, startTime + duration)
