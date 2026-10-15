@@ -33,7 +33,12 @@ public:
     using TimeBlockListPtr = std::shared_ptr<TimeQuery>;
     using TimeBlockImp = std::function<void(const TimeBlock &block)>;
 
-    TimeQuery(const mediakit::MediaTuple &tuple, const std::string &file_path = "");
+    /**
+     * @param start_time,end_time When end_time > 0, only the day files that can hold blocks of
+     *        this window are opened; queries outside it then miss data.
+     */
+    TimeQuery(const mediakit::MediaTuple &tuple, const std::string &file_path = "",
+              uint64_t start_time = 0, uint64_t end_time = 0);
 
     ~TimeQuery();
 
@@ -81,6 +86,21 @@ private:
      */
     void query(uint64_t &start_time, uint64_t &end_time, const TimeBlockImp &cb);
 
+    // The TimeBlock fields the timeline overloads use.
+    struct RangeBlock {
+        uint64_t start_time;
+        uint32_t time_len;
+        uint32_t stream; // index into _streams
+        bool is_replay;
+    };
+
+    /**
+     * Blocks of [start_time, end_time] sorted by start time. The last window is kept, so the
+     * motion filter and the timeline of one request read the timefiles once; a TimeQuery is
+     * short-lived and does not see blocks written after that read.
+     */
+    const std::vector<RangeBlock> &queryRanges(uint64_t start_time, uint64_t end_time);
+
     /**
      * @brief Sets the current timestamp.
      * Updates the internal _last_time variable with the provided timestamp value.
@@ -100,6 +120,11 @@ private:
     std::string _file_path;
     std::recursive_mutex _mtx;
     MultiTimeDemuxer::Ptr _demuxer;
+    std::vector<std::string> _streams;
+    std::vector<RangeBlock> _ranges;
+    uint64_t _ranges_start = 0;
+    uint64_t _ranges_end = 0;
+    bool _ranges_valid = false;
 };
 
 } // namespace managerkit

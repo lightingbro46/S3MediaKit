@@ -10,7 +10,30 @@ using namespace mediakit;
 
 namespace managerkit {
 
-TimeQuery::TimeQuery(const MediaTuple &tuple, const string &path) {
+namespace {
+
+// Local date and hour of the hour containing a time, recomputed only when the hour changes:
+// localtime/strftime per block dominated the hourly timeline.
+struct HourInfo {
+    uint64_t start = 0;
+    bool valid = false;
+    string date;
+    int hour = 0;
+
+    void at(uint64_t stamp) {
+        if (valid && stamp >= start && stamp < start + 3600) {
+            return;
+        }
+        start = StampUtils::getStartOfHour(stamp);
+        date = getTimeStr("%Y-%m-%d", stamp);
+        hour = atoi(getTimeStr("%H", stamp).data());
+        valid = true;
+    }
+};
+
+} // namespace
+
+TimeQuery::TimeQuery(const MediaTuple &tuple, const string &path, uint64_t start_time, uint64_t end_time) {
     _file_path = path;
     if (_file_path.empty()) {
         GET_CONFIG(string, recordPath, Protocol::kMP4SavePath)
@@ -22,7 +45,7 @@ TimeQuery::TimeQuery(const MediaTuple &tuple, const string &path) {
 
     _demuxer = std::make_shared<MultiTimeDemuxer>();
     try {
-        _demuxer->openFile(_file_path);
+        _demuxer->openFile(_file_path, start_time, end_time);
     } catch (const NoTimeFileError &) {
         // A camera without any TimeFile has no recorded timeline. Keep an empty
         // demuxer so query APIs return no data and maintenance can continue.
@@ -99,22 +122,56 @@ void TimeQuery::query(uint64_t &start_time, uint64_t &end_time, const TimeBlockI
     }
 }
 
+const vector<TimeQuery::RangeBlock> &TimeQuery::queryRanges(uint64_t start_time, uint64_t end_time) {
+    lock_guard<recursive_mutex> lck(_mtx);
+    if (_ranges_valid && _ranges_start == start_time && _ranges_end == end_time) {
+        return _ranges;
+    }
+    _ranges_valid = false;
+    _ranges.clear();
+    if (_demuxer && seekTo(start_time)) {
+        readBlockList(start_time, end_time, [&](const TimeBlock &block) {
+            uint32_t stream = 0;
+            while (stream < _streams.size() && _streams[stream] != block.stream()) {
+                ++stream;
+            }
+            if (stream == _streams.size()) {
+                _streams.push_back(block.stream());
+            }
+            RangeBlock range;
+            range.start_time = block.start_time();
+            range.time_len = block.time_len();
+            range.stream = stream;
+            range.is_replay = block.is_replay();
+            _ranges.push_back(range);
+        });
+        // Same comparator as query(): blocks of several streams arrive interleaved.
+        sort(_ranges.begin(), _ranges.end(), [](const RangeBlock &a, const RangeBlock &b) {
+            return a.start_time < b.start_time;
+        });
+    }
+    _ranges_start = start_time;
+    _ranges_end = end_time;
+    _ranges_valid = true;
+    return _ranges;
+}
+
 void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
     const function<void(vector<TimeRange> &data)> &cb) {
         lock_guard<recursive_mutex> lck(_mtx);
         
         vector<TimeRange> result;
         try {
-            query(start_time, end_time, [&](const TimeBlock &block) {
-                auto block_start_time = block.start_time();
+            for (const auto &block : queryRanges(start_time, end_time)) {
+                auto block_start_time = block.start_time;
                 if (block_start_time < start_time) {
                     block_start_time = start_time;
                 }
-                auto block_end_time = block.start_time() + block.time_len();
+                auto block_end_time = block.start_time + block.time_len;
                 if (block_end_time > end_time) {
                     block_end_time = end_time;
                 }
-                auto isReplay = block.is_replay();
+                auto isReplay = block.is_replay;
                 if (!result.empty()) {
                     TimeRange &last = result.back();
                     uint64_t last_start = last.startTime;
@@ -125,7 +182,7 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                         uint64_t new_end = MAX(last_end, block_end_time);
                         last.startTime = new_start;
                         last.duration = static_cast<int>(new_end - last.startTime);
-                        return;
+                        continue;
                     }
                 }
                 TimeRange time_range;
@@ -133,7 +190,7 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                 time_range.duration = static_cast<uint32_t>(block_end_time - block_start_time);
                 time_range.isReplay = isReplay;
                 result.push_back(time_range);
-            });
+            }
         } catch(...) {}
         
         cb(result);
@@ -145,17 +202,17 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
         
         unordered_map<string /*stream*/, vector<TimeRange>> result;
         try {
-            query(start_time, end_time, [&](const TimeBlock &block) {
-                auto block_start_time = block.start_time();
+            for (const auto &block : queryRanges(start_time, end_time)) {
+                auto block_start_time = block.start_time;
                 if (block_start_time < start_time) {
                     block_start_time = start_time;
                 }
-                auto block_end_time = block.start_time() + block.time_len();
+                auto block_end_time = block.start_time + block.time_len;
                 if (block_end_time > end_time) {
                     block_end_time = end_time;
                 }
-                auto isReplay = block.is_replay();
-                auto &range_map = result[block.stream()];
+                auto isReplay = block.is_replay;
+                auto &range_map = result[_streams[block.stream]];
 
                 if (!range_map.empty()) {
                     TimeRange &last = range_map.back();
@@ -167,7 +224,7 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                         uint64_t new_end = MAX(last_end, block_end_time);
                         last.startTime = new_start;
                         last.duration = static_cast<int>(new_end - last.startTime);
-                        return;
+                        continue;
                     }
                 }
                 TimeRange time_range;
@@ -175,7 +232,7 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                 time_range.duration = static_cast<uint32_t>(block_end_time - block_start_time);
                 time_range.isReplay = isReplay;
                 range_map.push_back(time_range);
-            });
+            }
         } catch (...) {}
        
         cb(result);
@@ -194,29 +251,25 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
             date += 86400; // start time of next date
         }
 
+        HourInfo start_hour, end_hour;
         try {
-            query(start_time, end_time, [&](const TimeBlock &block) {
-                auto block_start_time = block.start_time();
+            for (const auto &block : queryRanges(start_time, end_time)) {
+                auto block_start_time = block.start_time;
                 if (block_start_time < start_time) {
                     block_start_time = start_time;
                 }
-                string date_str = getTimeStr("%Y-%m-%d", block_start_time);
-                string hour_str = getTimeStr("%H", block_start_time);
+                start_hour.at(block_start_time);
+                result[start_hour.date].emplace(start_hour.hour);
 
-                auto &hour_map = result[date_str];
-                hour_map.emplace(static_cast<int>(atoi(hour_str.data())));
-
-                auto block_end_time = block.start_time() + block.time_len();
+                auto block_end_time = block.start_time + block.time_len;
                 if (block_end_time > end_time) {
                     block_end_time = end_time;
                 }
-                if (StampUtils::getStartOfHour(block_start_time) < StampUtils::getStartOfHour(block_end_time) && StampUtils::getStartOfHour(block_end_time) < end_time) {
-                    string next_date_str = getTimeStr("%Y-%m-%d", block_end_time);
-                    string next_hour_str = getTimeStr("%H", block_end_time);
-                    auto &next_hour_map = result[next_date_str];
-                    next_hour_map.emplace(static_cast<int>(atoi(next_hour_str.data())));
+                end_hour.at(block_end_time);
+                if (start_hour.start < end_hour.start && end_hour.start < end_time) {
+                    result[end_hour.date].emplace(end_hour.hour);
                 }
-            });
+            }
         } catch (...) {}
 
         cb(result);
@@ -227,9 +280,10 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
         lock_guard<recursive_mutex> lck(_mtx);
 
         unordered_map<string /*stream_id*/, unordered_map<string /*date*/, unordered_map<int, std::vector<TimeRange>>>> result;
+        HourInfo hour_info;
         try {
-            query(start_time, end_time, [&](const TimeBlock &block) {
-                string stream_id = block.stream();
+            for (const auto &block : queryRanges(start_time, end_time)) {
+                string stream_id = _streams[block.stream];
                 if (result.find(stream_id) == result.end()) {
                     auto start_date = StampUtils::getStartOfDay(start_time);
                     auto date = start_date;
@@ -240,12 +294,12 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                     }
                 }
                 
-                auto block_start_time = block.start_time();
+                auto block_start_time = block.start_time;
                 if (block_start_time < start_time) {
                     block_start_time = start_time;
                 }
 
-                auto block_end_time = block.start_time() + block.time_len();
+                auto block_end_time = block.start_time + block.time_len;
                 if (block_end_time > end_time) {
                     block_end_time = end_time;
                 }
@@ -253,20 +307,15 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                 uint64_t current = block_start_time;
                 uint32_t remaining = block_end_time - block_start_time;
 
-                auto isReplay = block.is_replay();
+                auto isReplay = block.is_replay;
 
                 while(remaining > 0) {
-                    string date_str = getTimeStr("%Y-%m-%d", current);
-                    string hour_str = getTimeStr("%H", current);
-                    string minute_str = getTimeStr("%M", current);
-                    string second_str = getTimeStr("%S", current);
-
-                    int64_t start_of_hour = StampUtils::getStartOfHour(current);
-                    uint32_t offset_in_hour = static_cast<uint32_t>(current - start_of_hour);
+                    hour_info.at(current);
+                    uint32_t offset_in_hour = static_cast<uint32_t>(current - hour_info.start);
                     uint32_t seconds_left_in_hour = 3600 - offset_in_hour;
                     uint32_t chunk = MIN(remaining, seconds_left_in_hour);
                     
-                    auto &range_map = result[stream_id][date_str][static_cast<int>(atoi(hour_str.data()))];
+                    auto &range_map = result[stream_id][hour_info.date][hour_info.hour];
                     auto chunk_start = current;
                     if (!range_map.empty() && range_map.back().startTime + range_map.back().duration + 1 >= chunk_start && range_map.back().isReplay == isReplay) {
                         uint64_t new_start = MIN(range_map.back().startTime, chunk_start);
@@ -284,7 +333,7 @@ void TimeQuery::getRecordedTimePeriod(uint64_t start_time, uint64_t end_time,
                     current += chunk;
                     remaining -= chunk;
                 }
-            });
+            }
         } catch (...) {}
         
         cb(result);
@@ -330,18 +379,18 @@ int64_t TimeQuery::getOffsetOfDate(uint64_t pos_time) {
     int64_t ret = 0;
     try {
         auto start_of_date = StampUtils::getStartOfDay(pos_time);
-        query(start_of_date, pos_time, [&](const TimeBlock &block) {
-            auto block_start_time = block.start_time();
+        for (const auto &block : queryRanges(start_of_date, pos_time)) {
+            auto block_start_time = block.start_time;
             if (block_start_time < start_of_date) {
                 block_start_time = start_of_date;
             }
-            auto block_end_time = block.start_time() + block.time_len();
+            auto block_end_time = block.start_time + block.time_len;
             if (block_end_time > pos_time) {
                 block_end_time = pos_time;
             }
 
             ret += (block_end_time - block_start_time);
-        });
+        }
     } catch (...) {}
     
     return ret;

@@ -138,6 +138,26 @@ if(ENABLE_SYNC_CHANGES)
   set_tests_properties(unit.sync_apply_all PROPERTIES LABELS unit TIMEOUT 30)
 endif()
 
+# recordedTimePeriod over generated timefiles, tier ranges and motion files (temporary ESC + mserver DB);
+# server/ symbols come from the tier-storage stubs.
+add_s3_unit_test(unit_timeline_query
+  manager/test_timeline_query.cpp
+  "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
+target_link_libraries(unit_timeline_query PRIVATE
+  -Wl,--start-group
+  S3MediaKit::MediaKit
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec
+  S3MediaKit::ext-plugin
+  -Wl,--end-group)
+target_include_directories(unit_timeline_query PRIVATE "${PROJECT_SOURCE_DIR}/server")
+target_compile_definitions(unit_timeline_query PRIVATE
+  S3_ESC_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/migration/updates"
+  S3_MSERVER_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/migration/mserver_updates")
+# Codec plugin logs on stdout break gtest discovery: run the whole binary as one test.
+add_test(NAME unit.timeline_query_all COMMAND unit_timeline_query)
+set_tests_properties(unit.timeline_query_all PROPERTIES LABELS unit TIMEOUT 60)
+
 # API worker dispatcher (server/ApiWorkDispatcher.cpp), compiled directly like the storage API test.
 add_s3_unit_test(unit_api_work_dispatcher
   server/test_api_work_dispatcher.cpp

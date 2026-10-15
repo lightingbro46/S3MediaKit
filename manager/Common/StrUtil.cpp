@@ -14,6 +14,18 @@ using namespace mediakit;
 
 namespace managerkit {
 
+// std::localtime returns one buffer shared by every thread; callers below modify it before mktime.
+static std::tm localTm(uint64_t seconds) {
+    std::time_t t = static_cast<std::time_t>(seconds);
+    std::tm tm = {};
+#if defined(_WIN32)
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    return tm;
+}
+
 string UriUtils::replaceIp(const string &in_url, const string &nat_ip) {
     auto schema = findSubString(in_url.data(), nullptr, "://");
     auto middle_url = findSubString(in_url.data(), "://", "/");
@@ -222,11 +234,10 @@ uint64_t StrTimeUtils::getTsFromDateTimeStr2(const std::string &str) {
 }
 
 StrTimeUtils::WeekTime StrTimeUtils::getWeekTime(uint64_t stamp) {
-    time_t ts = (time_t)stamp;
-    std::tm *lt = std::localtime(&ts);
+    std::tm lt = localTm(stamp);
     WeekTime wt;
-    wt.day_of_week = lt->tm_wday; // day of week
-    wt.hour = lt->tm_hour;        // hour of day
+    wt.day_of_week = lt.tm_wday; // day of week
+    wt.hour = lt.tm_hour;        // hour of day
     return wt;
 }
 
@@ -261,33 +272,30 @@ string StrJsonUtils::writeJsonString(const Json::Value &in) {
 //////////////////////////////////////////////////////////////////////////////////////////////
 
 uint64_t StampUtils::getStartOfDay(uint64_t seconds) {
-    std::time_t t = static_cast<std::time_t>(seconds);
-    std::tm* tm = std::localtime(&t);
+    std::tm tm = localTm(seconds);
 
-    tm->tm_hour = 0;
-    tm->tm_min = 0;
-    tm->tm_sec = 0;
+    tm.tm_hour = 0;
+    tm.tm_min = 0;
+    tm.tm_sec = 0;
 
-    return static_cast<uint64_t>(std::mktime(tm));
+    return static_cast<uint64_t>(std::mktime(&tm));
 }
 
 uint64_t StampUtils::getStartOfHour(uint64_t seconds) {
-    std::time_t t = static_cast<std::time_t>(seconds);
-    std::tm* tm = std::localtime(&t);
+    std::tm tm = localTm(seconds);
 
-    tm->tm_min = 0;
-    tm->tm_sec = 0;
+    tm.tm_min = 0;
+    tm.tm_sec = 0;
 
-    return static_cast<uint64_t>(std::mktime(tm));
+    return static_cast<uint64_t>(std::mktime(&tm));
 }
 
 uint64_t StampUtils::getStartOfMinute(uint64_t seconds) {
-    std::time_t t = static_cast<std::time_t>(seconds);
-    std::tm* tm = std::localtime(&t);
+    std::tm tm = localTm(seconds);
 
-    tm->tm_sec = 0;
+    tm.tm_sec = 0;
 
-    return static_cast<uint64_t>(std::mktime(tm));
+    return static_cast<uint64_t>(std::mktime(&tm));
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////
