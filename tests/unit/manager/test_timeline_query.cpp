@@ -16,7 +16,9 @@
 #include "Local/TimeMuxer.h"
 #include "Storage/DbStorage.h"
 #include "Storage/MigrationHistory.h"
+#ifdef ENABLE_TIER_STORAGE
 #include "Storage/StoragePool.h"
+#endif
 #ifdef ENABLE_MOTION
 #include "Motion/MotionMuxer.h"
 #endif
@@ -60,6 +62,7 @@ public:
         std::make_shared<MigrationHistoryImp>(Database::kMediaServerDb)->migrate(S3_MSERVER_MIGRATION_DIR);
         std::make_shared<MigrationHistoryImp>(Database::kEdgeStorageControllerDb)->migrate(S3_ESC_MIGRATION_DIR);
 
+#ifdef ENABLE_TIER_STORAGE
         StoragePool hot;
         hot.id = "pool-hot";
         hot.name = "hot";
@@ -72,6 +75,7 @@ public:
         cold.type = "MINIO";
         cold.tier = "COLD";
         ASSERT_TRUE(StoragePoolImp().add(cold));
+#endif
     }
 
     void TearDown() override {
@@ -129,6 +133,7 @@ void writeTimefiles(const std::string &camera, int days) {
     }
 }
 
+#ifdef ENABLE_TIER_STORAGE
 // One range per stream and hour (the split granularity), COLD on object storage except the last
 // two days; hour 6 has no range (implicit HOT) and one range is DELETED.
 void writeTierRanges(const std::string &camera, int days) {
@@ -157,6 +162,7 @@ void writeTierRanges(const std::string &camera, int days) {
     txn->execScript(sql);
     txn->commit();
 }
+#endif
 
 #ifdef ENABLE_MOTION
 // A 5-minute motion summary every two hours.
@@ -186,7 +192,9 @@ void writeMotion(const std::string &camera, int days) {
 
 void buildCamera(const std::string &camera, int days) {
     writeTimefiles(camera, days);
+#ifdef ENABLE_TIER_STORAGE
     writeTierRanges(camera, days);
+#endif
 #ifdef ENABLE_MOTION
     writeMotion(camera, days);
 #endif
@@ -238,6 +246,7 @@ std::string canonicalJson(Json::Value v) {
     return Json::writeString(builder, v);
 }
 
+#ifdef ENABLE_TIER_STORAGE
 // Fixed after the response format was checked once; any change of a response breaks these.
 const std::map<std::string, std::string> kGolden = {
     {"full/t0/d0/m0/s0", "5074819859a104a566b1929ca07e5e7d"},
@@ -313,9 +322,12 @@ const std::map<std::string, std::string> kGolden = {
     {"day2/t2/d1/m1/s0", "049f633c46d937b4e265dc34ea5623be"},
     {"day2/t2/d1/m1/s1", "95f479f9e1571281f091359ac3393f57"},
 };
+#endif
 
 } // namespace
 
+// The golden hashes and the tier split need tier ranges: tier-storage builds only.
+#ifdef ENABLE_TIER_STORAGE
 TEST(TimelineQueryTest, ResponsesMatchGolden) {
     const std::string camera = "cam-golden";
     buildCamera(camera, 3);
@@ -387,6 +399,7 @@ TEST(TimelineQueryTest, SplitsTiersAndMarksGaps) {
         EXPECT_EQ(60U, hour3[0]["duration"].asUInt());
     }
 }
+#endif // ENABLE_TIER_STORAGE
 
 // Day 0 main hour 20 is replay-recorded and touches the live hour 19 and 21 periods: every
 // period type keeps it apart and flags it. The 30 s block at 20:07 splits it in two.
