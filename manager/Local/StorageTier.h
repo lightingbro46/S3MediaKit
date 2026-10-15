@@ -436,7 +436,7 @@ inline PolicyTierConfig getSystemDefaultPolicyTierConfig() {
     c.tier = tierTypeToString(HotTier);
     c.enabled = true;
     c.pool_id = "";
-    c.retain_until_days = 30;
+    c.retain_until_days = 180;
     c.data_mode = tierDataModeToString(TierDataMode::FULL_VIDEO);
     c.overflow_action = overflowActionToString(OverflowAction::DELETE_OLDEST);
     c.high_watermark_percent = 80;
