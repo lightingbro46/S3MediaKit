@@ -23,6 +23,7 @@
 #include "Camera/VideoConfigJobManager.h"
 #include "Camera/CameraStatistic.h"
 #include "Server/GlobalMonitor.h"
+#include "Server/HealthMonitor.h"
 #include "Manager.h"
 #include "Server/ClusterManager.h"
 #include "Local/StatisticRecorder.h"
@@ -2088,6 +2089,8 @@ void countDeviceStatusJson(const Json::Value &data, int &online, int &offline) {
 void installGlobalMonitor() {
     // Start monitoring system resource usage
     GlobalMonitor::Instance().start();
+    // Health/quality evaluation for /media/monitor/* (reads the monitors started above).
+    HealthMonitor::Instance().start();
 }
 
 Json::Value makeCameraOptionJson(const CameraOption &option) {

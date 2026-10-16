@@ -5,9 +5,13 @@
 
 #include "Manager.h"
 #include "Server/GlobalMonitor.h"
+#include "Server/HealthMonitor.h"
 #include "Local/StorageManager.h"
 #ifdef ENABLE_TIER_STORAGE
 #include "Local/TierStorageManager.h"
+#endif
+#if defined(ENABLE_VERSION)
+#include "S3MVersion.h"
 #endif
 
 using namespace std;
@@ -36,7 +40,178 @@ void systemStatisticHistory(const ArgsMap &allArgs, Json::Value &val) {
     val["data"] = GlobalMonitor::Instance().getSystemStatisticHistory(from_ts, to_ts, limit, bucket_sec);
 }
 
+// --- /media/monitor/* (health monitor for the desktop monitor app) ---------------------------
+// Every route sits behind CHECK_SECRET() (api.secret + http.allow_ip_range), reads and config
+// alike; no JWT. See docs/api-health-monitor.md.
+
+static bool apiSecretIsDefault() {
+    GET_CONFIG(string, api_secret, API::kSecret);
+    return api_secret == API::kDefaultSecret;
+}
+
+static Json::Value versionJson() {
+    Json::Value ver(Json::objectValue);
+#if defined(ENABLE_VERSION)
+    ver["buildTime"] = BUILD_TIME;
+    ver["branchName"] = BRANCH_NAME;
+    ver["commitHash"] = COMMIT_HASH;
+#endif
+    return ver;
+}
+
+// data of a disabled monitor: overall unknown, app shows "monitor off" instead of an error.
+static Json::Value disabledHealthJson() {
+    GET_CONFIG(string, media_server_id, General::kMediaServerId);
+    Json::Value data;
+    data["schemaVersion"] = 1;
+    data["mediaServerId"] = media_server_id;
+    data["enabled"] = false;
+    data["overall"] = "unknown";
+    return data;
+}
+
+// Snapshot part of /health and /summary. `?rev=` equal to the current one answers notModified
+// (levels and reasons unchanged; /summary values still move, so it only applies to /health).
+static void monitorSnapshotResponse(const ArgsMap &allArgs, Json::Value &val, bool summary) {
+    auto snap = HealthMonitor::Instance().snapshot();
+    if (!snap) {
+        val["data"] = disabledHealthJson();
+        val["data"]["apiSecretIsDefault"] = apiSecretIsDefault();
+        return;
+    }
+    if (!summary) {
+        string rev = allArgs["rev"];
+        if (!rev.empty() && rev == to_string(snap->rev)) {
+            val["notModified"] = true;
+            return;
+        }
+    }
+    val["data"] = summary ? snap->summary : snap->health;
+    val["data"]["enabled"] = true;
+    val["data"]["version"] = versionJson();
+    val["data"]["apiSecretIsDefault"] = apiSecretIsDefault();
+}
+
+static string iniValue(const string &key) {
+    auto &ini = mINI::Instance();
+    auto it = ini.find(key);
+    return it == ini.end() ? string() : (const string &)it->second;
+}
+
+static Json::Value monitorConfigJson() {
+    Json::Value data;
+    data["schemaVersion"] = 1;
+    Json::Value &values = data["values"];
+    values = Json::objectValue;
+    for (const auto &key : HealthMonitorConfig::editableKeys()) {
+        values[key] = iniValue(key);
+    }
+    // Thresholds in force: the VMS server config also sets CPU/RAM/disk (kept until its next
+    // push) and the reader limits come from the license, so these can differ from `values`.
+    auto &gm = GlobalMonitor::Instance();
+    auto put = [&](const char *name, ResourceType type) {
+        auto pr = gm.getThreshold(type);
+        data["effective"][name]["warn"] = pr.first;
+        data["effective"][name]["crit"] = pr.second;
+    };
+    put("cpu", ResourceType::CPU);
+    put("ram", ResourceType::MEMORY);
+    put("disk", ResourceType::HDD);
+    put("reader", ResourceType::READER);
+    data["restartRequired"] = Json::arrayValue;
+    data["restartRequired"].append(HealthMonitorConfig::kEnable);
+    data["restartRequired"].append(HealthMonitorConfig::kIntervalSec);
+    data["apiSecretIsDefault"] = apiSecretIsDefault();
+    return data;
+}
+
+static void registerHealthMonitorApis() {
+    if (apiSecretIsDefault()) {
+        WarnL << "api.secret still has its built-in value: /media/monitor/* and every other api.secret "
+                 "endpoint accept it, change it in the config file";
+    }
+
+    api_regist("/media/monitor/health", [](API_ARGS_MAP) {
+        GET_CONFIG(string, api_secret, API::kSecret);
+        CHECK_SECRET();
+        monitorSnapshotResponse(allArgs, val, false);
+    });
+
+    api_regist("/media/monitor/summary", [](API_ARGS_MAP) {
+        GET_CONFIG(string, api_secret, API::kSecret);
+        CHECK_SECRET();
+        monitorSnapshotResponse(allArgs, val, true);
+    });
+
+    api_regist("/media/monitor/config/get", [](API_ARGS_MAP) {
+        GET_CONFIG(string, api_secret, API::kSecret);
+        CHECK_SECRET();
+        val["data"] = monitorConfigJson();
+    });
+
+    api_regist("/media/monitor/config/set", [](API_ARGS_MAP_ASYNC) {
+        GET_CONFIG(string, api_secret, API::kSecret);
+        CHECK_SECRET();
+        if (allArgs.getParser().method() != "POST") {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "POST only");
+            return;
+        }
+        map<string, string> changes;
+        for (const auto &pr : allArgs.args) {
+            if (pr.first != "secret") {
+                changes[pr.first] = pr.second;
+            }
+        }
+        if (changes.empty()) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "no key to change");
+            return;
+        }
+        auto err = HealthMonitorConfig::validateChanges(changes, iniValue);
+        if (!err.empty()) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, err);
+            return;
+        }
+
+        // Apply on the request poller like /index/api/setServerConfig (mINI and the reload
+        // broadcast are not touched from worker threads); only the file write is dispatched.
+        auto &ini = mINI::Instance();
+        int changed = 0;
+        for (const auto &kv : changes) {
+            if (iniValue(kv.first) != kv.second) {
+                ini[kv.first] = kv.second;
+                ++changed;
+            }
+        }
+        if (changed > 0) {
+            NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+            // Same path as the VMS server config: the CPU/RAM/disk monitors take the new pair now.
+            auto apply = [&](ResourceType type, const string &warn_key, const string &crit_key) {
+                if (changes.count(warn_key) || changes.count(crit_key)) {
+                    GlobalMonitor::Instance().setThreshold(type, ini[warn_key].as<float>(), ini[crit_key].as<float>());
+                }
+            };
+            apply(ResourceType::CPU, GlobalMonitorConfig::kCpuWarningThreshold, GlobalMonitorConfig::kCpuCriticalThreshold);
+            apply(ResourceType::MEMORY, GlobalMonitorConfig::kMemoryWarningThreshold, GlobalMonitorConfig::kMemoryCriticalThreshold);
+            apply(ResourceType::HDD, GlobalMonitorConfig::kHddWarningThreshold, GlobalMonitorConfig::kHddCriticalThreshold);
+        }
+        val["changed"] = changed;
+        if (changed == 0) {
+            val["data"] = monitorConfigJson();
+            invoker(200, headerOut, val.toStyledString());
+            return;
+        }
+        auto ini_copy = std::make_shared<mINI>(ini);
+        dispatchApiWork(sender, headerOut, val, invoker, [ini_copy](Json::Value &val) {
+            ini_copy->dumpFile(g_ini_file);
+        }, [](Json::Value &val) {
+            val["data"] = monitorConfigJson();
+        }, apiWorkSerial("monitor.config"));
+    });
+}
+
 void registerMonitorApis() {
+    registerHealthMonitorApis();
+
     // Register the Web API monitor endpoints here
     api_regist("/media/mserver/systemStatistic", [](API_ARGS_MAP) {
         CHECK_AUTH_TOKEN();

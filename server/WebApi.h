@@ -42,6 +42,8 @@ typedef enum {
 } ApiErr;
 
 extern const std::string kSecret;
+// Built-in value of kSecret; the health monitor reports when it was never changed.
+extern const char kDefaultSecret[];
 extern const std::string kSnapRoot;
 extern const std::string kExtractRoot;
 }//namespace API

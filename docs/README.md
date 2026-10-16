@@ -16,6 +16,7 @@
 - [Job trích xuất video sự kiện](./api-video-extraction-job.md)
 - [Rule cấu hình video có thời hạn](./api-video-config-rule.md)
 - [Sự kiện cảnh báo hệ thống (webhook system-event)](./api-system-alert-events.md)
+- [Giám sát sức khỏe MediaServer cho app monitor (`/media/monitor/*`)](./api-health-monitor.md)
 - [Mô hình thread và công việc blocking](./threading-blocking-work.md)
 - [Camera RTSP MJPEG (transcode sang H264 lúc kéo luồng)](./mjpeg-camera.md)
 - [Điều khiển camera bằng ONVIF hoặc PSIA](./camera-control-protocol.md)

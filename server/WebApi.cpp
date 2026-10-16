@@ -70,6 +70,7 @@
 #endif
 
 #include "Server/GlobalMonitor.h"
+#include "Server/HealthMonitor.h"
 #include "Manager.h"
 #include "Onvif/Onvif.h"
 #include "Onvif/SoapUtil.h"
@@ -104,6 +105,7 @@ namespace API {
 #define API_FIELD "api."
 const string kApiDebug = API_FIELD"apiDebug";
 const string kSecret = API_FIELD"secret";
+const char kDefaultSecret[] = "035c73f7-bb6b-4889-a715-d9eb2d1925cc";
 const string kSnapRoot = API_FIELD"snapRoot";
 const string kExtractRoot = API_FIELD"extractRoot";
 const string kDefaultSnap = API_FIELD"defaultSnap";
@@ -112,7 +114,7 @@ const string kJsonNotFoundPrefixs = API_FIELD"jsonNotFoundPrefixes";
 
 static onceToken token([]() {
     mINI::Instance()[kApiDebug] = "1";
-    mINI::Instance()[kSecret] = "035c73f7-bb6b-4889-a715-d9eb2d1925cc";
+    mINI::Instance()[kSecret] = kDefaultSecret;
     mINI::Instance()[kSnapRoot] = "./www/snap/";
     mINI::Instance()[kExtractRoot] = "./www/extract/";
     mINI::Instance()[kDefaultSnap] = "./www/logo.png";
@@ -844,11 +846,17 @@ void installWebApi() {
         getThreadsLoad(WorkThreadPool::Instance(), API_ARGS_VALUE, invoker);
     });
 
-    // Queue and busy time of the blocking pools (BlockingExecutors); window fields reset per call
+    // Queue and busy time of the blocking pools (BlockingExecutors). The health monitor is the
+    // periodic caller of stats() (it resets the window), so while it runs the window fields cover
+    // its last cycle (monitor.intervalSec); otherwise they cover the time since the previous call.
     // Test url http://127.0.0.1/index/api/getBlockingExecutors
     api_regist("/index/api/getBlockingExecutors", [](API_ARGS_MAP) {
         CHECK_SECRET();
-        for (const auto &st : BlockingExecutors::stats()) {
+        std::vector<BlockingExecutors::PoolStats> pools;
+        if (!HealthMonitor::Instance().blockingStats(pools)) {
+            pools = BlockingExecutors::stats();
+        }
+        for (const auto &st : pools) {
             Value obj(objectValue);
             obj["name"] = st.name;
             obj["threads"] = st.threads;
