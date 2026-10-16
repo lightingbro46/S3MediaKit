@@ -54,6 +54,13 @@ public:
     // Open alerts at `level` or above.
     size_t activeCount(Level min_level) const;
 
+    // Usage thresholds (warn, crit) of the mounts whose fill level retention manages (record
+    // directory, tier file pools), set by the health monitor each cycle. A DiskWarning/DiskCritical
+    // under them is retention at work: it is dropped, or lowered to a warning under crit.
+    void setManagedDiskThresholds(const std::map<std::string, std::pair<double, double> > &thresholds);
+    // false: drop this disk usage raise; otherwise `level` and `threshold` may be adjusted.
+    bool filterDiskUsage(const std::string &mount_point, double usage, Level &level, double &threshold) const;
+
     // Tests.
     void clear();
     static const size_t kRecentCapacity = 500;
@@ -67,6 +74,7 @@ private:
     bool _started = false;
     std::map<std::string, Alert> _active; // family|entity -> latest raise
     std::deque<Alert> _recent;
+    std::map<std::string, std::pair<double, double> > _managed_disk; // mount -> (warn, crit)
 };
 
 } // namespace managerkit

@@ -16,6 +16,7 @@
 #include "AlertRegistry.h"
 #include "Thread/WorkThreadPool.h"
 #include "Util/onceToken.h"
+#include "Util/File.h"
 #include "GlobalMonitor.h"
 #include "HealthProbe.h"
 #include "ClusterManager.h"
@@ -55,6 +56,7 @@ const string kBaselineWindowSec = HM_FIELD "baselineWindowSec";
 const string kSlowIntervalSec = HM_FIELD "slowIntervalSec";
 const string kIntegrationWindowSec = HM_FIELD "integrationWindowSec";
 const string kHistoryIntervalSec = HM_FIELD "historyIntervalSec";
+const string kHistoryRetentionDays = HM_FIELD "historyRetentionDays";
 const string kCoverageIntervalSec = HM_FIELD "coverageIntervalSec";
 const string kRssGrowthWindowSec = HM_FIELD "rssGrowthWindowSec";
 
@@ -130,6 +132,7 @@ static onceToken token([]() {
     mINI::Instance()[kSlowIntervalSec] = 60;
     mINI::Instance()[kIntegrationWindowSec] = 300;
     mINI::Instance()[kHistoryIntervalSec] = 60;
+    mINI::Instance()[kHistoryRetentionDays] = 30;
     mINI::Instance()[kCoverageIntervalSec] = 900;
     mINI::Instance()[kRssGrowthWindowSec] = 21600;
     for (const auto &def : thresholdDefs()) {
@@ -216,6 +219,7 @@ static const map<string, int> &countKeys() {
         { kSlowIntervalSec, 10 },
         { kIntegrationWindowSec, 10 },
         { kHistoryIntervalSec, 0 },
+        { kHistoryRetentionDays, 1 },
         { kCoverageIntervalSec, 60 },
         { kRssGrowthWindowSec, 3600 },
         { GlobalMonitorConfig::kDiskIoSustainSamples, 1 },
@@ -892,6 +896,41 @@ void HealthMonitor::collectProcess(HealthEvaluator &ev, Json::Value &summary, in
     gpu["last_fallback_at"] = _gpu_fallback_at > 0 ? Json::Value((Json::Int64)_gpu_fallback_at) : Json::Value(Json::nullValue);
 }
 
+// A retention-managed mount warns this far above its retention limit, critical twice as far.
+static const double kRetentionMarginPct = 3.0;
+
+map<string, double> HealthMonitor::retentionLimits() {
+    map<string, double> limits;
+    const auto snapshot = GlobalMonitor::Instance().getHddSnapshot(false);
+#ifdef ENABLE_TIER_STORAGE
+    // Tiering moves a file pool down once it passes its high watermark.
+    vector<PoolView> pools;
+    {
+        lock_guard<mutex> lck(_slow_mtx);
+        pools = _slow.pools;
+    }
+    for (const auto &pool : pools) {
+        DiskPartition part;
+        if (!pool.enabled || pool.high_watermark <= 0 || pool.mount_root.empty() ||
+            !HddMonitor::findMountPoint(snapshot, pool.mount_root, part)) {
+            continue;
+        }
+        auto &limit = limits[part.mount_point];
+        limit = std::max(limit, (double)pool.high_watermark);
+    }
+#else
+    // StorageManager deletes the oldest recordings once the record mount passes limitPercentUsage.
+    GET_CONFIG(int, limit_percent, Storage::kLimitPercentUsage);
+    GET_CONFIG(string, mp4_save_path, Protocol::kMP4SavePath);
+    GET_CONFIG(string, app_name, Record::kAppName);
+    DiskPartition part;
+    if (limit_percent > 0 && HddMonitor::findMountPoint(snapshot, File::absolutePath(app_name, mp4_save_path), part)) {
+        limits[part.mount_point] = std::min(99, limit_percent);
+    }
+#endif
+    return limits;
+}
+
 void HealthMonitor::collectStorage(HealthEvaluator &ev, Json::Value &summary, int64_t now) {
     auto &gm = GlobalMonitor::Instance();
     Json::Value &storage = summary["storage"];
@@ -912,16 +951,28 @@ void HealthMonitor::collectStorage(HealthEvaluator &ev, Json::Value &summary, in
 
     const auto io = gm.getDiskIoSnapshot();
     auto hdd_th = globalThreshold(ResourceType::HDD, GlobalMonitorConfig::kHddWarningThreshold, GlobalMonitorConfig::kHddCriticalThreshold);
+    const auto managed = retentionLimits();
+    map<string, pair<double, double> > managed_th;
     storage["disks"] = Json::arrayValue;
     for (const auto &p : gm.getHddUsage()) {
+        auto mit = managed.find(p.mount_point);
+        HealthThreshold th = hdd_th;
+        if (mit != managed.end()) {
+            // Retention keeps this mount up to its limit: only above it by a margin is the
+            // cleanup falling behind.
+            th.warn = std::min(99.0, std::max(hdd_th.warn, mit->second + kRetentionMarginPct));
+            th.crit = std::min(100.0, std::max(hdd_th.crit, mit->second + 2 * kRetentionMarginPct));
+            th.crit = std::max(th.crit, std::min(100.0, th.warn + 1));
+            managed_th[p.mount_point] = std::make_pair(th.warn, th.crit);
+        }
         if (!mounts.count(p.mount_point)) {
             // HddMonitor alerts on every mount but has no recovery event: close it here.
-            if (p.total_bytes > 0 && p.usage_pct < hdd_th.warn && AlertRegistry::Instance().isActive("DiskUsage", p.mount_point)) {
+            if (p.total_bytes > 0 && p.usage_pct < th.warn && AlertRegistry::Instance().isActive("DiskUsage", p.mount_point)) {
                 Json::Value extra;
                 extra["mountPoint"] = p.mount_point;
                 extra["device"] = p.device;
                 AlertRegistry::Instance().onEvent("DiskUsage", p.mount_point, "DiskRecovered", AlertRegistry::RECOVERED,
-                                                  p.usage_pct, hdd_th.warn, extra, now);
+                                                  p.usage_pct, th.warn, extra, now);
             }
             continue;
         }
@@ -933,14 +984,17 @@ void HealthMonitor::collectStorage(HealthEvaluator &ev, Json::Value &summary, in
         d["free_bytes"] = (Json::UInt64)p.free_bytes;
         d["usage_pct"] = num(p.usage_pct);
         d["read_only"] = p.read_only;
-        auto disk_level = ev.addValue("storage", "disk.usage_pct", p.total_bytes > 0 ? (double)p.usage_pct : NAN, hdd_th, p.mount_point);
+        d["retention_limit_pct"] = mit != managed.end() ? num(mit->second) : Json::Value(Json::nullValue);
+        d["warn_pct"] = num(th.warn);
+        d["crit_pct"] = num(th.crit);
+        auto disk_level = ev.addValue("storage", "disk.usage_pct", p.total_bytes > 0 ? (double)p.usage_pct : NAN, th, p.mount_point);
         // HddMonitor raises DiskWarning/DiskCritical per mount but has no recovery event.
         if (disk_level == HealthLevel::OK && AlertRegistry::Instance().isActive("DiskUsage", p.mount_point)) {
             Json::Value extra;
             extra["mountPoint"] = p.mount_point;
             extra["device"] = p.device;
             AlertRegistry::Instance().onEvent("DiskUsage", p.mount_point, "DiskRecovered", AlertRegistry::RECOVERED,
-                                              p.usage_pct, hdd_th.warn, extra, now);
+                                              p.usage_pct, th.warn, extra, now);
         }
         if (auto m = io.findMount(p.mount_point)) {
             if (m->valid) {
@@ -955,6 +1009,7 @@ void HealthMonitor::collectStorage(HealthEvaluator &ev, Json::Value &summary, in
         }
         storage["disks"].append(d);
     }
+    AlertRegistry::Instance().setManagedDiskThresholds(managed_th);
     Json::Value &dio = storage["disk_io"];
     dio["valid"] = io.valid;
     dio["iowait_pct"] = io.has_iowait ? num(io.iowait_pct) : Json::Value(Json::nullValue);
@@ -1662,6 +1717,10 @@ void HealthMonitor::slowCollect() {
         v.enabled = p.enabled != 0;
         v.health_check = p.health_check_enabled != 0;
         v.usage_pct = p.usage_pct;
+        if (p.type == "LOCAL_DISK" || p.type == "NAS") {
+            v.mount_root = TierStorageManager::resolveFilePoolMountRoot(p);
+            v.high_watermark = p.high_watermark_percent;
+        }
         PoolHealthInfo health;
         if (tsm.getPoolHealth(p.id, health)) {
             v.health_known = true;
@@ -2004,7 +2063,7 @@ void HealthMonitor::recordHistory(const Json::Value &health, const Json::Value &
     }
     if (now - _history_cleanup_at >= 3600) {
         _history_cleanup_at = now;
-        GET_CONFIG(int, retention_days, GlobalMonitorConfig::kMetricsRetentionDays);
+        GET_CONFIG(int, retention_days, kHistoryRetentionDays);
         const int64_t cutoff = now - (int64_t)std::max(1, retention_days) * 86400;
         _db_queue->post([cutoff]() {
             try {

@@ -53,7 +53,7 @@ cung cấp một nhóm API chỉ đọc cho app desktop monitor gọi định k�
 | CPU, RAM (máy + tiến trình), NIC, dung lượng mount | `manager/Server/{Cpu,Memory,Network,Hdd}Monitor` | mẫu 10 s |
 | Nghẽn IO (util/await/iowait/PSI), ổ ghi được | `DiskIoMonitor`, `StorageWriteMonitor` | chỉ mount chứa record/pool/DB |
 | Số người xem tổng/theo camera, ngưỡng | `ReaderMonitor` | |
-| Lịch sử CPU/RAM/reader/net/disk | bảng `system_metrics` (`migration/mserver_updates/10_system_metrics.sql`) | giữ `kMetricsRetentionDays` = 30 ngày |
+| Lịch sử CPU/RAM/reader/net/disk | bảng `system_metrics` (`migration/mserver_updates/10_system_metrics.sql`) | giữ `globalmonitor.metrics_retention_days` = 7 ngày, mẫu 60 s |
 | Cảnh báo CPU/RAM/disk/IO/ghi/pool/retention, có `*Recovered` | webhook `system-event`, [api-system-alert-events.md](api-system-alert-events.md) | **chỉ đẩy đi, không giữ danh sách đang mở để hỏi lại** |
 | Tốc độ ghi + dự báo số ngày giữ | `StorageManager::makeRecordWriteJson`, `TierStorageManager::makeHotWriteJson` | có `camera_mbps` theo camera trong cửa sổ |
 | Trạng thái từng luồng camera: live, fps, bitrate, codec, độ phân giải, lỗi | `makeDeviceStatisticJson` (`server/Manager.cpp:2191`) | fps/bitrate là giá trị tức thời, không có kỳ vọng để so |
@@ -367,7 +367,7 @@ Ví dụ `/media/monitor/health`:
   - `loss_pct`: hỏi `MediaSource::getLossRate` **trên poller của source** khi thu thập (async, gom kết quả), hoặc để PlayerProxy cập nhật atomic mỗi giây — chọn cách sau để HealthMonitor không phải post vào hàng trăm poller.
 - **Ghi hình đang chạy**: từ `PoolIngestRates::camera_mbps` (cả tier-off và HOT pool) + bộ đếm lỗi ghi atomic trong recorder; không quét đĩa.
 - **`AlertRegistry`**: chỗ đang dựng body webhook `system-event` gọi thêm `AlertRegistry::Instance().onEvent(code, key, level, json)`; `*Recovered` xoá khỏi `active`. Có mutex, vòng `recent` 500 mục. Nhờ vậy cảnh báo có cả khi `hook.enable=0`.
-- **Lịch sử**: migration mới `migration/mserver_updates/23_health_metrics.sql` — bảng `health_metrics(timestamp, overall, score, cameras_total, cameras_online, rec_expected, rec_active, viewers_total, poller_delay_max_ms, alerts_active, components_json)` + index `timestamp`; dọn cùng `kMetricsRetentionDays`. Không sửa `10_system_metrics.sql`. Mẫu mỗi 60 s (`monitor.historyIntervalSec`) để 30 ngày ≈ 43 k dòng.
+- **Lịch sử**: migration mới `migration/mserver_updates/23_health_metrics.sql` — bảng `health_metrics(timestamp, overall, score, cameras_total, cameras_online, rec_expected, rec_active, viewers_total, poller_delay_max_ms, alerts_active, components_json)` + index `timestamp`; dọn theo `monitor.historyRetentionDays` (30 ngày, tách khỏi `system_metrics` 7 ngày vì dòng nhẹ hơn 10–25 lần). Không sửa `10_system_metrics.sql`. Mẫu mỗi 60 s (`monitor.historyIntervalSec`) để 30 ngày ≈ 43 k dòng.
 - **Uptime camera 24 h và coverage ghi** chỉ trong RAM ở H2/H3 (mất khi restart, ghi rõ trong response `windowStartedAt`); H5 tính `coverage_pct_24h` / `gaps_24h` từ timeline đã lưu (dùng `TierRangeIndex` / timefile), chạy trên `api()` mỗi 15 phút, cache kết quả.
 
 ---

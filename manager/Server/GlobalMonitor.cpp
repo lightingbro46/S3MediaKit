@@ -53,9 +53,9 @@ const string kDiskIoAlertRepeatSec     = GM_FIELD "disk_io_alert_repeat_sec";
 
 static onceToken token([]() {
     mINI::Instance()[kMetricsRetentionDays]     = 7;
-    mINI::Instance()[kMetricsSampleIntervalSec] = 10;
-    mINI::Instance()[kMountRefreshIntervalSec] = 10;
-    mINI::Instance()[kMountSnapshotStaleAfterSec] = 30;
+    mINI::Instance()[kMetricsSampleIntervalSec] = 60;
+    mINI::Instance()[kMountRefreshIntervalSec] = 30;
+    mINI::Instance()[kMountSnapshotStaleAfterSec] = 90;
     mINI::Instance()[kMaxAvailableDevicesByHardware] = 0;
     mINI::Instance()[kCpuWarningThreshold]      = 80.0;
     mINI::Instance()[kCpuCriticalThreshold]     = 90.0;
@@ -241,8 +241,10 @@ void GlobalMonitor::start() {
                     m.reader_total         = live_count + playback_count;
                     m.reader_live          = live_count;
                     m.reader_playback      = playback_count;
-                    m.nets_json            = nets_val.toStyledString();
-                    m.disks_json           = disks_val.toStyledString();
+                    // Compact JSON: the indented form is about a third of every row.
+                    Json::FastWriter writer;
+                    m.nets_json            = writer.write(nets_val);
+                    m.disks_json           = writer.write(disks_val);
 
                     auto store = strong_self->_metrics_store;
                     strong_self->_metrics_queue->post([store, m]() {

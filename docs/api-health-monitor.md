@@ -126,7 +126,7 @@ Tham số tuỳ chọn `rev`: nếu bằng `rev` hiện tại (mức và lý do 
 | `process.blocking[]` | theo pool: `name`, `threads`, `queued`, `running`, `completed`, `window_tasks`, `wait_avg_ms`, `wait_max_ms`, `busy_pct` (cửa sổ = 1 chu kỳ) |
 | `transcode` | `streams`, `decoders`, `encoders`, `motion`, `mjpeg_ingest` |
 | `gpu` | `backends`, `load`, `decoders`, `encoders`, `fallbacks` (từ lúc khởi động), `last_fallback_at` |
-| `storage.disks[]` | chỉ các mount chứa bản ghi / DB / pool: `mount`, `device`, `total_bytes`, `used_bytes`, `free_bytes`, `usage_pct`, `read_only`, `io_util_pct`, `await_ms`, `read_mbps`, `write_mbps`, `io_state` |
+| `storage.disks[]` | chỉ các mount chứa bản ghi / DB / pool: `mount`, `device`, `total_bytes`, `used_bytes`, `free_bytes`, `usage_pct`, `read_only`, `retention_limit_pct` (mức retention giữ mount, `null` nếu không có), `warn_pct`/`crit_pct` (ngưỡng đang áp), `io_util_pct`, `await_ms`, `read_mbps`, `write_mbps`, `io_state` |
 | `storage.disk_io` | `valid`, `iowait_pct`, `psi_io_full_pct`, `state` (`normal`/`warning`/`critical`) |
 | `storage.storage_write[]` | kết quả thử ghi từng thư mục (như `storage_write` của `systemStatistic`) |
 | `recording` | `cameras` (đang bật), `expected`, `active`, `starting`, `stalled`, `stalled_pct`, `stale_sec`, `write_errors` (từ lúc khởi động), `write_errors_cycle`, `stalled_cameras[]` (tối đa 100: `cameraId`, `name`, `ip`, `recordMode`, `lastWriteAt`, `expectedSince`) |
@@ -173,7 +173,7 @@ Poller không trả lời lệnh đo độ trễ sau 1 s (bị kẹt trong một
 | `blocking.wait_max_ms` (theo pool) | process | 1000 / 5000 | `monitor.blockingWaitMsWarn` / `Crit` |
 | `blocking.busy_pct` (theo pool) | process | 80 / 95 | `monitor.blockingBusyPctWarn` / `Crit` |
 | `gpu.fallbacks` | process | warning trong `monitor.gpuFallbackWindowSec` (300 s) sau mỗi lần GPU rơi về CPU | |
-| `disk.usage_pct` (theo mount) | storage | 80 / 90 | `globalmonitor.hdd_warning_threshold` / `hdd_critical_threshold` |
+| `disk.usage_pct` (theo mount) | storage | 80 / 90; mount retention tự xoá: max(80, L + 3) / max(90, L + 6) | `globalmonitor.hdd_warning_threshold` / `hdd_critical_threshold` (VMS đặt qua `STORAGE_levelLow/Medium`). L = `storage.limitPercentUsage` của mount thư mục record khi tắt tier, `high_watermark_percent` lớn nhất của pool LOCAL_DISK/NAS trên mount khi bật tier. Ở mount đó `DiskWarning`/`DiskCritical` dưới ngưỡng mới không vào `alerts` (webhook gửi backend không đổi) |
 | `disk_io.mount`, `disk_io.host` | storage | theo `globalmonitor.disk_io_*`, `iowait_*` | mức đã sustain của DiskIoMonitor |
 | `storage_write.writable` (theo thư mục) | storage | không ghi được = critical | |
 | `recording.stalled_pct` | recording | > 0 / 5 (% camera lẽ ra ghi) | `monitor.recordStalledPctWarn` / `Crit` |
@@ -370,7 +370,8 @@ bucket; khoảng rộng tự gộp để mỗi chuỗi ≤ ~2000 điểm, bội 
   `overall` xấu nhất, `score` trung bình và `score_min`, các số đếm trung bình, `poller_delay_max_ms`,
   `alerts_active`, `proc_rss` lớn nhất.
 - `system`: như `/media/mserver/systemStatisticHistory` cùng khoảng và bucket.
-- Giữ `globalmonitor.metrics_retention_days` ngày như `system_metrics`.
+- Giữ `monitor.historyRetentionDays` ngày (mặc định 30). Chuỗi `system` lấy từ `system_metrics`, chỉ giữ
+  `globalmonitor.metrics_retention_days` ngày (mặc định 7): hỏi xa hơn thì `system` rỗng phần cũ, `points` vẫn có.
 
 ## 4. Cấu hình
 
@@ -411,7 +412,7 @@ bucket; khoảng rộng tự gộp để mỗi chuỗi ≤ ~2000 điểm, bội 
   `monitor.sustainSamples` ≥ 1, `monitor.gpuFallbackWindowSec` ≥ 0, `monitor.recordStaleSec` ≥ 0,
   `monitor.playWindowSec` ≥ 10, `monitor.playMinRequests` ≥ 1, `monitor.baselineWarmupSec` ≥ 0,
   `monitor.baselineWindowSec` ≥ 120 (mẫu thống kê 60 s, cần 3 mẫu trong cửa sổ), `monitor.slowIntervalSec` ≥ 10, `monitor.integrationWindowSec` ≥ 10,
-  `monitor.historyIntervalSec` ≥ 0, `monitor.coverageIntervalSec` ≥ 60, `monitor.rssGrowthWindowSec` ≥ 3600,
+  `monitor.historyIntervalSec` ≥ 0, `monitor.historyRetentionDays` ≥ 1, `monitor.coverageIntervalSec` ≥ 60, `monitor.rssGrowthWindowSec` ≥ 3600,
   `globalmonitor.disk_io_sustain_samples` ≥ 1) phải là số nguyên.
 - Mỗi cặp warn/crit phải có warn < crit, riêng chỉ số "thấp là xấu" (`fpsRatio`, `bitrateRatio`,
   `uptimePct24h`) phải có warn > crit; so với giá trị mới hoặc giá trị đang lưu.
@@ -434,6 +435,7 @@ bucket; khoảng rộng tự gộp để mỗi chuỗi ≤ ~2000 điểm, bội 
 | `monitor.slowIntervalSec` | 60 | chu kỳ kiểm tra cần SQLite (độ trễ ghi DB, pool tier, job) |
 | `monitor.integrationWindowSec` | 300 | cửa sổ đếm webhook, thời gian giữ cảnh báo sau khi Kafka mất sự kiện |
 | `monitor.historyIntervalSec` | 60 | chu kỳ ghi `health_metrics`; 0 = không ghi lịch sử |
+| `monitor.historyRetentionDays` | 30 | số ngày giữ `health_metrics` và `process_starts` |
 | `monitor.coverageIntervalSec` | 900 | chu kỳ tính độ phủ bản ghi 24 h theo camera |
 | `monitor.rssGrowthWindowSec` | 21600 | cửa sổ tính độ dốc RSS |
 

@@ -147,10 +147,32 @@ size_t AlertRegistry::activeCount(Level min_level) const {
     return n;
 }
 
+void AlertRegistry::setManagedDiskThresholds(const map<string, pair<double, double> > &thresholds) {
+    lock_guard<mutex> lck(_mtx);
+    _managed_disk = thresholds;
+}
+
+bool AlertRegistry::filterDiskUsage(const string &mount_point, double usage, Level &level, double &threshold) const {
+    lock_guard<mutex> lck(_mtx);
+    auto it = _managed_disk.find(mount_point);
+    if (it == _managed_disk.end()) {
+        return true;
+    }
+    if (usage < it->second.first) {
+        return false;
+    }
+    if (level == CRITICAL && usage < it->second.second) {
+        level = WARNING;
+    }
+    threshold = level == CRITICAL ? it->second.second : it->second.first;
+    return true;
+}
+
 void AlertRegistry::clear() {
     lock_guard<mutex> lck(_mtx);
     _active.clear();
     _recent.clear();
+    _managed_disk.clear();
     _seq = 0;
 }
 
@@ -200,8 +222,13 @@ void AlertRegistry::start() {
         extra["device"] = device;
         // No recovery broadcast exists for a mount: the health monitor closes it (DiskRecovered)
         // once the mount is back under the warning threshold.
-        AlertRegistry::Instance().onEvent("DiskUsage", mount_point, is_critical ? "DiskCritical" : "DiskWarning",
-                                          is_critical ? CRITICAL : WARNING, usage, threshold, extra);
+        Level level = is_critical ? CRITICAL : WARNING;
+        double th = threshold;
+        if (!AlertRegistry::Instance().filterDiskUsage(mount_point, usage, level, th)) {
+            return;
+        }
+        AlertRegistry::Instance().onEvent("DiskUsage", mount_point, level == CRITICAL ? "DiskCritical" : "DiskWarning",
+                                          level, usage, th, extra);
     });
     nc.addListener(&s_tag, Broadcast::kBroadcastDiskIoAlert, [](BroadcastDiskIoAlertArgs) {
         Json::Value extra;

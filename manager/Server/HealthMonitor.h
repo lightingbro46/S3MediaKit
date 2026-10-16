@@ -39,6 +39,7 @@ extern const std::string kBaselineWindowSec; // fps/bitrate samples averaged int
 extern const std::string kSlowIntervalSec;   // database checks (pools, jobs, write latency) on the API pool (default 60)
 extern const std::string kIntegrationWindowSec; // window of the webhook counters and of a Kafka drop warning (default 300)
 extern const std::string kHistoryIntervalSec;   // health_metrics sample period, 0 = no history (default 60)
+extern const std::string kHistoryRetentionDays; // health_metrics/process_starts kept this long (default 30)
 extern const std::string kCoverageIntervalSec;  // per camera recording coverage over 24 h (default 900)
 extern const std::string kRssGrowthWindowSec;   // window of the RSS growth slope (default 21600)
 
@@ -267,6 +268,8 @@ private:
     void collectHost(HealthEvaluator &ev, Json::Value &summary, int64_t now);
     void collectProcess(HealthEvaluator &ev, Json::Value &summary, int64_t now);
     void collectStorage(HealthEvaluator &ev, Json::Value &summary, int64_t now);
+    // mount -> fill % retention keeps it under (record mount without tier, file pools with tier).
+    std::map<std::string, double> retentionLimits();
     void collectRecording(HealthEvaluator &ev, Json::Value &summary, int64_t now);
     void collectIngest(HealthEvaluator &ev, Json::Value &summary, std::vector<Json::Value> &cameras, int64_t now);
     void collectDelivery(HealthEvaluator &ev, Json::Value &summary, int64_t now);
@@ -379,6 +382,8 @@ private:
         bool health_known = false;
         bool stale = true;
         float usage_pct = 0;
+        std::string mount_root;     // file pools (LOCAL_DISK/NAS) only
+        int high_watermark = 0;     // file pools only: tiering keeps the pool under it
         std::string message;
         bool throughput_known = false;
         bool throughput_low = false;

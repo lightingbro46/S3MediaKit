@@ -292,6 +292,36 @@ TEST(HealthAlerts, RegistryKeepsOpenAlertsAndRecentEvents) {
     reg.clear();
 }
 
+TEST(HealthAlerts, RetentionManagedDiskUsage) {
+    auto &reg = AlertRegistry::Instance();
+    reg.clear();
+    std::map<std::string, std::pair<double, double> > managed;
+    managed["/data"] = std::make_pair(93.0, 96.0);
+    reg.setManagedDiskThresholds(managed);
+
+    // Retention keeps /data at 85-90 %: the 80/90 raises there are dropped or lowered.
+    AlertRegistry::Level level = AlertRegistry::WARNING;
+    double th = 80;
+    EXPECT_FALSE(reg.filterDiskUsage("/data", 88, level, th));
+    level = AlertRegistry::CRITICAL;
+    th = 90;
+    EXPECT_TRUE(reg.filterDiskUsage("/data", 94, level, th));
+    EXPECT_EQ(AlertRegistry::WARNING, level);
+    EXPECT_EQ(93, th);
+    level = AlertRegistry::CRITICAL;
+    EXPECT_TRUE(reg.filterDiskUsage("/data", 97, level, th));
+    EXPECT_EQ(AlertRegistry::CRITICAL, level);
+    EXPECT_EQ(96, th);
+
+    // Other mounts keep the alert as raised.
+    level = AlertRegistry::WARNING;
+    th = 80;
+    EXPECT_TRUE(reg.filterDiskUsage("/", 85, level, th));
+    EXPECT_EQ(AlertRegistry::WARNING, level);
+    EXPECT_EQ(80, th);
+    reg.clear();
+}
+
 TEST(StreamQuality, UptimeAndDisconnects) {
     const int64_t t0 = 1000000;
     StreamQuality q(t0);
@@ -623,4 +653,6 @@ TEST(HealthMonitorConfig, BaselineWindowHoldsThreeSamples) {
     EXPECT_EQ("", validateChanges({ { "monitor.baselineWindowSec", "120" } }, none));
     EXPECT_EQ("", validateChanges({ { "monitor.historyIntervalSec", "0" }, { "monitor.coverageIntervalSec", "60" } }, none));
     EXPECT_NE("", validateChanges({ { "monitor.coverageIntervalSec", "30" } }, none));
+    EXPECT_NE("", validateChanges({ { "monitor.historyRetentionDays", "0" } }, none));
+    EXPECT_EQ("", validateChanges({ { "monitor.historyRetentionDays", "31" } }, none));
 }
