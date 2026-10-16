@@ -46,6 +46,15 @@ public:
 
     bool setupRecordEvent(RecordEventType type, bool start);
 
+    // What the record scheduler currently asks for. Readable from any thread (health monitor).
+    struct RecordExpectation {
+        bool expected = false;    // isRecordingExpected() of the state below
+        int mode = 0;             // RecordMode of the current schedule hour
+        bool event_active = false;
+        int64_t since = 0;        // unix seconds `expected` last changed
+    };
+    RecordExpectation getRecordExpectation() const;
+
     void setupStreamRegist(int type, bool regist);
 
     void addUserPTZPreset(const std::string &presetToken, const std::string &presetName, const std::function<void(const toolkit::SockException &ex)> &cb);
@@ -125,6 +134,8 @@ private:
 
     bool updateMediaHealth(int type, const mediakit::TranslationInfo &info);
 
+    void publishRecordExpectation(int mode, bool event_active);
+
 private:
     toolkit::EventPoller::Ptr _poller;
     bool _all_stream_ready = false;
@@ -142,6 +153,9 @@ private:
     bool _reduce_quality_capability_initialized = false;
     bool _media_health_initialized[StreamMax] = {false, false};
     bool _media_stalled[StreamMax] = {false, false};
+    // Written on the owner poller, read by the health monitor: bits 0-7 mode, bit 8 event, bit 9 expected.
+    std::atomic<uint32_t> _record_expectation { 0 };
+    std::atomic<int64_t> _record_expectation_since { 0 };
 };
 
 } // namespace managerkit

@@ -6,6 +6,7 @@
 #include "Manager.h"
 #include "Server/GlobalMonitor.h"
 #include "Server/HealthMonitor.h"
+#include "Server/AlertRegistry.h"
 #include "Local/StorageManager.h"
 #ifdef ENABLE_TIER_STORAGE
 #include "Local/TierStorageManager.h"
@@ -141,6 +142,20 @@ static void registerHealthMonitorApis() {
         GET_CONFIG(string, api_secret, API::kSecret);
         CHECK_SECRET();
         monitorSnapshotResponse(allArgs, val, true);
+    });
+
+    // Open alerts + events after `since` (the `seq` of the previous answer): the app polls with it to
+    // get only the new events.
+    api_regist("/media/monitor/alerts", [](API_ARGS_MAP) {
+        GET_CONFIG(string, api_secret, API::kSecret);
+        CHECK_SECRET();
+        string since = allArgs["since"];
+        uint64_t since_seq = since.empty() ? 0 : strtoull(since.c_str(), nullptr, 10);
+        GET_CONFIG(string, media_server_id, General::kMediaServerId);
+        val["data"] = AlertRegistry::Instance().toJson(since_seq);
+        val["data"]["schemaVersion"] = 1;
+        val["data"]["mediaServerId"] = media_server_id;
+        val["data"]["generatedAt"] = (Json::Int64)time(nullptr);
     });
 
     api_regist("/media/monitor/config/get", [](API_ARGS_MAP) {

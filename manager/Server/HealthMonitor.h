@@ -2,6 +2,7 @@
 #define S3MANAGERKIT_HEALTHMONITOR_H
 
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -24,6 +25,9 @@ extern const std::string kEnable;          // 1: evaluate and serve /media/monit
 extern const std::string kIntervalSec;     // evaluation period, seconds (default 10)
 extern const std::string kSustainSamples;  // consecutive samples before a level change (default 3)
 extern const std::string kGpuFallbackWindowSec; // a GPU->CPU fallback keeps "process" warning this long (default 300)
+extern const std::string kRecordStaleSec;  // no segment closed for this long = not recording; 0 = mp4_max_second * 1.5 + 60
+extern const std::string kPlayWindowSec;   // window of the play request/failure counters (default 300)
+extern const std::string kPlayMinRequests; // fewer requests in the window: failure rate not evaluated (default 20)
 
 /**
  * One warn/crit pair of a numeric metric: config keys "monitor.<name>Warn" / "monitor.<name>Crit".
@@ -59,6 +63,21 @@ const std::vector<std::pair<std::string, std::string> > &thresholdPairs();
 std::string validateChanges(const std::map<std::string, std::string> &changes,
                             const std::function<std::string(const std::string &)> &current);
 } // namespace HealthMonitorConfig
+
+/**
+ * Recording state of one camera (section 4.4 of the plan): `expected` comes from the record
+ * scheduler, `last_write` is when a segment of the camera last closed on disk.
+ */
+enum class RecordingState {
+    NOT_EXPECTED = 0, // schedule (or enableRecord) says no recording now
+    STARTING = 1,     // expected for less than stale_sec: the first segment may not be closed yet
+    ACTIVE = 2,       // a segment closed within stale_sec
+    STALLED = 3,      // expected, past the grace time, and nothing written within stale_sec
+};
+const char *recordingStateString(RecordingState state);
+RecordingState evaluateRecording(bool expected, int64_t expected_since, int64_t last_write, int64_t now, int stale_sec);
+// Default stale time: a segment closes every mp4_max_second, plus margin for the close itself.
+int defaultRecordStaleSec(int mp4_max_second);
 
 /**
  * The result of one evaluation cycle. Immutable once published; the API serializes it without
@@ -103,6 +122,11 @@ public:
     // Process start, unix seconds.
     int64_t startedAt() const { return _started_at; }
 
+    // A segment of `camera_id` closed on disk (kBroadcastRecordMP4). Any thread.
+    void onRecordWritten(const std::string &camera_id, uint64_t bytes);
+    // Result of a play authorization (kBroadcastMediaPlayed): empty = allowed. Any thread.
+    void onPlayResult(const std::string &err);
+
 private:
     HealthMonitor();
 
@@ -124,6 +148,8 @@ private:
     void collectHost(HealthEvaluator &ev, Json::Value &summary, int64_t now);
     void collectProcess(HealthEvaluator &ev, Json::Value &summary, int64_t now);
     void collectStorage(HealthEvaluator &ev, Json::Value &summary, int64_t now);
+    void collectRecording(HealthEvaluator &ev, Json::Value &summary, int64_t now);
+    void collectDelivery(HealthEvaluator &ev, Json::Value &summary, int64_t now);
 
 private:
     std::atomic<bool> _running{false};
@@ -152,6 +178,25 @@ private:
     std::map<std::string, NetCounters> _net_counters;
     uint64_t _gpu_fallbacks = 0;
     int64_t _gpu_fallback_at = 0; // unix seconds of the last increase
+    uint64_t _write_errors = 0;   // MP4Recorder::writeErrorCount() at the previous cycle
+    int _write_error_cycles = 0;  // consecutive cycles with new write errors
+    std::map<std::string, RecordingState> _recording_states; // camera -> state of the previous cycle
+    struct PlayBucket {
+        uint64_t requests = 0;
+        uint64_t failures = 0;
+    };
+    std::deque<PlayBucket> _play_buckets;   // one per cycle, newest last
+
+    // Written from record-close threads and session pollers.
+    mutable std::mutex _record_mtx;
+    struct RecordWrite {
+        int64_t last_write = 0;
+        uint64_t bytes = 0;
+    };
+    std::map<std::string, RecordWrite> _record_writes;
+    std::mutex _play_mtx;
+    PlayBucket _play_current;
+    std::map<std::string, uint64_t> _play_failure_reasons; // since start
 };
 
 } // namespace managerkit

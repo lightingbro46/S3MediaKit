@@ -144,6 +144,10 @@ void GenericRtspCameraImp::setupScheduler() {
         }
         _scheduler.reset();
     }
+    if (!_option.enableRecord) {
+        // A disabled scheduler never calls back.
+        publishRecordExpectation(static_cast<int>(RecordMode::NoRecord), false);
+    }
     _scheduler = RecordScheduler::create(_src->getDeviceTuple(), _option.enableRecord, _option.recordSchedules, _poller);
     _scheduler->setListener(shared_from_this());
 }
@@ -163,6 +167,7 @@ void GenericRtspCameraImp::stop() {
     if (_scheduler) {
         _scheduler->stopTimer();
     }
+    publishRecordExpectation(static_cast<int>(RecordMode::NoRecord), false);
 
     auto strong_statistic = _statistic.lock();
     if (strong_statistic) {
@@ -218,11 +223,31 @@ void GenericRtspCameraImp::saveCameraOption(const CameraOption &option) {
 
 void GenericRtspCameraImp::onRecordModeChange(DeviceSource &sender, int archive_mode, bool start) {
     CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call onRecordModeChange in it's owner poller");
+    publishRecordExpectation(archive_mode, start);
     if (!_sink) {
         WarnL << "Stream sink for camera " << _src->getUrl() << " is not ready. Ignore setup record mode request";
         return;
     }
     _sink->setupRecord(archive_mode, start);
+}
+
+void GenericRtspCameraImp::publishRecordExpectation(int mode, bool event_active) {
+    bool expected = isRecordingExpected(_option.enableRecord, static_cast<RecordMode>(mode), event_active);
+    uint32_t packed = (static_cast<uint32_t>(mode) & 0xFF) | (event_active ? 0x100u : 0u) | (expected ? 0x200u : 0u);
+    uint32_t old = _record_expectation.exchange(packed);
+    if (((old & 0x200u) != 0) != expected || _record_expectation_since.load() == 0) {
+        _record_expectation_since = static_cast<int64_t>(time(nullptr));
+    }
+}
+
+GenericRtspCameraImp::RecordExpectation GenericRtspCameraImp::getRecordExpectation() const {
+    RecordExpectation out;
+    uint32_t packed = _record_expectation.load();
+    out.mode = static_cast<int>(packed & 0xFF);
+    out.event_active = (packed & 0x100u) != 0;
+    out.expected = (packed & 0x200u) != 0;
+    out.since = _record_expectation_since.load();
+    return out;
 }
 
 bool GenericRtspCameraImp::onRecordRootPathChange(DeviceSource &sender, const std::string &record_root_path) {

@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <cmath>
 #include <map>
+#include "Camera/RecordPolicy.h"
+#include "Server/AlertRegistry.h"
 #include "Server/GlobalMonitor.h"
 #include "Server/HealthEvaluator.h"
 #include "Server/HealthMonitor.h"
@@ -221,4 +223,70 @@ TEST(HealthMonitorConfig, ThresholdsFollowConfig) {
     toolkit::mINI::Instance()["monitor.pollerDelayMsWarn"] = 70;
     EXPECT_DOUBLE_EQ(70, threshold("pollerDelayMs").warn);
     toolkit::mINI::Instance()["monitor.pollerDelayMsWarn"] = 50;
+}
+
+TEST(HealthRecording, ExpectedFollowsScheduleMode) {
+    EXPECT_FALSE(isRecordingExpected(true, RecordMode::NoRecord, true));
+    EXPECT_TRUE(isRecordingExpected(true, RecordMode::RecordAlways, false));
+    EXPECT_TRUE(isRecordingExpected(true, RecordMode::RecordLowResAndMotion, false));
+    // Motion only: expected while the event is open, a quiet day is not a failure.
+    EXPECT_FALSE(isRecordingExpected(true, RecordMode::RecordOnlyMotion, false));
+    EXPECT_TRUE(isRecordingExpected(true, RecordMode::RecordOnlyMotion, true));
+    // enableRecord = false wins over any schedule.
+    EXPECT_FALSE(isRecordingExpected(false, RecordMode::RecordAlways, true));
+}
+
+TEST(HealthRecording, StateWithGraceAndStaleTime) {
+    const int stale = defaultRecordStaleSec(60);
+    EXPECT_EQ(150, stale);
+    const int64_t now = 100000;
+    // Not expected and nothing written.
+    EXPECT_EQ(RecordingState::NOT_EXPECTED, evaluateRecording(false, now - 1000, 0, now, stale));
+    // Not expected but still writing (post-record of a motion event): active, never stalled.
+    EXPECT_EQ(RecordingState::ACTIVE, evaluateRecording(false, now - 1000, now - 10, now, stale));
+    // Became expected 30 s ago, first segment not closed yet: grace.
+    EXPECT_EQ(RecordingState::STARTING, evaluateRecording(true, now - 30, 0, now, stale));
+    // Expected for long, segment closed recently.
+    EXPECT_EQ(RecordingState::ACTIVE, evaluateRecording(true, now - 3600, now - stale, now, stale));
+    // Expected for long, last segment too old or never.
+    EXPECT_EQ(RecordingState::STALLED, evaluateRecording(true, now - 3600, now - stale - 1, now, stale));
+    EXPECT_EQ(RecordingState::STALLED, evaluateRecording(true, now - stale, 0, now, stale));
+}
+
+TEST(HealthAlerts, RegistryKeepsOpenAlertsAndRecentEvents) {
+    auto &reg = AlertRegistry::Instance();
+    reg.clear();
+    reg.onEvent("Cpu", "", "CpuWarning", AlertRegistry::WARNING, 85, 80, Json::Value(Json::objectValue), 100);
+    reg.onEvent("DiskWrite", "/data/record", "DiskWriteFailed", AlertRegistry::CRITICAL, 2, 0, Json::Value(Json::objectValue), 110);
+    // Escalation keeps the start time.
+    reg.onEvent("Cpu", "", "CpuCritical", AlertRegistry::CRITICAL, 95, 90, Json::Value(Json::objectValue), 120);
+    auto j = reg.toJson(0);
+    ASSERT_EQ(2u, j["active"].size());
+    EXPECT_EQ(3u, j["recent"].size());
+    EXPECT_EQ(3u, j["seq"].asUInt64());
+    // Both critical now: oldest first (Cpu since 100, disk since 110).
+    EXPECT_EQ("CpuCritical", j["active"][0]["eventCode"].asString());
+    EXPECT_EQ(100, j["active"][0]["since"].asInt64());
+    EXPECT_EQ(2u, reg.activeCount(AlertRegistry::CRITICAL));
+
+    reg.onEvent("Cpu", "", "CpuRecovered", AlertRegistry::RECOVERED, 20, 80, Json::Value(Json::objectValue), 130);
+    EXPECT_EQ(1u, reg.activeCount());
+    EXPECT_FALSE(reg.isActive("Cpu", ""));
+    EXPECT_TRUE(reg.isActive("DiskWrite", "/data/record"));
+    // Only events after `since`.
+    auto j2 = reg.toJson(3);
+    ASSERT_EQ(1u, j2["recent"].size());
+    EXPECT_EQ("CpuRecovered", j2["recent"][0]["eventCode"].asString());
+    EXPECT_EQ(100, j2["recent"][0]["since"].asInt64());
+
+    // The ring keeps the newest kRecentCapacity events.
+    for (int i = 0; i < 600; ++i) {
+        reg.onEvent("CameraStreamLimit", "cam", i % 2 ? "CameraStreamLimitRecovered" : "CameraStreamLimitExceeded",
+                    i % 2 ? AlertRegistry::RECOVERED : AlertRegistry::WARNING, i, 10);
+    }
+    auto j3 = reg.toJson(0);
+    EXPECT_EQ(AlertRegistry::kRecentCapacity, j3["recent"].size());
+    EXPECT_EQ(604u, j3["seq"].asUInt64());
+    EXPECT_EQ(1u, reg.toJson(0, 1)["recent"].size());
+    reg.clear();
 }

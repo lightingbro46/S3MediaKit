@@ -13,6 +13,7 @@
 #include "Network/Session.h"
 #include "Rtsp/RtspSession.h"
 #include "Server/GlobalMonitor.h"
+#include "Server/HealthMonitor.h"
 #include "WebHook.h"
 #include "WebApi.h"
 #include "Manager.h"
@@ -1191,6 +1192,11 @@ void installWebHook() {
     });
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPlayed, [](BroadcastMediaPlayedArgs) {
+        // Every answer goes through `reply`, which also counts it for the health monitor (play.failure_pct).
+        Broadcast::AuthInvoker reply = [invoker](const string &err) {
+            HealthMonitor::Instance().onPlayResult(err);
+            invoker(err);
+        };
         auto device_id = args.app;
         bool record_stream = false;
         bool is_backchannel = (args.schema == "backchannel");
@@ -1230,22 +1236,22 @@ void installWebHook() {
         if (overlay_forbidden) {
             // Saved camera info loads asynchronously after startup: until then the policy cannot be
             // resolved, so answer "retry later" (503) instead of 403.
-            invoker(CameraManager::Instance().isReady() ? "OverlayForbidden" : "ResourceUnavailable");
+            reply(CameraManager::Instance().isReady() ? "OverlayForbidden" : "ResourceUnavailable");
             return;
         }
         if (reduce_quality_requested && !reduce_quality_allowed) {
-            invoker("TranscodeDisabled");
+            reply("TranscodeDisabled");
             return;
         }
 
-        auto isStreamLimit = [invoker, device_id, record_stream, is_backchannel, transcode_stream]() {
+        auto isStreamLimit = [reply, device_id, record_stream, is_backchannel, transcode_stream]() {
             if (is_backchannel) {
-                invoker("");
+                reply("");
                 return;
             }
             auto resource_limit = GlobalMonitor::Instance().isReaderResourceLimit(transcode_stream);
             auto stream_limit = GlobalMonitor::Instance().isReaderCountLimit(device_id, record_stream);
-            invoker(resource_limit ? "ResourceUnavailable" : (stream_limit ? "MaxRequest" : ""));
+            reply(resource_limit ? "ResourceUnavailable" : (stream_limit ? "MaxRequest" : ""));
         };
 
         GET_CONFIG(bool, enable_authorize, Auth::kEnableAuthorize);
@@ -1263,7 +1269,7 @@ void installWebHook() {
         }
 
         if (jwt_token.empty()) {
-            invoker("Unauthorized");
+            reply("Unauthorized");
             return;
         }
 
@@ -1282,7 +1288,7 @@ void installWebHook() {
 
         auto token_cache = UserAuthorManager::Instance().getTokenCache(jwt_token, decodeBase64(params["user-agent"]), sender.get_peer_ip());
         if (!token_cache->hasProjectAccess()) {
-            invoker("Unauthorized");
+            reply("Unauthorized");
             return;
         }
 
@@ -1308,13 +1314,13 @@ void installWebHook() {
         if (!has_feature_permission) {
             string msg = StrPrinter << "No " << feature_name << " permission";
             WarnL << "Permission denied: " << msg;
-            invoker(msg);
+            reply(msg);
             return;
         }
 
         auto permit = UserAuthorManager::Instance().getAuthorCache(device_id, jwt_token);
         if (permit == UserAuthorPermit::REJECT) {
-            invoker("Unauthorized");
+            reply("Unauthorized");
             return;
         }
 
@@ -1327,7 +1333,7 @@ void installWebHook() {
         GET_CONFIG(string, hook_play, Hook::kOnPlay);
         GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
         if (!hook_enable || hook_play.empty() || hook_api_url.empty() ) {
-            invoker("Unauthorized");
+            reply("Unauthorized");
             return;
         }
 #if 0
@@ -1341,10 +1347,10 @@ void installWebHook() {
         HeaderType header;
         header["Authorization"] = (StrPrinter << "Bearer " << jwt_token);
         // Execute hook
-        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, invoker, isStreamLimit, register_session](const Value &obj, const string &err) mutable {
+        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, reply, isStreamLimit, register_session](const Value &obj, const string &err) mutable {
             const bool cached = UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty());
             if (!err.empty() || !cached) {
-                invoker("Unauthorized");
+                reply("Unauthorized");
                 return;
             }
             register_session();

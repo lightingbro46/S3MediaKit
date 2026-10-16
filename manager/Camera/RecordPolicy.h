@@ -46,6 +46,13 @@ struct RecordScheduleItem {
     }
 };
 
+/**
+ * Whether a camera should be writing recordings now, from the scheduler's own decision (mode of the
+ * current schedule hour and whether a motion event is open). Used by the health monitor to spot
+ * cameras that should record but do not.
+ */
+bool isRecordingExpected(bool enable_record, RecordMode mode, bool event_active);
+
 enum class RecordEventType : uint8_t {
     Unknown = 0,
     Motion,

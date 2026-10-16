@@ -24,6 +24,9 @@ public:
     // (MediaTuple::shortUrl()); the same key always maps to the same pool.
     static toolkit::TaskExecutor::Ptr closeExecutorFor(const std::string &stream_key);
 
+    // Segments that could not be opened or renamed into place since startup (health monitor).
+    static uint64_t writeErrorCount();
+
     /**
      * Reset all Tracks
      */

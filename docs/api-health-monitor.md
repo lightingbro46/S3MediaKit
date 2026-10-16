@@ -3,8 +3,8 @@
 Hợp đồng cho app desktop monitor (vận hành/NOC). App gọi định kỳ tới **từng** MediaServer; mỗi
 node tự đánh giá trạng thái và trả snapshot đã tính sẵn, nên gọi dồn không làm nặng server.
 
-Trạng thái triển khai: nhóm `host`, `process`, `storage` (đợt H1). Các nhóm `ingest`,
-`recording`, `delivery`, `cluster` trả `"unknown"` cho tới khi có số liệu.
+Trạng thái triển khai: nhóm `host`, `process`, `storage` (H1), `recording`, `delivery` và
+`/media/monitor/alerts` (H3). Các nhóm `ingest`, `cluster` trả `"unknown"` cho tới khi có số liệu.
 
 ## 1. Xác thực
 
@@ -47,8 +47,8 @@ Trạng thái triển khai: nhóm `host`, `process`, `storage` (đợt H1). Các
 | `process` | độ trễ/tải poller, hàng đợi pool blocking, GPU fallback |
 | `storage` | dung lượng, nghẽn IO, khả năng ghi của các ổ chứa bản ghi / DB / pool tier |
 | `ingest` | camera / luồng vào (chưa có) |
-| `recording` | ghi hình (chưa có) |
-| `delivery` | người xem / luồng ra (chưa có) |
+| `recording` | camera lẽ ra đang ghi mà không ghi, lỗi ghi file, thư mục bản ghi ghi được |
+| `delivery` | người xem so với giới hạn license, tỉ lệ từ chối yêu cầu xem |
 | `cluster` | sync, cụm, tích hợp (chưa có) |
 
 ## 3. Endpoint
@@ -60,6 +60,7 @@ Thêm field mới không đổi `schemaVersion`; app phải bỏ qua field lạ.
 |---|---|---|
 | `/media/monitor/health` | 5–10 s | trạng thái tổng, thành phần, lý do |
 | `/media/monitor/summary` | 15–30 s | như `health` + toàn bộ số liệu theo nhóm |
+| `/media/monitor/alerts?since=<seq>` | 10 s | cảnh báo đang mở + sự kiện mới sau `seq` |
 | `/media/monitor/config/get` | khi mở tab cấu hình | ngưỡng và tham số hiện hành |
 | `/media/monitor/config/set` | khi bấm lưu | POST JSON, đổi ngưỡng/tham số |
 
@@ -85,6 +86,7 @@ Tham số tuỳ chọn `rev`: nếu bằng `rev` hiện tại (mức và lý do 
     "uptimeSec": 86400,
     "version": {"buildTime": "2026-10-16T08:50:45", "branchName": "develop", "commitHash": "f1284c3"},
     "apiSecretIsDefault": false,
+    "alerts": {"active": 1, "critical": 0},
     "components": {
       "host": "warning", "process": "ok", "storage": "ok",
       "ingest": "unknown", "recording": "unknown", "delivery": "unknown", "cluster": "unknown"
@@ -123,6 +125,10 @@ Tham số tuỳ chọn `rev`: nếu bằng `rev` hiện tại (mức và lý do 
 | `storage.disks[]` | chỉ các mount chứa bản ghi / DB / pool: `mount`, `device`, `total_bytes`, `used_bytes`, `free_bytes`, `usage_pct`, `read_only`, `io_util_pct`, `await_ms`, `read_mbps`, `write_mbps`, `io_state` |
 | `storage.disk_io` | `valid`, `iowait_pct`, `psi_io_full_pct`, `state` (`normal`/`warning`/`critical`) |
 | `storage.storage_write[]` | kết quả thử ghi từng thư mục (như `storage_write` của `systemStatistic`) |
+| `recording` | `cameras` (đang bật), `expected`, `active`, `starting`, `stalled`, `stalled_pct`, `stale_sec`, `write_errors` (từ lúc khởi động), `write_errors_cycle`, `stalled_cameras[]` (tối đa 100: `cameraId`, `name`, `ip`, `recordMode`, `lastWriteAt`, `expectedSince`) |
+| `delivery.viewers` | `live`, `playback`, `total`, `limit` (giới hạn license, null = không giới hạn), `limit_used_pct` |
+| `delivery.play` | `window_sec`, `requests`, `failures`, `failure_pct` (trong cửa sổ), `failures_by_reason` (từ lúc khởi động: `Unauthorized`, `MaxRequest`, `ResourceUnavailable`, `OverlayForbidden`, `TranscodeDisabled`, ...) |
+| `alerts` | `active`, `critical`: số cảnh báo đang mở |
 
 Số không đo được trả `null`.
 
@@ -150,8 +156,67 @@ Poller không trả lời lệnh đo độ trễ sau 1 s (bị kẹt trong một
 | `disk.usage_pct` (theo mount) | storage | 80 / 90 | `globalmonitor.hdd_warning_threshold` / `hdd_critical_threshold` |
 | `disk_io.mount`, `disk_io.host` | storage | theo `globalmonitor.disk_io_*`, `iowait_*` | mức đã sustain của DiskIoMonitor |
 | `storage_write.writable` (theo thư mục) | storage | không ghi được = critical | |
+| `recording.stalled_pct` | recording | > 0 / 5 (% camera lẽ ra ghi) | `monitor.recordStalledPctWarn` / `Crit` |
+| `recording.write_errors` | recording | lỗi mới trong chu kỳ = warning, 3 chu kỳ liên tiếp = critical | |
+| `recording.storage_writable` | recording | thư mục bản ghi chính không ghi được = critical | |
+| `viewers.limit_used_pct` | delivery | 80 / 95 (chỉ khi license có giới hạn) | `monitor.viewerLimitPctWarn` / `Crit` |
+| `play.failure_pct` | delivery | 5 / 20 (khi cửa sổ có ≥ `monitor.playMinRequests` yêu cầu) | `monitor.playFailurePctWarn` / `Crit` |
 
 Ngưỡng là `>=`. Drop gói ở NIC ảo/multicast thường khác 0 nên ngưỡng `net.drops_per_sec` rộng hơn lỗi.
+
+### 3.4 Ghi hình: "lẽ ra đang ghi"
+
+- Lấy đúng quyết định của bộ lập lịch ghi của camera (giờ địa phương, lịch 7 × 24 ô `recordingSchedule`):
+  `enableRecord = false` hoặc ô giờ `NoRecord` → không kỳ vọng; `RecordAlways`,
+  `RecordLowResAndMotion` → luôn kỳ vọng; `RecordOnlyMotion` → chỉ khi sự kiện chuyển động đang mở.
+  Camera chỉ ghi theo chuyển động mà cả ngày không có chuyển động là bình thường.
+- "Đang ghi" (`active`) = camera có segment đóng xong trên đĩa trong `stale_sec` gần nhất. Mặc định
+  `stale_sec = protocol.mp4_max_second × 1.5 + 60` (segment chỉ được tính khi đóng file).
+- `starting`: vừa chuyển sang kỳ vọng ghi (đầu giờ có lịch, bắt đầu chuyển động, camera mới bật) chưa
+  quá `stale_sec`; không tính là lỗi.
+- `stalled` = kỳ vọng ghi, quá thời gian ân hạn, và không có segment nào trong `stale_sec`. Mỗi camera
+  chuyển sang `stalled` mở cảnh báo `RecordingStalled` (chỉ có trong `/media/monitor/alerts`, không gửi
+  webhook), hồi phục thì `RecordingRecovered`.
+- Chỉ tính camera đang bật trên node này. Số liệu nằm trong RAM, mất khi khởi động lại.
+
+### 3.5 Người xem
+
+- `play.*` đếm kết quả phân quyền mỗi yêu cầu xem (RTSP/RTMP/HTTP-FLV/HLS/WebRTC). HLS gửi một lần
+  phân quyền cho mỗi lần tải playlist nên số yêu cầu HLS cao hơn số người xem. Yêu cầu tới stream không
+  tồn tại không được tính (stream xem lại được tạo theo yêu cầu nên "chưa có" không phải lỗi).
+
+### 3.6 `/media/monitor/alerts`
+
+```json
+{
+  "code": 0,
+  "data": {
+    "schemaVersion": 1, "mediaServerId": "ms-01", "generatedAt": 1760500000,
+    "seq": 42,
+    "active": [
+      {"seq": 40, "eventCode": "RecordingStalled", "family": "RecordingStalled", "entity": "cam-01",
+       "level": "critical", "since": 1760499700, "at": 1760499700, "currentValue": 180, "threshold": 150,
+       "cameraId": "cam-01", "name": "Cổng chính", "ip": "10.0.0.5", "recordMode": "RecordAlways", "lastWriteAt": 1760499520}
+    ],
+    "recent": [ {"seq": 41, "eventCode": "DiskWritable", "level": "recovered", "...": "..."} ]
+  }
+}
+```
+
+- `active[]`: cảnh báo đang mở, xấu nhất trước rồi cũ nhất trước. `since` = lúc mở, giữ nguyên khi cảnh
+  báo lặp lại hoặc tăng mức.
+- `recent[]`: tối đa 500 sự kiện gần nhất có `seq > since` (cả sự kiện hồi phục), cũ trước. App lưu
+  `seq` của lần trả lời trước và gửi lại ở `?since=` để chỉ nhận phần mới; mở app lần đầu gửi `since=0`.
+- `eventCode` trùng webhook `system-event` ([api-system-alert-events.md](api-system-alert-events.md)):
+  `CpuWarning/Critical/Recovered`, `RamWarning/...`, `DiskWarning/DiskCritical` (theo mount),
+  `DiskIoWarning/Critical/Recovered`, `DiskReadOnly/DiskWriteFailed/DiskWritable`,
+  `PoolThroughputLow/Recovered`, `RetentionCapacityLow/Recovered`, `EventBus*`,
+  `LiveStreamLimitExceeded/Recovered`, `CameraStreamLimitExceeded/Recovered`; thêm `RecordingStalled` /
+  `RecordingRecovered` của monitor, và `DiskRecovered` theo mount (webhook không có sự kiện hồi phục dung
+  lượng theo mount; monitor tự đóng khi mount về dưới ngưỡng cảnh báo).
+- Có cả khi webhook tắt (`hook.enable=0`). Danh sách nằm trong RAM, mất khi khởi động lại.
+- Field riêng của từng sự kiện (`mountPoint`, `device`, `path`, `poolId`, `cameraId`, ...) nằm cùng
+  cấp với các field chung.
 
 ## 4. Cấu hình
 
@@ -189,7 +254,8 @@ Ngưỡng là `>=`. Drop gói ở NIC ảo/multicast thường khác 0 nên ngư
 - Chỉ nhận khoá có trong `values` của `config/get`; khoá khác (kể cả `api.secret`) →
   `code=902001` HTTP 400, không đổi gì.
 - Giá trị phải là số ≥ 0; khoá đếm (`monitor.enable` 0/1, `monitor.intervalSec` ≥ 1,
-  `monitor.sustainSamples` ≥ 1, `monitor.gpuFallbackWindowSec` ≥ 0,
+  `monitor.sustainSamples` ≥ 1, `monitor.gpuFallbackWindowSec` ≥ 0, `monitor.recordStaleSec` ≥ 0,
+  `monitor.playWindowSec` ≥ 10, `monitor.playMinRequests` ≥ 1,
   `globalmonitor.disk_io_sustain_samples` ≥ 1) phải là số nguyên.
 - Mỗi cặp warn/crit phải có warn < crit (so với giá trị mới hoặc giá trị đang lưu).
 - Thành công: `{"code":0,"changed":<số khoá đổi>,"data":<như config/get>}`; ghi file cấu hình.
@@ -203,6 +269,9 @@ Ngưỡng là `>=`. Drop gói ở NIC ảo/multicast thường khác 0 nên ngư
 | `monitor.intervalSec` | 10 | chu kỳ đánh giá (giây) |
 | `monitor.sustainSamples` | 3 | số mẫu liên tiếp trước khi đổi mức |
 | `monitor.gpuFallbackWindowSec` | 300 | thời gian giữ cảnh báo sau một lần GPU fallback |
+| `monitor.recordStaleSec` | 0 | không có segment trong chừng này giây = không ghi; 0 = `mp4_max_second × 1.5 + 60` |
+| `monitor.playWindowSec` | 300 | cửa sổ đếm yêu cầu/lỗi xem |
+| `monitor.playMinRequests` | 20 | ít yêu cầu hơn thì không đánh giá tỉ lệ lỗi |
 | `monitor.<tên>Warn` / `monitor.<tên>Crit` | xem bảng 3.3 | ngưỡng |
 
 ## 5. Ảnh hưởng tới API cũ
