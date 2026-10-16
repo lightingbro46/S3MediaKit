@@ -4,6 +4,7 @@
 #include <cstring>
 #include "Common/config.h"
 #include "Util/NoticeCenter.h"
+#include "Util/util.h"
 #include "ResourceMonitor.h"
 
 using namespace std;
@@ -48,6 +49,9 @@ AlertRegistry &AlertRegistry::Instance() {
     static AlertRegistry *s_instance = new AlertRegistry();
     return *s_instance;
 }
+
+AlertRegistry::AlertRegistry()
+    : _seq(getCurrentMillisecond(true)) {}
 
 void AlertRegistry::onEvent(const string &family, const string &entity, const string &event_code, Level level,
                             double value, double threshold, const Json::Value &extra, int64_t now) {

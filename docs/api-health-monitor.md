@@ -3,10 +3,14 @@
 Hợp đồng cho app desktop monitor (vận hành/NOC). App gọi định kỳ tới **từng** MediaServer; mỗi
 node tự đánh giá trạng thái và trả snapshot đã tính sẵn, nên gọi dồn không làm nặng server.
 
-Trạng thái triển khai: nhóm `host`, `process`, `storage` (H1), `recording`, `delivery`,
-`/media/monitor/alerts` (H3), `ingest` và `/media/monitor/cameras` (H2), pool tier / job / độ trễ
-ghi DB trong `storage` và nhóm `cluster` (H4), lịch sử `/media/monitor/history`, độ phủ bản ghi 24 h,
-tăng RSS, khởi động lại bất thường, thời gian mở luồng và lưu baseline qua restart (H5).
+Trạng thái: hợp đồng `schemaVersion: 1` đã chốt (2026-10-16), mọi endpoint và nhóm chỉ số dưới đây
+đã triển khai. Ví dụ tích hợp cho app ở mục 6. Ý nghĩa từng cảnh báo và việc người vận hành cần làm
+ở [health-monitor-runbook.md](health-monitor-runbook.md).
+
+Tương thích: server chỉ **thêm** field, chỉ số (`metric`), mã lý do camera hoặc `eventCode` mới mà
+không đổi `schemaVersion`. App phải bỏ qua field lạ, hiển thị `metric`/`eventCode` lạ ở dạng thô
+(không coi là lỗi), và coi mức lạ như `unknown`. Đổi tên, bỏ field hoặc đổi nghĩa một field thì tăng
+`schemaVersion`.
 
 ## 1. Xác thực
 
@@ -107,6 +111,9 @@ Tham số tuỳ chọn `rev`: nếu bằng `rev` hiện tại (mức và lý do 
   `since` là lúc mức hiện tại bắt đầu (unix giây), `detail` (nếu có) chỉ thực thể: tên NIC, mount
   point, đường dẫn thư mục, tên pool.
 - `rev` tăng khi `overall`, mức một thành phần, hoặc tập lý do đổi; giá trị số đổi thì không tăng.
+  Mỗi lần khởi động `rev` bắt đầu từ thời điểm khởi động (unix mili-giây) nên luôn tăng qua các lần
+  khởi động lại: `rev` của lần chạy trước không bao giờ trả nhầm `notModified`. App chỉ so bằng, không
+  suy ra số lần đổi từ hiệu hai `rev`.
 - Monitor tắt (`monitor.enable=0`): `data = {"schemaVersion":1,"enabled":false,"overall":"unknown",...}`.
 
 ### 3.2 `/media/monitor/summary`
@@ -305,7 +312,8 @@ camera), `page` (từ 1), `size` (mặc định 50, tối đa 500). Camera xấu
   cửa sổ có độ lệch chuẩn fps > 15 % trung bình bị bỏ, đo lại. Giữ qua mất kết nối; học lại khi codec
   hoặc độ phân giải đổi, khi cấu hình luồng camera được đổi qua API (media profile, video config rule),
   hoặc khi fps lệch > 20 % liên tục 1 giờ (người cài đặt chủ động đổi fps). Chưa có baseline → ratio
-  `null`, không đánh giá. Baseline nằm trong RAM, học lại sau khi khởi động lại.
+  `null`, không đánh giá. Baseline lưu trong DB (bảng `stream_baselines`), nạp lại sau khi khởi động
+  (luồng gửi codec/độ phân giải khác thì bỏ và học lại).
 - `loss_pct`: tỉ lệ mất gói RTP từ lúc kết nối (chỉ nguồn RTSP), `null` với nguồn khác.
 - `last_frame_age_ms`: thời gian từ frame video cuối vào MediaServer.
 - `disconnects_*`, `uptime_pct_24h` tính từ lúc MediaServer bắt đầu theo dõi luồng
@@ -334,6 +342,9 @@ camera), `page` (từ 1), `size` (mặc định 50, tối đa 500). Camera xấu
   báo lặp lại hoặc tăng mức.
 - `recent[]`: tối đa 500 sự kiện gần nhất có `seq > since` (cả sự kiện hồi phục), cũ trước. App lưu
   `seq` của lần trả lời trước và gửi lại ở `?since=` để chỉ nhận phần mới; mở app lần đầu gửi `since=0`.
+  `seq` bắt đầu từ thời điểm khởi động (unix mili-giây) và luôn tăng qua các lần khởi động lại, nên
+  `since` cũ vẫn nhận đủ sự kiện của lần chạy mới. `recent` chỉ giữ 500 sự kiện: app gọi thưa hơn
+  mà có hơn 500 sự kiện mới thì mất phần cũ nhất, `active` vẫn đủ.
 - `eventCode` trùng webhook `system-event` ([api-system-alert-events.md](api-system-alert-events.md)):
   `CpuWarning/Critical/Recovered`, `RamWarning/...`, `DiskWarning/DiskCritical` (theo mount),
   `DiskIoWarning/Critical/Recovered`, `DiskReadOnly/DiskWriteFailed/DiskWritable`,
@@ -438,14 +449,164 @@ bucket; khoảng rộng tự gộp để mỗi chuỗi ≤ ~2000 điểm, bội 
 | `monitor.historyRetentionDays` | 30 | số ngày giữ `health_metrics` và `process_starts` |
 | `monitor.coverageIntervalSec` | 900 | chu kỳ tính độ phủ bản ghi 24 h theo camera |
 | `monitor.rssGrowthWindowSec` | 21600 | cửa sổ tính độ dốc RSS |
+| `monitor.<tên>Warn` / `monitor.<tên>Crit` | xem bảng 3.3 | ngưỡng |
 
 Baseline fps/bitrate học được lưu vào bảng `stream_baselines` và nạp lại sau khi khởi động (luồng gửi
 codec/độ phân giải khác thì bỏ và học lại). Mỗi lần khởi động ghi một dòng `process_starts`; thoát sạch
 ghi `stopped_at`.
-| `monitor.<tên>Warn` / `monitor.<tên>Crit` | xem bảng 3.3 | ngưỡng |
 
 ## 5. Ảnh hưởng tới API cũ
 
 `/index/api/getBlockingExecutors`: khi monitor chạy, các field `window_*` là của chu kỳ đánh giá gần
 nhất (`monitor.intervalSec`), không còn là "từ lần gọi trước", vì `BlockingExecutors::stats()` chỉ
 cho một người gọi định kỳ.
+
+## 6. Tích hợp app: ví dụ
+
+### 6.1 Vòng gọi khuyến nghị
+
+| Việc | Gọi | Ghi chú |
+|---|---|---|
+| Trạng thái từng node | `/health?rev=<rev đang hiển thị>` mỗi 10 s | `notModified` thì giữ màn hình hiện tại |
+| Sự kiện, thông báo | `/alerts?since=<seq lần trước>` mỗi 10 s | lưu `seq` cả khi tắt app; mở lần đầu `since=0` |
+| Danh sách camera lỗi | `/cameras?health=warning,critical` | chỉ khi `components.ingest` hoặc `recording` khác `ok`, hoặc khi mở trang camera |
+| Chi tiết node | `/summary` mỗi 15–30 s | chỉ khi đang mở trang chi tiết node |
+| Biểu đồ | `/history?from=&to=&fields=` | khi mở biểu đồ; không gọi định kỳ |
+
+- Timeout 5 s mỗi lời gọi. Gọi lỗi 3 lần liên tiếp thì hiện node là **mất liên lạc**, khác `critical`.
+- `code` khác 0 (hoặc HTTP 401 khi IP không được phép) là lỗi xác thực/cấu hình (mục 1): hiện node là **bị từ chối**, không tính là mất liên lạc, không thử lại dồn dập; báo người dùng kiểm `api.secret`
+  và `http.allow_ip_range`.
+- Mỗi node một vòng gọi độc lập: node chậm không làm trễ node khác.
+- `reasons[].since`, `alerts[].since` là giờ của server: hiển thị theo giờ máy app, không so với giờ app để
+  tính "đã kéo dài bao lâu" khi đồng hồ hai bên lệch; dùng `generatedAt - since`.
+
+### 6.2 curl
+
+```bash
+S='secret: <api.secret>'
+curl -s -H "$S" http://10.0.0.11:8080/media/monitor/health
+curl -s -H "$S" "http://10.0.0.11:8080/media/monitor/alerts?since=0"
+curl -s -H "$S" "http://10.0.0.11:8080/media/monitor/cameras?health=warning,critical&size=100"
+curl -s -H "$S" -H 'Content-Type: application/json' \
+     -d '{"monitor.pollerDelayMsWarn": 80}' http://10.0.0.11:8080/media/monitor/config/set
+```
+
+### 6.3 Client tham chiếu (Python, chỉ thư viện chuẩn)
+
+Chạy thử với một node: `python3 monitor_client.py http://<ip>:<port> <api.secret>`.
+
+```python
+"""Ví dụ app giám sát: gọi /media/monitor/* của nhiều node (chỉ thư viện chuẩn)."""
+import json
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+NODES = {"ms-01": "http://10.0.0.11:8080"}   # tên hiển thị -> địa chỉ HTTP của MediaServer
+SECRET = "<api.secret>"                       # đọc từ kho khoá của app, không ghi thô
+HEALTH_SEC, ALERTS_SEC = 10, 10
+UNREACHABLE_AFTER = 3                         # số lần gọi lỗi liên tiếp trước khi báo mất liên lạc
+
+
+class ApiError(Exception):
+    """Server trả lời nhưng từ chối (sai secret, IP không được phép): sửa cấu hình, không phải mất liên lạc."""
+
+
+def call(base, path, **query):
+    url = base + path + ("?" + urllib.parse.urlencode(query) if query else "")
+    req = urllib.request.Request(url, headers={"secret": SECRET})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:   # IP ngoài http.allow_ip_range trả HTTP 401 kèm body JSON
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+        except ValueError:
+            raise ApiError("HTTP %d" % exc.code)
+    if body.get("code") != 0:
+        raise ApiError("code=%s %s" % (body.get("code"), body.get("msg")))
+    return body
+
+
+class Node(object):
+    def __init__(self, name, base):
+        self.name, self.base = name, base
+        self.rev = None        # rev của snapshot đang hiển thị
+        self.health = None     # data của /health gần nhất
+        self.seq = 0           # seq của lần gọi /alerts trước
+        self.active = []       # cảnh báo đang mở
+        self.failures = 0
+        self.error = None      # lỗi API đang có (sai secret, IP không được phép)
+
+    def poll_health(self):
+        query = {"rev": self.rev} if self.rev is not None else {}
+        body = call(self.base, "/media/monitor/health", **query)
+        if body.get("notModified"):
+            return False
+        self.health = body["data"]
+        self.rev = self.health.get("rev")
+        return True
+
+    def poll_alerts(self):
+        data = call(self.base, "/media/monitor/alerts", since=self.seq)["data"]
+        self.seq = data["seq"]
+        self.active = data["active"]
+        return data["recent"]   # sự kiện mới, cũ trước: ghi nhật ký / bật thông báo
+
+    def state(self):
+        # mất liên lạc khác critical: node có thể vẫn ghi hình bình thường
+        if self.failures >= UNREACHABLE_AFTER:
+            return "unreachable"
+        if self.error:
+            return "rejected"
+        return (self.health or {}).get("overall", "unknown")
+
+
+def show(node, changed, events):
+    h = node.health or {}
+    if changed:
+        print("%s %s score=%s components=%s" % (node.name, node.state(), h.get("score"), h.get("components")))
+        for r in h.get("reasons", []):
+            print("    %s %s/%s%s = %s (ngưỡng %s, từ %s)" % (
+                r["level"], r["component"], r["metric"], " [%s]" % r["detail"] if r.get("detail") else "",
+                r.get("value"), r.get("threshold"), time.strftime("%H:%M:%S", time.localtime(r["since"]))))
+        if h.get("apiSecretIsDefault"):
+            print("    node vẫn dùng api.secret mặc định: đổi khoá trong file cấu hình")
+    for e in events:
+        print("%s [%s] %s %s %s" % (node.name, time.strftime("%H:%M:%S", time.localtime(e["at"])),
+                                    e["level"], e["eventCode"], e.get("entity", "")))
+
+
+def main():
+    nodes = [Node(n, b) for n, b in NODES.items()]
+    while True:
+        for node in nodes:
+            try:
+                changed = node.poll_health()
+                events = node.poll_alerts()
+                node.failures, node.error = 0, None
+            except ApiError as exc:
+                if node.error != str(exc):
+                    print("%s từ chối: %s (kiểm api.secret, http.allow_ip_range)" % (node.name, exc))
+                node.failures, node.error = 0, str(exc)
+                continue
+            except (OSError, ValueError) as exc:
+                node.failures += 1
+                if node.failures == UNREACHABLE_AFTER:
+                    print("%s mất liên lạc: %s" % (node.name, exc))
+                continue
+            show(node, changed, events)
+            # Chi tiết chỉ gọi khi cần, không gọi mỗi chu kỳ:
+            #   /media/monitor/cameras?health=warning,critical  khi ingest/recording khác ok
+            #   /media/monitor/summary                          khi mở trang chi tiết node
+            #   /media/monitor/history?from=&to=                khi mở biểu đồ
+        time.sleep(min(HEALTH_SEC, ALERTS_SEC))
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 3:   # chạy thử: monitor_client.py <http://host:port> <secret>
+        NODES, SECRET = {"node": sys.argv[1]}, sys.argv[2]
+    main()
+```

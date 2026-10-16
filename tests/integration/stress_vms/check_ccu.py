@@ -237,6 +237,14 @@ class Server(object):
         except (OSError, ValueError):
             return []
 
+    def monitor_health(self):
+        # None = API không có (binary cũ) hoặc monitor tắt
+        try:
+            data = self.api("/media/monitor/health").get("data") or {}
+        except (OSError, ValueError):
+            return None
+        return data if data.get("enabled") else None
+
 
 def psi_total_us(kind):
     """Tổng micro giây "full" của /proc/pressure/<kind>; None nếu kernel không có PSI."""
@@ -278,7 +286,8 @@ def mem_total_kb():
 
 
 class Sampler(object):
-    """Lấy mẫu trong cửa sổ đo: healthcheck liên tục + getThreadsLoad mỗi 5 s."""
+    """Lấy mẫu trong cửa sổ đo: healthcheck liên tục + getThreadsLoad mỗi 5 s + /media/monitor/health
+    mỗi 10 s (snapshot của monitor đổi mỗi monitor.intervalSec)."""
 
     def __init__(self, server):
         self.s = server
@@ -287,6 +296,7 @@ class Sampler(object):
         self.health_err = 0
         self.loads = defaultdict(list)
         self.source = []
+        self.monitor = []
         self.threads = []
 
     def _probe(self):
@@ -316,8 +326,15 @@ class Sampler(object):
                 self.loads[row.get("name") or str(i)].append(row.get("load", 0))
             self.stop_ev.wait(5)
 
+    def _monitor(self):
+        while not self.stop_ev.is_set():
+            h = self.s.monitor_health()
+            if h:
+                self.monitor.append(h)
+            self.stop_ev.wait(10)
+
     def start(self):
-        for fn in (self._probe, self._loads, self._source):
+        for fn in (self._probe, self._loads, self._source, self._monitor):
             th = threading.Thread(target=fn, daemon=True)
             th.start()
             self.threads.append(th)
@@ -759,6 +776,9 @@ class Runner(object):
             fails.append("ghi hình: %d khoảng hở, %d luồng ngừng ghi" % (gaps["gaps"], gaps["stale"]))
             cat.append("recording")
 
+        # Monitor không làm bậc trượt: chỉ ghi lại để so với kết luận của bậc (báo giả / bỏ sót).
+        row["monitor"] = summarize_monitor(smp.monitor)
+
         row["failures"] = fails
         row["invalid"] = invalid
         row["warnings"] = warns
@@ -852,7 +872,66 @@ def render_md(rep):
     return "\n".join(lines) + "\n"
 
 
+LEVEL_RANK = {"ok": 0, "unknown": 0, "warning": 1, "critical": 2}
+
+
+def summarize_monitor(samples):
+    """Gộp các snapshot /media/monitor/health của một cửa sổ đo: mức tổng xấu nhất và từng lý do
+    (component/metric/detail) với mức xấu nhất, giá trị lớn nhất, số mẫu có lý do đó."""
+    if not samples:
+        return None
+    worst = max((x.get("overall") or "unknown" for x in samples), key=lambda v: LEVEL_RANK.get(v, 0))
+    reasons = {}
+    for x in samples:
+        for r in x.get("reasons") or []:
+            key = "%s/%s%s" % (r.get("component"), r.get("metric"), (":" + r["detail"]) if r.get("detail") else "")
+            cur = reasons.setdefault(key, {"key": key, "level": "ok", "value_max": None,
+                                           "threshold": r.get("threshold"), "samples": 0})
+            cur["samples"] += 1
+            if LEVEL_RANK.get(r.get("level"), 0) >= LEVEL_RANK.get(cur["level"], 0):
+                cur["level"], cur["threshold"] = r.get("level"), r.get("threshold")
+            v = r.get("value")
+            if isinstance(v, (int, float)) and (cur["value_max"] is None or v > cur["value_max"]):
+                cur["value_max"] = v
+    alerts = max((x.get("alerts") or {}).get("active", 0) for x in samples)
+    return {"samples": len(samples), "overall_worst": worst, "alerts_active_max": alerts,
+            "reasons": sorted(reasons.values(), key=lambda r: (-LEVEL_RANK.get(r["level"], 0), -r["samples"]))}
+
+
+def monitor_verdict(r):
+    """So kết luận của bậc với monitor: bậc đạt mà monitor báo = ứng viên báo giả (cần chỉnh
+    ngưỡng), bậc trượt mà monitor luôn ok = bỏ sót."""
+    m = r.get("monitor")
+    if not m:
+        return "không có số liệu"
+    bad = [x for x in m["reasons"] if LEVEL_RANK.get(x["level"], 0) > 0]
+    if r.get("invalid"):
+        return "bậc không hợp lệ"
+    if r["ok"]:
+        return "báo giả?" if bad else "đúng (không báo)"
+    return "bắt được" if bad else "bỏ sót"
+
+
+def render_monitor(rep, lines):
+    rows = [r for r in rep["rows"] if "monitor" in r]
+    if not rows:
+        return lines
+    lines += ["", "## Monitor `/media/monitor/health` trong cửa sổ đo", "",
+              "Lý do: `thành phần/chỉ số[:thực thể] mức (giá trị max / ngưỡng, số mẫu có lý do / số mẫu)`. "
+              "Bậc đạt mà monitor báo là ứng viên báo giả: đối chiếu số đo của bậc trước khi chỉnh ngưỡng.", "",
+              "| bậc | kết luận bậc | overall xấu nhất | so với monitor | lý do |",
+              "|---|---|---|---|---|"]
+    for r in rows:
+        m = r["monitor"]
+        why = "; ".join("%s %s (%s / %s, %d/%d)" % (x["key"], x["level"], x["value_max"], x["threshold"],
+                                                     x["samples"], m["samples"]) for x in m["reasons"][:8]) if m else "-"
+        lines.append("| %s | %s | %s | %s | %s |" % (
+            r["label"], r["verdict"], m["overall_worst"] if m else "-", monitor_verdict(r), why or "-"))
+    return lines
+
+
 def render_extra(rep, lines):
+    render_monitor(rep, lines)
     if rep.get("extra_md"):
         lines += [""] + rep["extra_md"]
     return lines
@@ -923,6 +1002,11 @@ def scenario_step(rn):
                 accept_row.get("cpu_pct_total"), accept_row.get("poller_load_max"),
                 accept_row.get("nic_tx_mbps"), accept_row.get("disk_write_mbps"), accept_row.get("rss_mb"),
                 ", ".join("%s %.0f%%/%d thread" % tuple(g) for g in groups[:3]) or "-"))
+    if accept_row:
+        summary["Monitor ở bậc %d" % a.accept] = monitor_verdict(accept_row) + (
+            ": " + ", ".join(x["key"] for x in accept_row["monitor"]["reasons"]
+                             if LEVEL_RANK.get(x["level"], 0) > 0)
+            if accept_row.get("monitor") and monitor_verdict(accept_row) == "báo giả?" else "")
     if stopped:
         summary["Ghi chú"] = stopped
     base_row = next((r for r in rn.rows if r["level"] == 0), None)

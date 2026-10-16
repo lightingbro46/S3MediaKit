@@ -465,6 +465,9 @@ HealthMonitor &HealthMonitor::Instance() {
 
 HealthMonitor::HealthMonitor() {
     _started_at = (int64_t)time(nullptr);
+    // rev keeps growing across restarts, so a rev the app kept from the previous run never
+    // matches by chance and answers notModified.
+    _rev = getCurrentMillisecond(true);
 }
 
 void HealthMonitor::start() {

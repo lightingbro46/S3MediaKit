@@ -66,10 +66,12 @@ public:
     static const size_t kRecentCapacity = 500;
 
 private:
-    AlertRegistry() = default;
+    AlertRegistry();
 
 private:
     mutable std::mutex _mtx;
+    // Starts at the start-up time (ms) so `seq` keeps growing across restarts: an app still
+    // holding the previous run's seq as `since` gets every event of the new run.
     uint64_t _seq = 0;
     bool _started = false;
     std::map<std::string, Alert> _active; // family|entity -> latest raise
