@@ -737,6 +737,8 @@ void releaseStorageManagers() {
 }
 
 void unInstallManagerHook() {
+    // Marks this run as ended cleanly (the next start counts crashes apart from planned restarts).
+    HealthMonitor::Instance().stop();
     releaseSyncDatabase();
     releaseAllDevice();
     releaseActiveJobs();
@@ -2089,7 +2091,11 @@ void countDeviceStatusJson(const Json::Value &data, int &online, int &offline) {
 void installGlobalMonitor() {
     // Start monitoring system resource usage
     GlobalMonitor::Instance().start();
-    // Health/quality evaluation for /media/monitor/* (reads the monitors started above).
+}
+
+void installHealthMonitor() {
+    // Health/quality evaluation for /media/monitor/* (reads GlobalMonitor). After migrateDatabase():
+    // it writes its history, process starts and stream baselines right away.
     HealthMonitor::Instance().start();
 }
 

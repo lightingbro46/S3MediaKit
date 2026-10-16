@@ -5,7 +5,8 @@ node tự đánh giá trạng thái và trả snapshot đã tính sẵn, nên g�
 
 Trạng thái triển khai: nhóm `host`, `process`, `storage` (H1), `recording`, `delivery`,
 `/media/monitor/alerts` (H3), `ingest` và `/media/monitor/cameras` (H2), pool tier / job / độ trễ
-ghi DB trong `storage` và nhóm `cluster` (H4).
+ghi DB trong `storage` và nhóm `cluster` (H4), lịch sử `/media/monitor/history`, độ phủ bản ghi 24 h,
+tăng RSS, khởi động lại bất thường, thời gian mở luồng và lưu baseline qua restart (H5).
 
 ## 1. Xác thực
 
@@ -63,6 +64,7 @@ Thêm field mới không đổi `schemaVersion`; app phải bỏ qua field lạ.
 | `/media/monitor/summary` | 15–30 s | như `health` + toàn bộ số liệu theo nhóm |
 | `/media/monitor/alerts?since=<seq>` | 10 s | cảnh báo đang mở + sự kiện mới sau `seq` |
 | `/media/monitor/cameras?health=&page=&size=` | 30–60 s | camera kèm chỉ số chất lượng từng luồng |
+| `/media/monitor/history?from=&to=&bucket_sec=&fields=` | khi mở biểu đồ | chuỗi thời gian sức khỏe + tài nguyên (mục 3.8) |
 | `/media/monitor/config/get` | khi mở tab cấu hình | ngưỡng và tham số hiện hành |
 | `/media/monitor/config/set` | khi bấm lưu | POST JSON, đổi ngưỡng/tham số |
 
@@ -138,6 +140,10 @@ Tham số tuỳ chọn `rev`: nếu bằng `rev` hiện tại (mức và lý do 
 | `cluster` | `peers_known`, `peers_unreachable`, `peers[]` (`id`, `name`, `reachable`) |
 | `cluster.sync` | `enabled` (false khi build tắt sync hoặc `database.enable_sync_db=0`), `bootstrapped`, `single_node`, `decommissioned`, `peers[]` (`id`, `last_ok_at`, `last_ok_age_sec`) |
 | `cluster.webhook` | `window_sec`, `requests`, `failures`, `failure_pct`: các lần gọi tới `hook.api_url` (VMS/ESC), kết quả cuối sau khi đã retry; lời gọi giữa các node không tính (đã có `peers_unreachable`) |
+| `host.ram` (thêm) | `proc_rss_growth_mb_per_h` (độ dốc RSS, null khi chưa đủ 2 h số liệu), `proc_rss_growth_span_sec` |
+| `process` (thêm) | `restarts_24h` (số lần khởi động có lần chạy trước trong 24 h), `unclean_restarts_24h` (lần chạy trước không thoát sạch: crash, kill) |
+| `recording.coverage` | `computed_at`, `cameras_evaluated` (camera có ≥ 1 h lẽ ra ghi), `below_warn`, `below_crit`, `low_pct`, `avg_pct` |
+| `delivery.play.open` | thời gian từ yêu cầu xem tới khi có luồng (`MediaSource::findAsync`, gồm chờ kéo luồng theo yêu cầu) trong `monitor.playWindowSec`: `live_samples`, `live_p50_ms`, `live_p95_ms`, `live_max_ms` (luồng live mở được), `replay_samples`, `replay_max_ms` (xem lại, có thể chờ restore S3, chỉ đếm), `not_found` (không có luồng sau `general.maxStreamWaitMS`, thường do client gửi sai id, chỉ đếm) |
 | `cluster.kafka` | `enabled`; khi bật: `mode` (`LIVE`/`SPOOL`/`DRAIN`), `brokers_up`, `brokers_known`, `queued`, `delivered`, `spool_pending`, `spool_bytes`, `dropped_rate` (vượt hạn mức/camera, không tính là lỗi), `dropped` (mất do giới hạn spool/hàng đợi), `last_drop_at` |
 
 Số liệu `storage.database`, `storage.tier`, `delivery.restore` đọc SQLite nên chạy trên pool `api` mỗi
@@ -190,6 +196,10 @@ Poller không trả lời lệnh đo độ trễ sau 1 s (bị kẹt trong một
 | `webhook.failure_pct` | cluster | > 0 / 20 % trong `monitor.integrationWindowSec`; dưới 10 lần gọi thì lỗi chỉ là warning; 4xx là câu trả lời của backend, không tính lỗi | `monitor.webhookFailurePctWarn` / `Crit` |
 | `kafka.spool` | cluster | không broker nào nhận, sự kiện đang ghi xuống spool = warning | |
 | `kafka.dropped` | cluster | warning trong `monitor.integrationWindowSec` sau mỗi lần mất sự kiện | |
+| `ram.proc_rss_growth_mb_per_h` | host | 200 / 500 MB/h, hồi quy trên `monitor.rssGrowthWindowSec` (6 h), bỏ 30 phút đầu sau khởi động, cần ≥ 2 h | `monitor.rssGrowthMbPerHWarn` / `Crit` |
+| `process.unclean_restarts_24h` | process | 1 / 3 (khởi động lại theo lịch thoát sạch nên không tính) | `monitor.restarts24hWarn` / `Crit` |
+| `recording.coverage_low_pct` | recording | > 0 / 5 % camera có độ phủ 24 h ≤ `coveragePct24hCrit` | `monitor.recordCoverageLowPctWarn` / `Crit` |
+| `play.open_latency_p95_ms` | delivery | 2000 / 5000 ms, p95 thời gian mở luồng live thành công (khi có ≥ `monitor.playMinRequests` mẫu) | `monitor.openLatencyP95MsWarn` / `Crit` |
 
 Ngưỡng theo camera (mục 3.6), cùng dạng `monitor.<tên>Warn` / `Crit`:
 
@@ -201,6 +211,8 @@ Ngưỡng theo camera (mục 3.6), cùng dạng `monitor.<tên>Warn` / `Crit`:
 | `last_frame_age_ms` | 3000 / 10000 | `lastFrameAgeMs` |
 | `disconnects_1h` | 3 / 10 | `disconnects1h` |
 | `uptime_pct_24h` | ≤ 99 / ≤ 95 (thấp là xấu) | `uptimePct24h` |
+| `recording.coverage_pct_24h` (theo camera) | ≤ 99 / ≤ 95 (thấp là xấu), cả hai chỉ là warning của camera | `coveragePct24h` |
+| `recording.gaps_24h` (theo camera) | 1 / 6, cả hai chỉ là warning của camera | `recordGaps24h` |
 
 Ngưỡng là `>=`. Drop gói ở NIC ảo/multicast thường khác 0 nên ngưỡng `net.drops_per_sec` rộng hơn lỗi.
 
@@ -218,6 +230,19 @@ Ngưỡng là `>=`. Drop gói ở NIC ảo/multicast thường khác 0 nên ngư
   chuyển sang `stalled` mở cảnh báo `RecordingStalled` (chỉ có trong `/media/monitor/alerts`, không gửi
   webhook), hồi phục thì `RecordingRecovered`.
 - Chỉ tính camera đang bật trên node này. Số liệu nằm trong RAM, mất khi khởi động lại.
+
+Độ phủ 24 h (tính mỗi `monitor.coverageIntervalSec` = 900 s trên pool `api`, từ timefile nên không mất khi
+khởi động lại):
+
+- Thời gian lẽ ra ghi = các giờ trong 24 h qua có mode `RecordAlways`/`RecordLowResAndMotion` theo lịch
+  hiện tại (giờ chỉ ghi theo chuyển động không tính), chỉ trong khoảng camera thuộc node này theo
+  `VmsResourceAssignment` (failover sang node khác không tính là thiếu), bỏ `stale_sec` cuối (segment
+  đang ghi chưa vào timeline). Camera chưa có bản ghi nào trước cửa sổ 24 h (camera mới, vừa bật ghi)
+  chỉ tính từ bản ghi đầu tiên; không có bản ghi nào trong 48 h thì không tính độ phủ (đã có `stalled`).
+- `coverage_pct_24h` = thời gian có bản ghi (mọi luồng, kể cả bản ghi gap-fill) trong thời gian lẽ ra ghi.
+  Lỗ ≤ 5 s giữa hai file liền nhau coi như liền.
+- `gaps_24h` = số khoảng thiếu dài hơn `2 × protocol.mp4_max_second`; `longest_gap_sec`.
+- Camera có dưới 1 h lẽ ra ghi không được đánh giá. Lịch đã đổi trong 24 h thì tính theo lịch hiện tại.
 
 ### 3.5 Người xem
 
@@ -241,7 +266,9 @@ camera), `page` (từ 1), `size` (mặc định 50, tối đa 500). Camera xấu
       "health": "warning", "healthSince": 1760499000, "observed": "warning",
       "reasons": ["main.fps_ratio", "main.bitrate_ratio"],
       "online": true,
-      "recording": {"state": "active", "expected": true, "mode": "RecordAlways", "lastWriteAt": 1760499990},
+      "recording": {"state": "active", "expected": true, "mode": "RecordAlways", "lastWriteAt": 1760499990,
+                    "coverage_pct_24h": 99.8, "expected_sec_24h": 86100, "gaps_24h": 0, "longest_gap_sec": 0,
+                    "coverage_at": 1760499100},
       "controller": {"connected": true, "status": "success"},
       "streams": {
         "main": {"streamId": "cam-01-main", "live": true, "status": "success", "lastChangeAt": 1760400000,
@@ -258,6 +285,7 @@ camera), `page` (từ 1), `size` (mặc định 50, tối đa 500). Camera xấu
 }
 ```
 
+- `recording.coverage_pct_24h`, `gaps_24h`: null khi chưa tính hoặc không có thời gian lẽ ra ghi (mục 3.4).
 - `health`: mức của camera sau hysteresis (`monitor.sustainSamples` chu kỳ), `observed`: mức của chu kỳ
   vừa đo (đổi ngay), `healthSince`: lúc `health` bắt đầu.
 - Luật: **critical** khi camera offline (không luồng nào live), lẽ ra đang ghi mà
@@ -317,6 +345,33 @@ camera), `page` (từ 1), `size` (mặc định 50, tối đa 500). Camera xấu
 - Field riêng của từng sự kiện (`mountPoint`, `device`, `path`, `poolId`, `cameraId`, ...) nằm cùng
   cấp với các field chung.
 
+### 3.8 `/media/monitor/history`
+
+Tham số: `from`, `to` (unix giây, mặc định 24 h gần nhất, tối đa 31 ngày), `bucket_sec` (gộp theo
+bucket; khoảng rộng tự gộp để mỗi chuỗi ≤ ~2000 điểm, bội của 60 s), `fields` (danh sách field của
+điểm cách nhau dấu phẩy, thêm `system` để có chuỗi tài nguyên; rỗng = tất cả). Đọc SQLite trên pool
+`api`, nhóm giới hạn `storage.read` (quá tải trả 503).
+
+```json
+{
+  "code": 0,
+  "data": {
+    "schemaVersion": 1, "mediaServerId": "ms-01", "from": 1760413600, "to": 1760500000, "bucket_sec": 300,
+    "points": [{"timestamp": 1760413800, "samples": 5, "overall": "warning", "score": 86.0, "score_min": 80,
+                "cameras_total": 300, "cameras_online": 297.4, "rec_expected": 298, "rec_active": 297.8,
+                "rec_stalled": 0.2, "viewers_total": 41.2, "poller_delay_max_ms": 3.0, "alerts_active": 2,
+                "proc_rss": 1834500096}],
+    "system": [{"timestamp": 1760413800, "samples": 30, "cpu_usage_pct": 41.2, "ram_usage_pct": 62.0, "...": "..."}]
+  }
+}
+```
+
+- `points` từ bảng `health_metrics`, một mẫu mỗi `monitor.historyIntervalSec` (60 s); trong bucket:
+  `overall` xấu nhất, `score` trung bình và `score_min`, các số đếm trung bình, `poller_delay_max_ms`,
+  `alerts_active`, `proc_rss` lớn nhất.
+- `system`: như `/media/mserver/systemStatisticHistory` cùng khoảng và bucket.
+- Giữ `globalmonitor.metrics_retention_days` ngày như `system_metrics`.
+
 ## 4. Cấu hình
 
 ### 4.1 `/media/monitor/config/get`
@@ -355,7 +410,8 @@ camera), `page` (từ 1), `size` (mặc định 50, tối đa 500). Camera xấu
 - Giá trị phải là số ≥ 0; khoá đếm (`monitor.enable` 0/1, `monitor.intervalSec` ≥ 1,
   `monitor.sustainSamples` ≥ 1, `monitor.gpuFallbackWindowSec` ≥ 0, `monitor.recordStaleSec` ≥ 0,
   `monitor.playWindowSec` ≥ 10, `monitor.playMinRequests` ≥ 1, `monitor.baselineWarmupSec` ≥ 0,
-  `monitor.baselineWindowSec` ≥ 60, `monitor.slowIntervalSec` ≥ 10, `monitor.integrationWindowSec` ≥ 10,
+  `monitor.baselineWindowSec` ≥ 120 (mẫu thống kê 60 s, cần 3 mẫu trong cửa sổ), `monitor.slowIntervalSec` ≥ 10, `monitor.integrationWindowSec` ≥ 10,
+  `monitor.historyIntervalSec` ≥ 0, `monitor.coverageIntervalSec` ≥ 60, `monitor.rssGrowthWindowSec` ≥ 3600,
   `globalmonitor.disk_io_sustain_samples` ≥ 1) phải là số nguyên.
 - Mỗi cặp warn/crit phải có warn < crit, riêng chỉ số "thấp là xấu" (`fpsRatio`, `bitrateRatio`,
   `uptimePct24h`) phải có warn > crit; so với giá trị mới hoặc giá trị đang lưu.
@@ -377,6 +433,13 @@ camera), `page` (từ 1), `size` (mặc định 50, tối đa 500). Camera xấu
 | `monitor.baselineWindowSec` | 300 | số giây mẫu được lấy trung bình thành baseline |
 | `monitor.slowIntervalSec` | 60 | chu kỳ kiểm tra cần SQLite (độ trễ ghi DB, pool tier, job) |
 | `monitor.integrationWindowSec` | 300 | cửa sổ đếm webhook, thời gian giữ cảnh báo sau khi Kafka mất sự kiện |
+| `monitor.historyIntervalSec` | 60 | chu kỳ ghi `health_metrics`; 0 = không ghi lịch sử |
+| `monitor.coverageIntervalSec` | 900 | chu kỳ tính độ phủ bản ghi 24 h theo camera |
+| `monitor.rssGrowthWindowSec` | 21600 | cửa sổ tính độ dốc RSS |
+
+Baseline fps/bitrate học được lưu vào bảng `stream_baselines` và nạp lại sau khi khởi động (luồng gửi
+codec/độ phân giải khác thì bỏ và học lại). Mỗi lần khởi động ghi một dòng `process_starts`; thoát sạch
+ghi `stopped_at`.
 | `monitor.<tên>Warn` / `monitor.<tên>Crit` | xem bảng 3.3 | ngưỡng |
 
 ## 5. Ảnh hưởng tới API cũ

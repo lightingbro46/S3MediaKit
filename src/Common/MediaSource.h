@@ -487,6 +487,15 @@ public:
 
     // Asynchronously find the stream
     static void findAsync(const MediaInfo &info, const std::shared_ptr<toolkit::Session> &session, const std::function<void(const Ptr &src)> &cb);
+    // Time findAsync() took to answer a player (stream lookup, on-demand pull, replay open, or the
+    // wait until General::kMaxStreamWaitTimeMS when nothing came). Kept for the health monitor.
+    struct OpenSample {
+        uint32_t ms = 0;
+        bool found = false;
+        bool replay = false;   // Record::kAppName: the replay may have to restore from S3
+    };
+    // Moves the samples recorded since the last call into `out` (at most 10000 are kept).
+    static void takeOpenSamples(std::vector<OpenSample> &out);
     static void findAsyncByApp(const MediaInfo &info, const std::shared_ptr<toolkit::Session> &session, const std::function<void(const std::vector<Ptr> &)> &cb);
     // Traverse all streams
     static void for_each_media(const std::function<void(const Ptr &src)> &cb, const std::string &schema = "", const std::string &vhost = "", const std::string &app = "", const std::string &stream = "");

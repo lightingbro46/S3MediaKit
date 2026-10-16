@@ -2,6 +2,7 @@
 #define S3MANAGERKIT_HEALTHMONITOR_H
 
 #include <atomic>
+#include <cmath>
 #include <deque>
 #include <functional>
 #include <map>
@@ -15,8 +16,12 @@
 #include "Common/BlockingExecutors.h"
 #include "HealthEvaluator.h"
 #include "Camera/StreamQuality.h"
+#include "Camera/RecordPolicy.h"
+#include "Storage/HealthMetrics.h"
 
 namespace managerkit {
+
+class SerialTaskQueue;
 
 // ──────────────────────────────────────────────────────────────────
 // Configuration of the health monitor ("monitor." section)
@@ -33,6 +38,9 @@ extern const std::string kBaselineWarmupSec; // a stream must be live this long 
 extern const std::string kBaselineWindowSec; // fps/bitrate samples averaged into the baseline (default 300)
 extern const std::string kSlowIntervalSec;   // database checks (pools, jobs, write latency) on the API pool (default 60)
 extern const std::string kIntegrationWindowSec; // window of the webhook counters and of a Kafka drop warning (default 300)
+extern const std::string kHistoryIntervalSec;   // health_metrics sample period, 0 = no history (default 60)
+extern const std::string kCoverageIntervalSec;  // per camera recording coverage over 24 h (default 900)
+extern const std::string kRssGrowthWindowSec;   // window of the RSS growth slope (default 21600)
 
 /**
  * One warn/crit pair of a numeric metric: config keys "monitor.<name>Warn" / "monitor.<name>Crit".
@@ -100,6 +108,47 @@ HealthLevel poolHealthLevel(const std::string &health_status, bool stale);
 HealthLevel failureRateLevel(uint64_t requests, uint64_t failures, uint64_t min_requests,
                              const HealthThreshold &th, double &failure_pct);
 
+// [start, end) in unix seconds.
+using TimeSpan = std::pair<int64_t, int64_t>;
+/**
+ * Spans of [from, to) the schedule says to record all the time: hours whose mode is RecordAlways or
+ * RecordLowResAndMotion (local time, like RecordScheduler). RecordOnlyMotion hours are left out:
+ * no motion means nothing to record. `modes_by_hour` is indexed day * 24 + hour (Monday = 0).
+ */
+std::vector<TimeSpan> scheduledRecordSpans(bool enable_record, const std::vector<RecordMode> &modes_by_hour,
+                                           int64_t from, int64_t to);
+// Modes by hour of a recordSchedules string (missing hours: NoRecord).
+std::vector<RecordMode> recordModesByHour(const std::string &record_schedules);
+// Intersection of two sorted, non-overlapping span lists.
+std::vector<TimeSpan> intersectSpans(const std::vector<TimeSpan> &a, const std::vector<TimeSpan> &b);
+// Sorts and merges overlapping/touching spans.
+std::vector<TimeSpan> mergeSpans(std::vector<TimeSpan> spans);
+
+struct RecordCoverage {
+    int64_t expected_sec = 0;
+    int64_t recorded_sec = 0;    // recorded within the expected spans
+    int gaps = 0;                // unrecorded pieces of the expected spans longer than gap_min_sec
+    int64_t longest_gap_sec = 0;
+    double pct() const { return expected_sec > 0 ? 100.0 * (double)recorded_sec / (double)expected_sec : -1; }
+};
+RecordCoverage computeRecordCoverage(const std::vector<TimeSpan> &expected, const std::vector<TimeSpan> &recorded,
+                                     int64_t gap_min_sec);
+
+/**
+ * Least-squares slope of the process RSS in MB per hour. NaN when the samples span less than
+ * `min_span_sec` or there are fewer than 3.
+ */
+double rssGrowthMbPerHour(const std::vector<std::pair<int64_t, int64_t> > &samples, int64_t min_span_sec);
+// p-th percentile (0..100, nearest rank) of `values`; NaN when empty.
+double percentileOf(std::vector<uint32_t> values, double p);
+
+/**
+ * /media/monitor/history points from health_metrics rows (oldest first). bucket_sec <= 0 returns
+ * one point per row. A bucket has the worst `overall`, the average score (and its minimum), averages
+ * of the counts, and the maximum of poller delay, alerts and RSS.
+ */
+Json::Value healthHistoryPoints(const std::vector<HealthMetric> &rows, int bucket_sec);
+
 /**
  * Per camera evaluation (section 5.4): offline, not recording while it should, or no video on a
  * live stream = critical; fps/bitrate below the learnt baseline, RTP loss, reconnects, low uptime,
@@ -115,14 +164,21 @@ struct CameraStreamInput {
     int disconnects_1h = 0;
     double uptime_pct_24h = -1;
 };
+// Recording coverage of the last 24 h (H5); -1 = not computed or nothing was expected.
+struct CameraCoverageInput {
+    double pct = -1;
+    int gaps = -1;
+};
 struct CameraInput {
     bool recording_stalled = false;
     bool controller_expected = false; // not a generic RTSP camera
     bool controller_connected = true;
     CameraStreamInput streams[2];     // primary, secondary
+    CameraCoverageInput coverage;
 };
 struct CameraThresholds {
     HealthThreshold fps_ratio, bitrate_ratio, loss_pct, last_frame_age_ms, disconnects_1h, uptime_pct_24h;
+    HealthThreshold coverage_pct, gaps;
     static CameraThresholds fromConfig();
 };
 // Online = at least one stream live (like the device statistics API).
@@ -183,6 +239,13 @@ public:
     // Final result of a webhook call to the VMS/ESC (after its retries). Any thread.
     void onWebhookResult(bool ok);
 
+    /**
+     * Data of /media/monitor/history: health_metrics points and, unless `fields` leaves it out,
+     * the system_metrics series of the same range. Reads SQLite: call it on BlockingExecutors::api().
+     * `fields` = comma list of point fields (and "system"); empty = all.
+     */
+    Json::Value history(int64_t from, int64_t to, int bucket_sec, const std::string &fields);
+
 private:
     HealthMonitor();
 
@@ -212,6 +275,19 @@ private:
     void startSlowCollect(int64_t now);
     void slowCollect();
     void evaluateSlow(HealthEvaluator &ev, Json::Value &summary, int64_t now);
+    // History (H5): one health_metrics row per monitor.historyIntervalSec, hourly cleanup.
+    void recordHistory(const Json::Value &health, const Json::Value &summary, int64_t now);
+    // Per camera coverage of the last 24 h on BlockingExecutors::api() every monitor.coverageIntervalSec.
+    struct CoverageCamera {
+        std::string camera_id;
+        bool enable_record = false;
+        std::string schedules;
+    };
+    void startCoverage(int64_t now);
+    static void computeCoverage(const std::vector<CoverageCamera> &cameras, int64_t now, int stale_sec, int gap_min_sec);
+    // Saves learnt fps/bitrate baselines and restores them after a restart (on the camera loop).
+    void syncBaseline(const std::string &camera_id, int type, const StreamQuality::Ptr &quality,
+                      const StreamQualitySnapshot &q);
 
 private:
     std::atomic<bool> _running{false};
@@ -254,6 +330,32 @@ private:
     int64_t _kafka_dropped_at = 0; // unix seconds of the last increase
     // Sync peer -> wall clock ms it was first seen, the reference before its first complete pull.
     std::map<std::string, uint64_t> _sync_peer_seen_ms;
+    int64_t _history_at = 0;          // last health_metrics sample
+    int64_t _history_cleanup_at = 0;
+    int64_t _coverage_started_at = 0;
+    struct OpenBucket {
+        std::vector<uint32_t> live_ms;   // live streams found
+        uint32_t replay_count = 0;
+        uint32_t replay_max_ms = 0;
+        uint32_t not_found = 0;
+    };
+    std::deque<OpenBucket> _open_buckets;
+    // camera/type -> baseline_at saved (or restored) in this process.
+    std::map<std::string, int64_t> _baseline_saved;
+
+    // Written on the API pool, read on _poller.
+    std::shared_ptr<SerialTaskQueue> _db_queue;   // health_metrics, process_starts, stream_baselines
+    std::atomic<int64_t> _process_start_id{0};
+    std::mutex _baseline_mtx;
+    bool _baseline_loaded = false;
+    std::map<std::string, StreamBaselineRow> _baseline_stored; // camera/type -> row not restored yet
+    struct CoverageResult {
+        int64_t at = 0;
+        RecordCoverage coverage;
+    };
+    mutable std::mutex _coverage_mtx;
+    std::map<std::string, CoverageResult> _coverage; // camera -> last result
+    std::atomic<bool> _coverage_running{false};
 
     // Written from record-close threads and session pollers.
     mutable std::mutex _record_mtx;
@@ -293,6 +395,10 @@ private:
         std::vector<PoolView> pools;
         int tiering_failed_24h = 0, tiering_pending = 0, tiering_running = 0;
         int restore_failed_24h = 0, restore_failed_1h = 0, restore_pending = 0;
+        double rss_growth_mb_per_h = NAN;
+        int64_t rss_span_sec = 0;
+        bool restarts_known = false;
+        int restarts_24h = 0, unclean_restarts_24h = 0;
     };
     mutable std::mutex _slow_mtx;
     SlowResult _slow;

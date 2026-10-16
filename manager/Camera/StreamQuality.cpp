@@ -62,6 +62,21 @@ bool StreamQuality::steadyMean(const vector<double> &values, double max_cv, doub
     return std::sqrt(var) <= max_cv * mean;
 }
 
+bool StreamQuality::restoreBaseline(const string &format, double fps, double bitrate_kbps, int64_t learnt_at) {
+    lock_guard<mutex> lck(_mtx);
+    if (_fps_baseline > 0 || fps <= 0 || format.empty() || (!_format.empty() && _format != format)) {
+        return false;
+    }
+    // The first sample with another codec/resolution drops it again (onSample()).
+    _format = format;
+    _fps_baseline = fps;
+    _bitrate_baseline = bitrate_kbps > 0 ? bitrate_kbps : -1;
+    _baseline_at = learnt_at;
+    _drift_since = 0;
+    _window.clear();
+    return true;
+}
+
 void StreamQuality::resetBaseline() {
     lock_guard<mutex> lck(_mtx);
     _window.clear();
@@ -195,6 +210,7 @@ StreamQualitySnapshot StreamQuality::snapshot(int64_t now) const {
     out.fps_baseline = _fps_baseline;
     out.bitrate_baseline = _bitrate_baseline;
     out.baseline_at = _baseline_at;
+    out.format = _format;
     out.loss_pct = _loss_pct;
     out.loss_at = _loss_at;
     return out;

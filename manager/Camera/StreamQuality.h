@@ -34,6 +34,7 @@ struct StreamQualitySnapshot {
     double fps_baseline = -1;
     double bitrate_baseline = -1;
     int64_t baseline_at = 0;
+    std::string format;              // codec + resolution of the last sample (or the restored baseline)
     double loss_pct = -1;            // RTP loss of the last check, -1 = not measured (non-RTP source)
     int64_t loss_at = 0;
 };
@@ -57,6 +58,9 @@ public:
     void onLossRate(double loss_pct, int64_t now);
     // Learn the baseline again (camera stream settings changed from the VMS).
     void resetBaseline();
+    // Baseline saved before a restart. Ignored when one is already learnt or the stream already
+    // reported another format. Returns true when taken.
+    bool restoreBaseline(const std::string &format, double fps, double bitrate_kbps, int64_t learnt_at);
 
     StreamQualitySnapshot snapshot(int64_t now) const;
 

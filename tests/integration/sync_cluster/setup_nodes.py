@@ -74,7 +74,7 @@ def camera(enabled, keep_max_hours=24):
 
 
 FO_CAMERA = "cam-fo-1"
-FO_RTSP_PORT = 18554
+FO_RTSP_PORT = int(os.environ.get("FO_RTSP_PORT", "18554"))
 
 
 def failover_camera(keep_max_hours):
@@ -255,6 +255,9 @@ def main():
             # reason a request of the burst can be answered 503.
             "api": {"limit.global.maxQueueMs": 120000, "limit.storage.read.maxQueueMs": 120000},
         }
+        # history scenario: short segments, so a gap in the recordings shows up within minutes.
+        if os.environ.get("MP4_MAX_SECOND"):
+            overrides["protocol"]["mp4_max_second"] = int(os.environ["MP4_MAX_SECOND"])
         patch_ini(os.path.join(REPO, "conf/config.ini"), os.path.join(d, "config.ini"), overrides)
 
     # Phase 1: camera owned by node-a only.

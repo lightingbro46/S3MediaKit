@@ -27,6 +27,9 @@
 #ifdef ENABLE_TIER_STORAGE
 #include "Local/TierStorageManager.h"
 #endif
+#include "Common/SerialTaskQueue.h"
+#include "Local/TimeQuery.h"
+#include "Storage/VmsResourceAssignment.h"
 
 using namespace std;
 using namespace toolkit;
@@ -51,6 +54,9 @@ const string kBaselineWarmupSec = HM_FIELD "baselineWarmupSec";
 const string kBaselineWindowSec = HM_FIELD "baselineWindowSec";
 const string kSlowIntervalSec = HM_FIELD "slowIntervalSec";
 const string kIntegrationWindowSec = HM_FIELD "integrationWindowSec";
+const string kHistoryIntervalSec = HM_FIELD "historyIntervalSec";
+const string kCoverageIntervalSec = HM_FIELD "coverageIntervalSec";
+const string kRssGrowthWindowSec = HM_FIELD "rssGrowthWindowSec";
 
 const vector<ThresholdDef> &thresholdDefs() {
     static const vector<ThresholdDef> defs = {
@@ -61,18 +67,24 @@ const vector<ThresholdDef> &thresholdDefs() {
         { "netErrorsPerSec", "net.errors_per_sec", 0.01, 100, true },
         { "netDropsPerSec", "net.drops_per_sec", 10, 100, true },
         { "fdUsedPct", "proc.fd_used_pct", 70, 90, true },
+        { "rssGrowthMbPerH", "ram.proc_rss_growth_mb_per_h", 200, 500, true },
         // process (4.2)
         { "pollerDelayMs", "pollers.delay_max_ms", 50, 200, true },
         { "pollerLoadPct", "pollers.load_max", 80, 95, true },
         { "workPollerDelayMs", "work_pollers.delay_max_ms", 100, 500, true },
         { "blockingWaitMs", "blocking.wait_max_ms", 1000, 5000, true },
         { "blockingBusyPct", "blocking.busy_pct", 80, 95, true },
+        // restarts after a crash or kill (planned restarts end cleanly)
+        { "restarts24h", "process.unclean_restarts_24h", 1, 3, true },
         // recording (4.4): any stalled camera is a warning, 5 % of the expected ones critical
         { "recordStalledPct", "recording.stalled_pct", 0.01, 5, true },
+        // share of the cameras with expected time whose 24 h coverage is below coveragePct24hCrit
+        { "recordCoverageLowPct", "recording.coverage_low_pct", 0.01, 5, true },
         // delivery (4.5)
         { "viewerLimitPct", "viewers.limit_used_pct", 80, 95, true },
         { "playFailurePct", "play.failure_pct", 5, 20, true },
         { "restoreFailed1h", "replay.restore_failures_1h", 1, 10, true },
+        { "openLatencyP95Ms", "play.open_latency_p95_ms", 2000, 5000, true },
         // storage (4.6), database checks every monitor.slowIntervalSec
         { "dbWriteMs", "db.write_ms", 500, 2000, true },
         { "poolBacklogEtaSec", "pool.backlog_eta_sec", 21600, 86400, true },
@@ -90,6 +102,9 @@ const vector<ThresholdDef> &thresholdDefs() {
         { "lastFrameAgeMs", "last_frame_age_ms", 3000, 10000, true },
         { "disconnects1h", "disconnects_1h", 3, 10, true },
         { "uptimePct24h", "uptime_pct_24h", 99, 95, false },
+        // per camera recording (H5)
+        { "coveragePct24h", "coverage_pct_24h", 99, 95, false },
+        { "recordGaps24h", "gaps_24h", 1, 6, true },
     };
     return defs;
 }
@@ -114,6 +129,9 @@ static onceToken token([]() {
     mINI::Instance()[kBaselineWindowSec] = 300;
     mINI::Instance()[kSlowIntervalSec] = 60;
     mINI::Instance()[kIntegrationWindowSec] = 300;
+    mINI::Instance()[kHistoryIntervalSec] = 60;
+    mINI::Instance()[kCoverageIntervalSec] = 900;
+    mINI::Instance()[kRssGrowthWindowSec] = 21600;
     for (const auto &def : thresholdDefs()) {
         mINI::Instance()[warnKey(def)] = def.warn;
         mINI::Instance()[critKey(def)] = def.crit;
@@ -178,7 +196,8 @@ StreamBaselineConfig baselineConfig() {
     GET_CONFIG(int, window_sec, kBaselineWindowSec);
     StreamBaselineConfig cfg;
     cfg.warmup_sec = warmup_sec;
-    cfg.window_sec = std::max(60, window_sec);
+    // Statistic samples come every 60 s and a baseline needs 3 of them inside the window.
+    cfg.window_sec = std::max(120, window_sec);
     return cfg;
 }
 
@@ -193,9 +212,12 @@ static const map<string, int> &countKeys() {
         { kPlayWindowSec, 10 },
         { kPlayMinRequests, 1 },
         { kBaselineWarmupSec, 0 },
-        { kBaselineWindowSec, 60 },
+        { kBaselineWindowSec, 120 },
         { kSlowIntervalSec, 10 },
         { kIntegrationWindowSec, 10 },
+        { kHistoryIntervalSec, 0 },
+        { kCoverageIntervalSec, 60 },
+        { kRssGrowthWindowSec, 3600 },
         { GlobalMonitorConfig::kDiskIoSustainSamples, 1 },
     };
     return keys;
@@ -336,6 +358,8 @@ CameraThresholds CameraThresholds::fromConfig() {
     th.last_frame_age_ms = threshold("lastFrameAgeMs");
     th.disconnects_1h = threshold("disconnects1h");
     th.uptime_pct_24h = threshold("uptimePct24h");
+    th.coverage_pct = threshold("coveragePct24h");
+    th.gaps = threshold("recordGaps24h");
     return th;
 }
 
@@ -366,6 +390,14 @@ HealthLevel evaluateCamera(const CameraInput &in, const CameraThresholds &th, ve
     }
     if (in.controller_expected && !in.controller_connected) {
         raise(HealthLevel::WARNING, "controller.disconnected");
+    }
+    // Coverage looks back 24 h: it warns, the live recording state above is what turns critical.
+    auto bad = [](HealthLevel l) { return l == HealthLevel::WARNING || l == HealthLevel::CRITICAL; };
+    if (in.coverage.pct >= 0 && bad(classifyValue(in.coverage.pct, th.coverage_pct))) {
+        raise(HealthLevel::WARNING, "recording.coverage_pct_24h");
+    }
+    if (in.coverage.gaps >= 0 && bad(classifyValue(in.coverage.gaps, th.gaps))) {
+        raise(HealthLevel::WARNING, "recording.gaps_24h");
     }
     static const char *names[2] = { "main", "sub" };
     for (int i = 0; i < 2; ++i) {
@@ -445,6 +477,28 @@ void HealthMonitor::start() {
         interval_sec = 10;
     }
     AlertRegistry::Instance().start();
+    // History, restarts and baselines: SQLite, one task at a time on the API pool.
+    _db_queue = std::make_shared<SerialTaskQueue>(BlockingExecutors::api(), "health history");
+    const int64_t started_at = _started_at;
+    _db_queue->post([started_at]() {
+        try {
+            HealthMonitor::Instance()._process_start_id = ProcessStartImp().recordStart(started_at, std::string());
+        } catch (const std::exception &ex) {
+            WarnL << "Health monitor: recording the process start failed: " << ex.what();
+        }
+        map<string, StreamBaselineRow> stored;
+        try {
+            for (const auto &row : StreamBaselineImp().findAll()) {
+                stored[row.camera_id + "/" + to_string(row.stream_type)] = row;
+            }
+        } catch (const std::exception &ex) {
+            WarnL << "Health monitor: loading stream baselines failed: " << ex.what();
+        }
+        auto &self = HealthMonitor::Instance();
+        lock_guard<mutex> lck(self._baseline_mtx);
+        self._baseline_stored.swap(stored);
+        self._baseline_loaded = true;
+    });
 #ifdef ENABLE_MP4
     // Only locks a mutex: it must not throw or block the listeners after it (tier, encryption).
     static int s_tag;
@@ -466,8 +520,19 @@ void HealthMonitor::start() {
 }
 
 void HealthMonitor::stop() {
-    _running = false;
+    if (!_running.exchange(false)) {
+        return;
+    }
     _timer.reset();
+    // A clean exit: the next start counts this run as ended on purpose (process.unclean_restarts_24h).
+    const int64_t id = _process_start_id.load();
+    if (id > 0) {
+        try {
+            ProcessStartImp().setStoppedAt(id, (int64_t)time(nullptr));
+        } catch (const std::exception &ex) {
+            WarnL << "Health monitor: recording the process stop failed: " << ex.what();
+        }
+    }
 }
 
 HealthSnapshot::Ptr HealthMonitor::snapshot() const {
@@ -592,6 +657,7 @@ void HealthMonitor::collectNow() {
     // The answers are evaluated in a later cycle.
     requestPollerDelays();
     startSlowCollect(now);
+    startCoverage(now);
 
     auto eval = ev.finish();
     _hysteresis.sweep(_cycle);
@@ -636,6 +702,7 @@ void HealthMonitor::collectNow() {
     summary["components"] = components;
     summary["reasons"] = reasons;
     summary["alerts"] = h["alerts"];
+    recordHistory(h, summary, now);
     snap->summary = std::move(summary);
     snap->eval = std::move(eval);
     snap->cameras = std::move(cameras);
@@ -1022,6 +1089,42 @@ void HealthMonitor::collectRecording(HealthEvaluator &ev, Json::Value &summary, 
     rec["write_errors"] = (Json::UInt64)write_errors;
     rec["write_errors_cycle"] = (Json::UInt64)new_errors;
     rec["stalled_cameras"] = stalled_list;
+
+    // Coverage of the last 24 h (computed every monitor.coverageIntervalSec on the API pool).
+    map<string, CoverageResult> coverage;
+    {
+        lock_guard<mutex> lck(_coverage_mtx);
+        coverage = _coverage;
+    }
+    GET_CONFIG(int, coverage_interval, kCoverageIntervalSec);
+    const auto cov_th = threshold("coveragePct24h");
+    int evaluated = 0, below_warn = 0, below_crit = 0;
+    double pct_sum = 0;
+    int64_t computed_at = 0;
+    for (const auto &kv : coverage) {
+        computed_at = std::max(computed_at, kv.second.at);
+        // Less than an hour expected (schedule, new camera, just failed over): too little to judge.
+        if (kv.second.coverage.expected_sec < 3600 || !_recording_states.count(kv.first)) {
+            continue;
+        }
+        double pct = kv.second.coverage.pct();
+        ++evaluated;
+        pct_sum += pct;
+        below_warn += pct <= cov_th.warn ? 1 : 0;
+        below_crit += pct <= cov_th.crit ? 1 : 0;
+    }
+    const bool cov_fresh = computed_at > 0 && now - computed_at <= 3 * std::max(60, coverage_interval);
+    double low_pct = evaluated > 0 ? 100.0 * below_crit / evaluated : 0;
+    if (cov_fresh) {
+        ev.addValue("recording", "recording.coverage_low_pct", low_pct, threshold("recordCoverageLowPct"));
+    }
+    Json::Value &cov = rec["coverage"];
+    cov["computed_at"] = computed_at > 0 ? Json::Value((Json::Int64)computed_at) : Json::Value(Json::nullValue);
+    cov["cameras_evaluated"] = evaluated;
+    cov["below_warn"] = below_warn;
+    cov["below_crit"] = below_crit;
+    cov["low_pct"] = num(low_pct);
+    cov["avg_pct"] = evaluated > 0 ? num(pct_sum / evaluated) : Json::Value(Json::nullValue);
 }
 
 void HealthMonitor::collectDelivery(HealthEvaluator &ev, Json::Value &summary, int64_t now) {
@@ -1084,6 +1187,49 @@ void HealthMonitor::collectDelivery(HealthEvaluator &ev, Json::Value &summary, i
     del["play"]["failures"] = (Json::UInt64)failures;
     del["play"]["failure_pct"] = num(failure_pct);
     del["play"]["failures_by_reason"] = reasons;
+
+    // Time to answer a player (MediaSource::findAsync): live streams that were found. A replay may wait
+    // for an S3 restore; an unknown stream waits out General::kMaxStreamWaitTimeMS (a wrong id from a
+    // client, not a slow server): both are only counted.
+    vector<MediaSource::OpenSample> samples;
+    MediaSource::takeOpenSamples(samples);
+    OpenBucket ob;
+    for (const auto &smp : samples) {
+        if (!smp.found) {
+            ++ob.not_found;
+        } else if (smp.replay) {
+            ++ob.replay_count;
+            ob.replay_max_ms = std::max(ob.replay_max_ms, smp.ms);
+        } else {
+            ob.live_ms.push_back(smp.ms);
+        }
+    }
+    _open_buckets.push_back(std::move(ob));
+    while (_open_buckets.size() > max_buckets) {
+        _open_buckets.pop_front();
+    }
+    vector<uint32_t> live_ms;
+    uint32_t replay_count = 0, replay_max = 0, not_found = 0;
+    for (const auto &b : _open_buckets) {
+        live_ms.insert(live_ms.end(), b.live_ms.begin(), b.live_ms.end());
+        replay_count += b.replay_count;
+        replay_max = std::max(replay_max, b.replay_max_ms);
+        not_found += b.not_found;
+    }
+    double p95 = percentileOf(live_ms, 95);
+    if (live_ms.size() >= (size_t)std::max(1, min_requests)) {
+        ev.addValue("delivery", "play.open_latency_p95_ms", p95, threshold("openLatencyP95Ms"));
+    } else {
+        ev.addLevel("delivery", "play.open_latency_p95_ms", HealthLevel::OK, std::isnan(p95) ? 0 : p95, 0);
+    }
+    Json::Value &open = del["play"]["open"];
+    open["live_samples"] = (Json::UInt64)live_ms.size();
+    open["live_p50_ms"] = num(percentileOf(live_ms, 50));
+    open["live_p95_ms"] = num(p95);
+    open["live_max_ms"] = num(percentileOf(live_ms, 100));
+    open["replay_samples"] = replay_count;
+    open["replay_max_ms"] = replay_count > 0 ? Json::Value(replay_max) : Json::Value(Json::nullValue);
+    open["not_found"] = not_found;
     (void)now;
 }
 
@@ -1148,6 +1294,7 @@ void HealthMonitor::collectIngest(HealthEvaluator &ev, Json::Value &summary, vec
             StreamQualitySnapshot q;
             if (auto quality = cam.second->getStreamQuality(type)) {
                 q = quality->snapshot(now);
+                syncBaseline(camera_id, type, quality, q);
             }
             if (st.live) {
                 auto media = MediaSource::find(RTSP_SCHEMA, tuple_it->second.vhost, tuple_it->second.device_id, tuple_it->second.stream_id);
@@ -1191,6 +1338,27 @@ void HealthMonitor::collectIngest(HealthEvaluator &ev, Json::Value &summary, vec
             sj["uptime_pct_24h"] = optNum(q.uptime_pct_24h);
             sj["window_started_at"] = (Json::Int64)q.window_started_at;
             cj["streams"][names[type]] = sj;
+        }
+
+        {
+            lock_guard<mutex> lck(_coverage_mtx);
+            auto cit = _coverage.find(camera_id);
+            if (cit != _coverage.end() && cit->second.coverage.expected_sec > 0) {
+                const auto &c = cit->second.coverage;
+                cj["recording"]["coverage_pct_24h"] = num(c.pct());
+                cj["recording"]["expected_sec_24h"] = (Json::Int64)c.expected_sec;
+                cj["recording"]["gaps_24h"] = c.gaps;
+                cj["recording"]["longest_gap_sec"] = (Json::Int64)c.longest_gap_sec;
+                cj["recording"]["coverage_at"] = (Json::Int64)cit->second.at;
+                // Same rule as the component: at least an hour expected.
+                if (c.expected_sec >= 3600) {
+                    in.coverage.pct = c.pct();
+                    in.coverage.gaps = c.gaps;
+                }
+            } else {
+                cj["recording"]["coverage_pct_24h"] = Json::nullValue;
+                cj["recording"]["gaps_24h"] = Json::nullValue;
+            }
         }
 
         vector<string> reasons;
@@ -1465,6 +1633,23 @@ void HealthMonitor::slowCollect() {
         r.db_write_ms = -1;
         r.db_error = ex.what();
     }
+    try {
+        ProcessStartImp().countRestartsSince(r.at - 86400, r.restarts_24h, r.unclean_restarts_24h);
+        r.restarts_known = true;
+    } catch (const std::exception &ex) {
+        WarnL << "Health monitor: counting restarts failed: " << ex.what();
+    }
+    try {
+        // Caches and pools fill up during the first half hour: that growth is not a leak.
+        GET_CONFIG(int, window_sec, HealthMonitorConfig::kRssGrowthWindowSec);
+        auto samples = HealthMetricsImp().findRssSince(std::max(r.at - window_sec, _started_at + 1800));
+        if (!samples.empty()) {
+            r.rss_span_sec = samples.back().first - samples.front().first;
+        }
+        r.rss_growth_mb_per_h = rssGrowthMbPerHour(samples, 7200);
+    } catch (const std::exception &ex) {
+        WarnL << "Health monitor: reading the RSS history failed: " << ex.what();
+    }
 #ifdef ENABLE_TIER_STORAGE
     r.tier = true;
     auto &tsm = TierStorageManager::Instance();
@@ -1541,6 +1726,21 @@ void HealthMonitor::evaluateSlow(HealthEvaluator &ev, Json::Value &summary, int6
             ev.addValue("storage", "db.write_ms", r.db_write_ms, threshold("dbWriteMs"));
         }
     }
+    Json::Value &ram = summary["host"]["ram"];
+    ram["proc_rss_growth_mb_per_h"] = std::isnan(r.rss_growth_mb_per_h) ? Json::Value(Json::nullValue) : num(r.rss_growth_mb_per_h);
+    ram["proc_rss_growth_span_sec"] = (Json::Int64)r.rss_span_sec;
+    Json::Value &proc = summary["process"];
+    proc["restarts_24h"] = r.restarts_known ? Json::Value(r.restarts_24h) : Json::Value(Json::nullValue);
+    proc["unclean_restarts_24h"] = r.restarts_known ? Json::Value(r.unclean_restarts_24h) : Json::Value(Json::nullValue);
+    if (fresh) {
+        // Needs 2 h of samples after the first half hour; until then nothing is reported.
+        if (!std::isnan(r.rss_growth_mb_per_h)) {
+            ev.addValue("host", "ram.proc_rss_growth_mb_per_h", r.rss_growth_mb_per_h, threshold("rssGrowthMbPerH"));
+        }
+        if (r.restarts_known) {
+            ev.addValue("process", "process.unclean_restarts_24h", r.unclean_restarts_24h, threshold("restarts24h"));
+        }
+    }
     if (!r.tier) {
         return;
     }
@@ -1595,6 +1795,464 @@ void HealthMonitor::evaluateSlow(HealthEvaluator &ev, Json::Value &summary, int6
         ev.addValue("storage", "jobs.tiering_failed_24h", r.tiering_failed_24h, threshold("tierJobsFailed24h"));
         // A replay waiting on a restore that failed: viewers see no video.
         ev.addValue("delivery", "replay.restore_failures_1h", r.restore_failed_1h, threshold("restoreFailed1h"));
+    }
+}
+
+} // namespace managerkit
+
+// ──────────────────────────────────────────────────────────────────
+// History, coverage, restarts, RSS growth, open latency, baselines (H5)
+// ──────────────────────────────────────────────────────────────────
+namespace managerkit {
+
+vector<RecordMode> recordModesByHour(const string &record_schedules) {
+    vector<RecordMode> modes(7 * 24, RecordMode::NoRecord);
+    for (const auto &kv : RecordScheduler::parseRecordScheduleStr(record_schedules)) {
+        const auto &item = kv.second;
+        if (item.day >= 0 && item.day < 7 && item.hour >= 0 && item.hour < 24) {
+            modes[(size_t)(item.day * 24 + item.hour)] = item.mode;
+        }
+    }
+    return modes;
+}
+
+vector<TimeSpan> scheduledRecordSpans(bool enable_record, const vector<RecordMode> &modes_by_hour, int64_t from, int64_t to) {
+    vector<TimeSpan> out;
+    if (!enable_record || modes_by_hour.size() < 7 * 24 || from >= to) {
+        return out;
+    }
+    int64_t t = from;
+    while (t < to) {
+        time_t tt = (time_t)t;
+        struct tm lt;
+        localtime_r(&tt, &lt);
+        // End of this local hour (a DST change moves the clock by whole hours).
+        int64_t end = std::min(to, t + 3600 - (lt.tm_min * 60 + lt.tm_sec));
+        RecordMode mode = modes_by_hour[(size_t)RecordScheduler::getRecordScheduledActive(tt)];
+        if (mode == RecordMode::RecordAlways || mode == RecordMode::RecordLowResAndMotion) {
+            if (!out.empty() && out.back().second == t) {
+                out.back().second = end;
+            } else {
+                out.emplace_back(t, end);
+            }
+        }
+        t = end;
+    }
+    return out;
+}
+
+vector<TimeSpan> mergeSpans(vector<TimeSpan> spans) {
+    std::sort(spans.begin(), spans.end());
+    vector<TimeSpan> out;
+    for (const auto &s : spans) {
+        if (s.second <= s.first) {
+            continue;
+        }
+        if (!out.empty() && s.first <= out.back().second) {
+            out.back().second = std::max(out.back().second, s.second);
+        } else {
+            out.push_back(s);
+        }
+    }
+    return out;
+}
+
+vector<TimeSpan> intersectSpans(const vector<TimeSpan> &a, const vector<TimeSpan> &b) {
+    vector<TimeSpan> out;
+    size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size()) {
+        int64_t start = std::max(a[i].first, b[j].first);
+        int64_t end = std::min(a[i].second, b[j].second);
+        if (start < end) {
+            out.emplace_back(start, end);
+        }
+        if (a[i].second < b[j].second) {
+            ++i;
+        } else {
+            ++j;
+        }
+    }
+    return out;
+}
+
+RecordCoverage computeRecordCoverage(const vector<TimeSpan> &expected, const vector<TimeSpan> &recorded, int64_t gap_min_sec) {
+    RecordCoverage cov;
+    auto exp = mergeSpans(expected);
+    auto covered = intersectSpans(exp, mergeSpans(recorded));
+    size_t c = 0;
+    for (const auto &e : exp) {
+        cov.expected_sec += e.second - e.first;
+        int64_t cursor = e.first;
+        auto gap = [&](int64_t len) {
+            if (len > gap_min_sec) {
+                ++cov.gaps;
+                cov.longest_gap_sec = std::max(cov.longest_gap_sec, len);
+            }
+        };
+        for (; c < covered.size() && covered[c].first < e.second; ++c) {
+            cov.recorded_sec += covered[c].second - covered[c].first;
+            gap(covered[c].first - cursor);
+            cursor = covered[c].second;
+        }
+        gap(e.second - cursor);
+    }
+    return cov;
+}
+
+double rssGrowthMbPerHour(const vector<pair<int64_t, int64_t> > &samples, int64_t min_span_sec) {
+    if (samples.size() < 3 || samples.back().first - samples.front().first < min_span_sec) {
+        return NAN;
+    }
+    // Hours from the first sample and MiB, to keep the sums small.
+    const double t0 = (double)samples.front().first;
+    double sx = 0, sy = 0, sxx = 0, sxy = 0;
+    const double n = (double)samples.size();
+    for (const auto &s : samples) {
+        double x = ((double)s.first - t0) / 3600.0;
+        double y = (double)s.second / (1024.0 * 1024.0);
+        sx += x;
+        sy += y;
+        sxx += x * x;
+        sxy += x * y;
+    }
+    double den = n * sxx - sx * sx;
+    return den > 0 ? (n * sxy - sx * sy) / den : NAN;
+}
+
+double percentileOf(vector<uint32_t> values, double p) {
+    if (values.empty()) {
+        return NAN;
+    }
+    std::sort(values.begin(), values.end());
+    size_t rank = (size_t)std::ceil(p / 100.0 * values.size());
+    rank = std::max<size_t>(1, std::min(rank, values.size()));
+    return (double)values[rank - 1];
+}
+
+static int overallRank(const string &level) {
+    return level == "critical" ? 3 : (level == "warning" ? 2 : (level == "ok" ? 1 : 0));
+}
+
+Json::Value healthHistoryPoints(const vector<HealthMetric> &rows, int bucket_sec) {
+    struct Bucket {
+        int64_t ts = 0;
+        int n = 0;
+        string overall = "unknown";
+        double score = 0;
+        int score_min = 100;
+        double cameras_total = 0, cameras_online = 0, rec_expected = 0, rec_active = 0, rec_stalled = 0, viewers = 0;
+        double poller_max = 0;
+        int alerts_max = 0;
+        int64_t rss_max = 0;
+    };
+    vector<Bucket> buckets;
+    for (const auto &r : rows) {
+        int64_t ts = bucket_sec > 0 ? (r.timestamp / bucket_sec) * bucket_sec : r.timestamp;
+        if (buckets.empty() || buckets.back().ts != ts || bucket_sec <= 0) {
+            buckets.push_back(Bucket());
+            buckets.back().ts = ts;
+        }
+        auto &b = buckets.back();
+        ++b.n;
+        if (overallRank(r.overall) > overallRank(b.overall)) {
+            b.overall = r.overall;
+        }
+        b.score += r.score;
+        b.score_min = std::min(b.score_min, r.score);
+        b.cameras_total += r.cameras_total;
+        b.cameras_online += r.cameras_online;
+        b.rec_expected += r.rec_expected;
+        b.rec_active += r.rec_active;
+        b.rec_stalled += r.rec_stalled;
+        b.viewers += r.viewers_total;
+        b.poller_max = std::max(b.poller_max, (double)r.poller_delay_max_ms);
+        b.alerts_max = std::max(b.alerts_max, r.alerts_active);
+        b.rss_max = std::max(b.rss_max, r.proc_rss);
+    }
+    Json::Value out(Json::arrayValue);
+    for (const auto &b : buckets) {
+        auto avg = [&](double sum) { return std::round(sum / b.n * 100.0) / 100.0; };
+        Json::Value p;
+        p["timestamp"] = (Json::Int64)b.ts;
+        p["samples"] = b.n;
+        p["overall"] = b.overall;
+        p["score"] = avg(b.score);
+        p["score_min"] = b.score_min;
+        p["cameras_total"] = avg(b.cameras_total);
+        p["cameras_online"] = avg(b.cameras_online);
+        p["rec_expected"] = avg(b.rec_expected);
+        p["rec_active"] = avg(b.rec_active);
+        p["rec_stalled"] = avg(b.rec_stalled);
+        p["viewers_total"] = avg(b.viewers);
+        p["poller_delay_max_ms"] = std::round(b.poller_max * 100.0) / 100.0;
+        p["alerts_active"] = b.alerts_max;
+        p["proc_rss"] = (Json::Int64)b.rss_max;
+        out.append(p);
+    }
+    return out;
+}
+
+} // namespace managerkit
+
+namespace managerkit {
+
+void HealthMonitor::recordHistory(const Json::Value &health, const Json::Value &summary, int64_t now) {
+    using namespace HealthMonitorConfig;
+    GET_CONFIG(int, interval_sec, kHistoryIntervalSec);
+    if (interval_sec <= 0 || !_db_queue) {
+        return;
+    }
+    if (now - _history_cleanup_at >= 3600) {
+        _history_cleanup_at = now;
+        GET_CONFIG(int, retention_days, GlobalMonitorConfig::kMetricsRetentionDays);
+        const int64_t cutoff = now - (int64_t)std::max(1, retention_days) * 86400;
+        _db_queue->post([cutoff]() {
+            try {
+                HealthMetricsImp().deleteOlderThan(cutoff);
+                ProcessStartImp().deleteOlderThan(cutoff);
+            } catch (const std::exception &ex) {
+                WarnL << "Health monitor: purging history failed: " << ex.what();
+            }
+        });
+    }
+    // A previous write still waits on a locked database: skip this sample rather than pile up.
+    if (now - _history_at < interval_sec || _db_queue->pending() > 0) {
+        return;
+    }
+    _history_at = now;
+    HealthMetric m;
+    m.timestamp = now;
+    m.overall = health["overall"].asString();
+    m.score = health["score"].asInt();
+    m.cameras_total = summary["ingest"]["cameras"].asInt();
+    m.cameras_online = summary["ingest"]["online"].asInt();
+    m.rec_expected = summary["recording"]["expected"].asInt();
+    m.rec_active = summary["recording"]["active"].asInt();
+    m.rec_stalled = summary["recording"]["stalled"].asInt();
+    m.viewers_total = summary["delivery"]["viewers"]["total"].asInt();
+    const auto &delay = summary["process"]["pollers"]["delay_max_ms"];
+    m.poller_delay_max_ms = delay.isNumeric() ? delay.asFloat() : 0;
+    m.alerts_active = health["alerts"]["active"].asInt();
+    m.proc_rss = (int64_t)summary["host"]["ram"]["proc_rss"].asUInt64();
+    Json::FastWriter writer;
+    m.components_json = writer.write(health["components"]);
+    _db_queue->post([m]() {
+        try {
+            HealthMetricsImp().insertMetric(m);
+        } catch (const std::exception &ex) {
+            WarnL << "Health monitor: writing history failed: " << ex.what();
+        }
+    });
+}
+
+Json::Value HealthMonitor::history(int64_t from, int64_t to, int bucket_sec, const string &fields) {
+    const int64_t span = std::max<int64_t>(1, to - from);
+    // At most ~2000 points per series: a wider range is bucketed (whole minutes).
+    int64_t min_bucket = (span + 1999) / 2000;
+    if (min_bucket > 60) {
+        min_bucket = (min_bucket + 59) / 60 * 60;
+    } else {
+        min_bucket = 0;
+    }
+    const int bucket = (int)std::max<int64_t>(bucket_sec > 0 ? bucket_sec : 0, min_bucket);
+
+    set<string> wanted;
+    for (auto &f : split(fields, ",")) {
+        trim(f);
+        if (!f.empty()) {
+            wanted.insert(f);
+        }
+    }
+    GET_CONFIG(string, media_server_id, General::kMediaServerId);
+    Json::Value data;
+    data["schemaVersion"] = 1;
+    data["mediaServerId"] = media_server_id;
+    data["from"] = (Json::Int64)from;
+    data["to"] = (Json::Int64)to;
+    data["bucket_sec"] = bucket;
+    Json::Value points = healthHistoryPoints(HealthMetricsImp().findByTimeRange(from, to), bucket);
+    if (!wanted.empty()) {
+        for (auto &p : points) {
+            for (const auto &name : p.getMemberNames()) {
+                if (name != "timestamp" && name != "samples" && !wanted.count(name)) {
+                    p.removeMember(name);
+                }
+            }
+        }
+    }
+    data["points"] = points;
+    if (wanted.empty() || wanted.count("system")) {
+        data["system"] = GlobalMonitor::Instance().getSystemStatisticHistory(from, to, 0, bucket);
+    }
+    return data;
+}
+
+void HealthMonitor::startCoverage(int64_t now) {
+    GET_CONFIG(int, interval_sec, HealthMonitorConfig::kCoverageIntervalSec);
+    if (_coverage_started_at > 0 && now - _coverage_started_at < std::max(60, interval_sec)) {
+        return;
+    }
+    if (_coverage_running.exchange(true)) {
+        return;
+    }
+    _coverage_started_at = now;
+    vector<CoverageCamera> cameras;
+    DeviceSource::for_each_device([&](const DeviceSource::Ptr &src) {
+        auto impl = std::dynamic_pointer_cast<GenericRtspCameraImp>(src->getListener().lock());
+        if (!impl || !impl->isEnabled()) {
+            return;
+        }
+        auto stats = impl->getCameraStatisticImp();
+        if (!stats) {
+            return;
+        }
+        auto params = stats->getParams();
+        CoverageCamera c;
+        c.camera_id = src->getDeviceTuple().device_id;
+        c.enable_record = params.option.enableRecord;
+        c.schedules = params.option.recordSchedules;
+        cameras.push_back(c);
+    });
+    GET_CONFIG(int, max_second, Protocol::kMP4MaxSecond);
+    const int stale_sec = recordStaleSec();
+    const int gap_min_sec = 2 * std::max(1, max_second);
+    BlockingExecutors::api()->async([cameras, now, stale_sec, gap_min_sec]() {
+        try {
+            computeCoverage(cameras, now, stale_sec, gap_min_sec);
+        } catch (const std::exception &ex) {
+            WarnL << "Health monitor: recording coverage failed: " << ex.what();
+        }
+        HealthMonitor::Instance()._coverage_running = false;
+    });
+}
+
+void HealthMonitor::computeCoverage(const vector<CoverageCamera> &cameras, int64_t now, int stale_sec, int gap_min_sec) {
+    GET_CONFIG(string, self_id, General::kMediaServerId);
+    // The segment being written is not in the timeline yet.
+    const int64_t to = now - stale_sec;
+    const int64_t from = now - 86400;
+    // Files of one recording follow each other within a second or two: such holes are not gaps.
+    const int64_t join_sec = 5;
+    map<string, CoverageResult> results;
+    for (const auto &c : cameras) {
+        if (!HealthMonitor::Instance()._running.load()) {
+            return;
+        }
+        CoverageResult res;
+        res.at = now;
+        try {
+            auto expected = scheduledRecordSpans(c.enable_record, recordModesByHour(c.schedules), from, to);
+            if (!expected.empty()) {
+                // Only the time this node owned the camera (failover hands it to another node).
+                auto assignments = VmsResourceAssignmentImp().findAssignmentsOverlappingRange(c.camera_id, from, to);
+                if (!assignments.empty()) {
+                    vector<TimeSpan> owned;
+                    for (const auto &a : assignments) {
+                        if (a.owner_peer_id == self_id) {
+                            owned.emplace_back(std::max(from, a.assigned_at), a.released_at == 0 ? to : std::min(to, a.released_at));
+                        }
+                    }
+                    expected = intersectSpans(expected, mergeSpans(owned));
+                }
+            }
+            vector<TimeSpan> recorded;
+            if (!expected.empty()) {
+                // One more day before the window tells a camera that recorded before from one that
+                // started recording inside it (new camera, recording just enabled).
+                const int64_t look_from = from - 86400;
+                mediakit::MediaTuple tuple = { DEFAULT_VHOST, c.camera_id, "", "" };
+                TimeQuery query(tuple, "", (uint64_t)look_from, (uint64_t)to);
+                query.getRecordedTimePeriod((uint64_t)look_from, (uint64_t)to, [&](vector<TimeRange> &ranges) {
+                    for (const auto &r : ranges) {
+                        int64_t start = (int64_t)r.startTime, end = (int64_t)(r.startTime + r.duration);
+                        if (!recorded.empty() && start - recorded.back().second <= join_sec) {
+                            recorded.back().second = std::max(recorded.back().second, end);
+                        } else {
+                            recorded.emplace_back(start, end);
+                        }
+                    }
+                });
+                if (recorded.empty()) {
+                    // Nothing for two days: not judged here, recording.stalled reports the camera.
+                    expected.clear();
+                } else if (recorded.front().first >= from) {
+                    expected = intersectSpans(expected, { TimeSpan(recorded.front().first, to) });
+                }
+            }
+            res.coverage = computeRecordCoverage(expected, recorded, gap_min_sec);
+        } catch (const std::exception &ex) {
+            WarnL << "Health monitor: coverage of " << c.camera_id << " failed: " << ex.what();
+            continue;
+        }
+        results[c.camera_id] = res;
+    }
+    auto &self = HealthMonitor::Instance();
+    lock_guard<mutex> lck(self._coverage_mtx);
+    self._coverage.swap(results);
+}
+
+void HealthMonitor::syncBaseline(const string &camera_id, int type, const StreamQuality::Ptr &quality,
+                                 const StreamQualitySnapshot &q) {
+    if (!_db_queue) {
+        return;
+    }
+    const string key = camera_id + "/" + to_string(type);
+    if (q.baseline_at > 0 && q.fps_baseline > 0) {
+        {
+            lock_guard<mutex> lck(_baseline_mtx);
+            _baseline_stored.erase(key);
+        }
+        auto it = _baseline_saved.find(key);
+        if (it != _baseline_saved.end() && it->second == q.baseline_at) {
+            return;
+        }
+        _baseline_saved[key] = q.baseline_at;
+        StreamBaselineRow row;
+        row.camera_id = camera_id;
+        row.stream_type = type;
+        row.format = q.format;
+        row.fps = (float)q.fps_baseline;
+        row.bitrate_kbps = (float)std::max(0.0, q.bitrate_baseline);
+        row.learnt_at = q.baseline_at;
+        _db_queue->post([row]() {
+            try {
+                StreamBaselineImp().upsert(row);
+            } catch (const std::exception &ex) {
+                WarnL << "Health monitor: saving a stream baseline failed: " << ex.what();
+            }
+        });
+        return;
+    }
+    StreamBaselineRow stored;
+    bool have = false;
+    {
+        lock_guard<mutex> lck(_baseline_mtx);
+        if (!_baseline_loaded) {
+            return;
+        }
+        auto it = _baseline_stored.find(key);
+        if (it != _baseline_stored.end()) {
+            stored = it->second;
+            have = true;
+            _baseline_stored.erase(it);
+        }
+    }
+    if (have && quality && quality->restoreBaseline(stored.format, stored.fps, stored.bitrate_kbps, stored.learnt_at)) {
+        _baseline_saved[key] = stored.learnt_at;
+        return;
+    }
+    // Learning again (new codec/resolution, settings changed, long drift), or a stored baseline for
+    // a format the stream no longer sends: the saved one no longer applies.
+    const bool was_saved = _baseline_saved.erase(key) > 0;
+    if (have || was_saved) {
+        const string id = camera_id;
+        _db_queue->post([id, type]() {
+            try {
+                StreamBaselineImp().removeStream(id, type);
+            } catch (const std::exception &ex) {
+                WarnL << "Health monitor: removing a stream baseline failed: " << ex.what();
+            }
+        });
     }
 }
 

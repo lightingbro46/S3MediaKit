@@ -465,3 +465,162 @@ TEST(HealthCluster, WebhookFailureRate) {
     EXPECT_EQ(HealthLevel::CRITICAL, failureRateLevel(10, 2, 10, t, pct));
     EXPECT_EQ(20, pct);
 }
+
+namespace {
+// Local time = UTC for the schedule tests.
+struct UtcZone {
+    UtcZone() {
+        const char *tz = getenv("TZ");
+        had = tz != nullptr;
+        if (had) old = tz;
+        setenv("TZ", "UTC", 1);
+        tzset();
+    }
+    ~UtcZone() {
+        if (had) setenv("TZ", old.c_str(), 1); else unsetenv("TZ");
+        tzset();
+    }
+    bool had = false;
+    std::string old;
+};
+// 2026-10-12 00:00:00 UTC is a Monday.
+const int64_t kMonday = 1791763200;
+} // namespace
+
+TEST(HealthCoverage, ScheduleSpansFollowLocalHours) {
+    UtcZone utc;
+    std::vector<RecordMode> modes(7 * 24, RecordMode::NoRecord);
+    modes[1] = RecordMode::RecordAlways;            // Monday 01:00
+    modes[2] = RecordMode::RecordLowResAndMotion;   // Monday 02:00
+    modes[3] = RecordMode::RecordOnlyMotion;        // motion only: never expected
+    modes[5] = RecordMode::RecordAlways;            // Monday 05:00
+    auto spans = scheduledRecordSpans(true, modes, kMonday + 1800, kMonday + 5 * 3600 + 600);
+    ASSERT_EQ(2u, spans.size());
+    // 01:00-03:00 joined, 05:00 cut at `to`.
+    EXPECT_EQ(TimeSpan(kMonday + 3600, kMonday + 3 * 3600), spans[0]);
+    EXPECT_EQ(TimeSpan(kMonday + 5 * 3600, kMonday + 5 * 3600 + 600), spans[1]);
+    EXPECT_TRUE(scheduledRecordSpans(false, modes, kMonday, kMonday + 86400).empty());
+
+    // recordSchedules string: Monday 01:00 always.
+    auto parsed = recordModesByHour("[{\"dh\":\"0,1\",\"ty\":3}]");
+    EXPECT_EQ(RecordMode::RecordAlways, parsed[1]);
+    EXPECT_EQ(RecordMode::NoRecord, parsed[2]);
+}
+
+TEST(HealthCoverage, CoverageAndGaps) {
+    std::vector<TimeSpan> expected = { { 0, 1000 }, { 2000, 3000 } };
+    // 0-400 recorded, 400-500 missing (100 s), 500-1000 recorded, 2000-3000 nothing.
+    std::vector<TimeSpan> recorded = { { 500, 1200 }, { -50, 400 } };
+    auto cov = computeRecordCoverage(expected, recorded, 60);
+    EXPECT_EQ(2000, cov.expected_sec);
+    EXPECT_EQ(900, cov.recorded_sec);
+    EXPECT_EQ(2, cov.gaps);
+    EXPECT_EQ(1000, cov.longest_gap_sec);
+    EXPECT_DOUBLE_EQ(45, cov.pct());
+    // Holes up to gap_min_sec are not gaps.
+    cov = computeRecordCoverage({ { 0, 1000 } }, { { 0, 480 }, { 520, 1000 } }, 60);
+    EXPECT_EQ(0, cov.gaps);
+    EXPECT_EQ(960, cov.recorded_sec);
+    // Nothing expected.
+    EXPECT_EQ(-1, computeRecordCoverage({}, recorded, 60).pct());
+    // Spans helpers.
+    EXPECT_EQ(std::vector<TimeSpan>({ { 0, 30 } }), mergeSpans({ { 10, 30 }, { 0, 10 }, { 5, 6 } }));
+    EXPECT_EQ(std::vector<TimeSpan>({ { 5, 10 }, { 20, 25 } }),
+              intersectSpans({ { 0, 10 }, { 20, 30 } }, { { 5, 25 } }));
+}
+
+TEST(HealthHistory, RssGrowthAndPercentile) {
+    std::vector<std::pair<int64_t, int64_t> > samples;
+    const int64_t mb = 1024 * 1024;
+    for (int i = 0; i <= 180; ++i) {
+        // 100 MB/h over 3 h.
+        samples.emplace_back(1000 + i * 60, 500 * mb + (int64_t)(i * 60 / 3600.0 * 100 * mb));
+    }
+    EXPECT_NEAR(100, rssGrowthMbPerHour(samples, 7200), 0.5);
+    // Less than the minimum span: not judged.
+    samples.resize(60);
+    EXPECT_TRUE(std::isnan(rssGrowthMbPerHour(samples, 7200)));
+
+    EXPECT_TRUE(std::isnan(percentileOf({}, 95)));
+    std::vector<uint32_t> values;
+    for (uint32_t i = 1; i <= 100; ++i) values.push_back(i);
+    EXPECT_EQ(95, percentileOf(values, 95));
+    EXPECT_EQ(100, percentileOf(values, 100));
+    EXPECT_EQ(7, percentileOf({ 7 }, 95));
+}
+
+TEST(HealthHistory, BucketsKeepWorstLevelAndAverages) {
+    std::vector<HealthMetric> rows;
+    for (int i = 0; i < 4; ++i) {
+        HealthMetric m;
+        m.timestamp = 600 + i * 60;      // 600, 660 in bucket 600; 720, 780 in bucket 720 (bucket 120)
+        m.overall = i == 1 ? "critical" : "ok";
+        m.score = i == 1 ? 70 : 100;
+        m.cameras_online = 10 + i;
+        m.proc_rss = 100 + i;
+        m.poller_delay_max_ms = (float)i;
+        rows.push_back(m);
+    }
+    auto points = healthHistoryPoints(rows, 120);
+    ASSERT_EQ(2u, points.size());
+    EXPECT_EQ(600, points[0]["timestamp"].asInt64());
+    EXPECT_EQ(2, points[0]["samples"].asInt());
+    EXPECT_EQ("critical", points[0]["overall"].asString());
+    EXPECT_DOUBLE_EQ(85, points[0]["score"].asDouble());
+    EXPECT_EQ(70, points[0]["score_min"].asInt());
+    EXPECT_DOUBLE_EQ(10.5, points[0]["cameras_online"].asDouble());
+    EXPECT_EQ(101, points[0]["proc_rss"].asInt64());
+    EXPECT_EQ("ok", points[1]["overall"].asString());
+    EXPECT_DOUBLE_EQ(3, points[1]["poller_delay_max_ms"].asDouble());
+    // No bucket: one point per row.
+    EXPECT_EQ(4u, healthHistoryPoints(rows, 0).size());
+}
+
+TEST(HealthCoverage, CameraWarnsOnLowCoverageAndGaps) {
+    auto th = CameraThresholds::fromConfig();
+    CameraInput in;
+    in.streams[0].present = true;
+    in.streams[0].live = true;
+    std::vector<std::string> reasons;
+    EXPECT_EQ(HealthLevel::OK, evaluateCamera(in, th, reasons));
+    in.coverage.pct = 90;   // below the critical 95: still a warning per camera
+    in.coverage.gaps = 2;
+    reasons.clear();
+    EXPECT_EQ(HealthLevel::WARNING, evaluateCamera(in, th, reasons));
+    ASSERT_EQ(2u, reasons.size());
+    EXPECT_EQ("recording.coverage_pct_24h", reasons[0]);
+    EXPECT_EQ("recording.gaps_24h", reasons[1]);
+}
+
+TEST(StreamQuality, BaselineRestoredAfterRestartUntilFormatChanges) {
+    StreamQuality q(1000);
+    StreamBaselineConfig cfg;
+    EXPECT_TRUE(q.restoreBaseline("H264 1920x1080", 25, 4000, 500));
+    auto s = q.snapshot(1000);
+    EXPECT_EQ(25, s.fps_baseline);
+    EXPECT_EQ(500, s.baseline_at);
+    EXPECT_EQ("H264 1920x1080", s.format);
+    // A learnt one is not replaced.
+    EXPECT_FALSE(q.restoreBaseline("H264 1920x1080", 10, 1000, 600));
+    // Same format: kept; another format: dropped, learnt again.
+    q.onLive(true, 1000);
+    q.onSample(25, 4000, "H264 1920x1080", 1060, cfg);
+    EXPECT_EQ(25, q.snapshot(1060).fps_baseline);
+    q.onSample(25, 4000, "H265 1920x1080", 1120, cfg);
+    EXPECT_EQ(-1, q.snapshot(1120).fps_baseline);
+    // A stream that already reports another format does not take the saved one.
+    StreamQuality other(1000);
+    other.onLive(true, 1000);
+    other.onSample(25, 4000, "H265 1920x1080", 1060, cfg);
+    EXPECT_FALSE(other.restoreBaseline("H264 1920x1080", 25, 4000, 500));
+}
+
+TEST(HealthMonitorConfig, BaselineWindowHoldsThreeSamples) {
+    using namespace HealthMonitorConfig;
+    auto none = [](const std::string &) { return std::string(); };
+    // Samples every 60 s: a window under 120 s never holds the 3 a baseline needs.
+    EXPECT_NE("", validateChanges({ { "monitor.baselineWindowSec", "60" } }, none));
+    EXPECT_EQ("", validateChanges({ { "monitor.baselineWindowSec", "120" } }, none));
+    EXPECT_EQ("", validateChanges({ { "monitor.historyIntervalSec", "0" }, { "monitor.coverageIntervalSec", "60" } }, none));
+    EXPECT_NE("", validateChanges({ { "monitor.coverageIntervalSec", "30" } }, none));
+}

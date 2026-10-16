@@ -106,6 +106,16 @@ target_include_directories(unit_health_monitor PRIVATE "${PROJECT_SOURCE_DIR}/se
 add_test(NAME unit.health_monitor_all COMMAND unit_health_monitor)
 set_tests_properties(unit.health_monitor_all PROPERTIES LABELS unit TIMEOUT 30)
 
+# Health monitor history tables (migration 23) against a temporary mserver DB.
+add_s3_unit_test(unit_health_metrics storage/test_health_metrics.cpp)
+target_link_libraries(unit_health_metrics PRIVATE
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec)
+target_compile_definitions(unit_health_metrics PRIVATE
+  S3_MSERVER_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/migration/mserver_updates")
+add_test(NAME unit.health_metrics_all COMMAND unit_health_metrics)
+set_tests_properties(unit.health_metrics_all PROPERTIES LABELS unit TIMEOUT 30)
+
 add_s3_unit_test(unit_extract_job storage/test_extract_job.cpp)
 target_link_libraries(unit_extract_job PRIVATE S3MediaKit::ManagerKit)
 add_test(NAME unit.extract_job COMMAND unit_extract_job)

@@ -206,6 +206,29 @@ static void registerHealthMonitorApis() {
         val["data"]["generatedAt"] = (Json::Int64)time(nullptr);
     });
 
+    // Health history for charts: ?from=&to= (unix seconds, default the last 24 h, at most 31 days),
+    // ?bucket_sec= (wider ranges are bucketed to ~2000 points), ?fields= (point fields and "system").
+    api_regist("/media/monitor/history", [](API_ARGS_MAP_ASYNC) {
+        GET_CONFIG(string, api_secret, API::kSecret);
+        CHECK_SECRET();
+        if (!HealthMonitor::Instance().running()) {
+            val["data"] = disabledHealthJson();
+            invoker(200, headerOut, val.toStyledString());
+            return;
+        }
+        const int64_t now = (int64_t)time(nullptr);
+        int64_t to = allArgs["to"].empty() ? now : (int64_t)allArgs["to"];
+        int64_t from = allArgs["from"].empty() ? to - 86400 : (int64_t)allArgs["from"];
+        int bucket_sec = allArgs["bucket_sec"];
+        if (from <= 0 || to <= from || to - from > 31 * 86400 || bucket_sec < 0) {
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "from/to must be unix seconds, from < to, at most 31 days");
+        }
+        string fields = allArgs["fields"];
+        dispatchApiWork(sender, headerOut, val, invoker, [from, to, bucket_sec, fields](Json::Value &val) {
+            val["data"] = HealthMonitor::Instance().history(from, to, bucket_sec, fields);
+        }, nullptr, apiWorkLimit("storage.read"));
+    });
+
     api_regist("/media/monitor/config/get", [](API_ARGS_MAP) {
         GET_CONFIG(string, api_secret, API::kSecret);
         CHECK_SECRET();

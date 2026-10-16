@@ -243,7 +243,7 @@ void RecordScheduler::onSchedulerChange(RecordScheduleItem &item) {
     }
 }
 
-int RecordScheduler::getRecordScheduledActive(time_t time) const {
+int RecordScheduler::getRecordScheduledActive(time_t time) {
     auto week_time = StrTimeUtils::getWeekTime(time);
     return toRecordScheduleDay(week_time.day_of_week) * 24 + week_time.hour;
 }

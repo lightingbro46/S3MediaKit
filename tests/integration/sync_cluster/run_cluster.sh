@@ -13,6 +13,8 @@
 #   run_cluster.sh [work_dir] speaker    # speaker config sync: add, change, move, restart,
 #                                        # sync_config_to_db=0, delete
 #   run_cluster.sh [work_dir] monitor    # /media/monitor cluster component: node-b down, back, hook API down
+#   run_cluster.sh [work_dir] history    # node-a + recording camera: /media/monitor/history, open latency,
+#                                        # baseline across restarts, coverage/gaps, restarts, RSS growth
 #   run_cluster.sh [work_dir] removal    # node-b removed from the cluster (HTTP 412), cleanup of
 #                                        # its ESC data on node-a, node-b added back
 #
@@ -176,6 +178,48 @@ if [ "${2:-}" = "failover" ]; then
     check retention
     report fo4_retention
     echo "failover scenario: $fail check(s) failed"
+    exit "$fail"
+fi
+
+if [ "${2:-}" = "history" ]; then
+    fail=0
+    command -v ffprobe > /dev/null || { echo "ffmpeg/ffprobe are required for the history scenario"; exit 1; }
+    check() { python3 "$HERE/check_history.py" "$WORK" "$@" || fail=$((fail + 1)); }
+    # Own port: the scenario stops and restarts its source, which must not be a shared one.
+    export FO_RTSP_PORT="${FO_RTSP_PORT:-18564}"
+    source_start() {
+        nohup python3 "$REPO/tests/integration/stress_vms/rtsp_source.py" "$WORK/fo_source.h264" \
+            --port "$FO_RTSP_PORT" --fps 25 --stats-sec 5 --state "$WORK/rtsp_state.json" >> "$WORK/rtsp_source.log" 2>&1 &
+        echo $! > "$WORK/rtsp_source.pid"
+    }
+    ffmpeg -hide_banner -loglevel error -f lavfi -i "testsrc2=size=640x360:rate=25:duration=10" \
+        -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 50 -keyint_min 50 -sc_threshold 0 \
+        -b:v 400k -bsf:v h264_mp4toannexb -f h264 "$WORK/fo_source.h264" -y || exit 1
+    ss -ltn | grep -q ":$FO_RTSP_PORT " && { echo "port $FO_RTSP_PORT is busy"; exit 1; }
+    source_start
+    rm -f "$WORK/history_state.json"
+    # Segments of 20 s: a 90 s outage of the source is a gap (> 2 x mp4_max_second).
+    MP4_MAX_SECOND=20 python3 "$HERE/setup_nodes.py" "$REPO" "$WORK"
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" fo1
+    start_node node-a init
+    wait_healthy 18081
+    echo "h0: monitor settings"; check h0_config 60
+    echo "h1: history"; check h1_history 180
+    echo "h2: open latency"; check h2_open 60
+    echo "h3: baseline"; check h3_baseline 420
+    echo "h4: coverage"; check h4_coverage 300
+    echo "h5: source stopped 90 s"
+    kill "$(cat "$WORK/rtsp_source.pid")"; sleep 90; source_start; sleep 2
+    ss -ltn | grep -q ":$FO_RTSP_PORT " || echo "FAIL rtsp_source did not restart on $FO_RTSP_PORT"
+    check h5_gap 300
+    echo "h6: clean restart"
+    stop_nodes node-a; start_node node-a clean; wait_healthy 18081; check h6_clean_restart 240
+    echo "h7: kill -9"
+    kill -9 "$(cat "$WORK/node-a/server.pid")"; sleep 2; start_node node-a killed; wait_healthy 18081
+    check h7_unclean 240
+    echo "h8: RSS growth"; check h8_rss 240
+    grep -h "## signal:" "$WORK"/node-a/stdout*.log && echo "CRASH: node-a"
+    echo "history scenario: $fail check(s) failed"
     exit "$fail"
 fi
 

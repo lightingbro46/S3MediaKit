@@ -465,8 +465,33 @@ static void findAsync_l(const MediaInfo &info_in, const std::shared_ptr<Session>
     NOTICE_EMIT(BroadcastNotFoundStreamArgs, Broadcast::kBroadcastNotFoundStream, info, *session, close_player);
 }
 
+static mutex s_open_samples_mtx;
+static vector<MediaSource::OpenSample> s_open_samples;
+
+void MediaSource::takeOpenSamples(vector<OpenSample> &out) {
+    lock_guard<mutex> lck(s_open_samples_mtx);
+    out.swap(s_open_samples);
+    s_open_samples.clear();
+}
+
 void MediaSource::findAsync(const MediaInfo &info, const std::shared_ptr<Session> &session, const function<void (const Ptr &)> &cb) {
-    return findAsync_l(info, session, true, cb);
+    GET_CONFIG(string, record_app, Record::kAppName);
+    const uint64_t start_ms = getCurrentMillisecond();
+    const bool replay = info.app == record_app;
+    return findAsync_l(info, session, true, [cb, start_ms, replay](const Ptr &src) {
+        OpenSample sample;
+        sample.ms = (uint32_t)(getCurrentMillisecond() - start_ms);
+        sample.found = src != nullptr;
+        sample.replay = replay;
+        {
+            lock_guard<mutex> lck(s_open_samples_mtx);
+            // Nobody collects without the health monitor: keep the memory bounded.
+            if (s_open_samples.size() < 10000) {
+                s_open_samples.push_back(sample);
+            }
+        }
+        cb(src);
+    });
 }
 
 MediaSource::Ptr MediaSource::find(const string &schema, const string &vhost, const string &app, const string &id, bool from_mp4) {

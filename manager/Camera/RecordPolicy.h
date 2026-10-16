@@ -83,14 +83,15 @@ public:
 
     static std::unordered_map<std::string, RecordScheduleItem> parseRecordScheduleStr(const std::string &str);
 
+    // Index (day * 24 + hour, local time, Monday = 0) of the schedule hour that contains `time`.
+    static int getRecordScheduledActive(time_t time);
+
     bool isEnabled() const { return _running.load(); }
 
 private:
     void check(time_t time_now);
 
     void onSchedulerChange(RecordScheduleItem &item);
-
-    int getRecordScheduledActive(time_t time) const;
 
 private:
     DeviceTuple _tuple;
