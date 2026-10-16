@@ -14,6 +14,7 @@
 #include "Poller/Timer.h"
 #include "Common/BlockingExecutors.h"
 #include "HealthEvaluator.h"
+#include "Camera/StreamQuality.h"
 
 namespace managerkit {
 
@@ -28,6 +29,8 @@ extern const std::string kGpuFallbackWindowSec; // a GPU->CPU fallback keeps "pr
 extern const std::string kRecordStaleSec;  // no segment closed for this long = not recording; 0 = mp4_max_second * 1.5 + 60
 extern const std::string kPlayWindowSec;   // window of the play request/failure counters (default 300)
 extern const std::string kPlayMinRequests; // fewer requests in the window: failure rate not evaluated (default 20)
+extern const std::string kBaselineWarmupSec; // a stream must be live this long before its fps/bitrate is learnt (default 120)
+extern const std::string kBaselineWindowSec; // fps/bitrate samples averaged into the baseline (default 300)
 
 /**
  * One warn/crit pair of a numeric metric: config keys "monitor.<name>Warn" / "monitor.<name>Crit".
@@ -46,6 +49,7 @@ std::string warnKey(const ThresholdDef &def);
 std::string critKey(const ThresholdDef &def);
 // Current warn/crit of `name` from config; defaults when the name is unknown.
 HealthThreshold threshold(const std::string &name);
+StreamBaselineConfig baselineConfig();
 
 /**
  * Keys /media/monitor/config/set may change: the "monitor." keys above plus the existing
@@ -53,8 +57,13 @@ HealthThreshold threshold(const std::string &name);
  * reader limits that come from the license) is rejected.
  */
 const std::vector<std::string> &editableKeys();
-// warn/crit key pairs checked by validateChanges (warn < crit).
-const std::vector<std::pair<std::string, std::string> > &thresholdPairs();
+// warn/crit key pairs checked by validateChanges: warn < crit, or warn > crit when lower is worse.
+struct ThresholdPair {
+    std::string warn_key;
+    std::string crit_key;
+    bool higher_is_worse;
+};
+const std::vector<ThresholdPair> &thresholdPairs();
 /**
  * Checks `changes` (key -> new value) merged over `current` (current value of a key).
  * Returns an empty string when valid, otherwise the reason (unknown key, not a number,
@@ -80,6 +89,37 @@ RecordingState evaluateRecording(bool expected, int64_t expected_since, int64_t 
 int defaultRecordStaleSec(int mp4_max_second);
 
 /**
+ * Per camera evaluation (section 5.4): offline, not recording while it should, or no video on a
+ * live stream = critical; fps/bitrate below the learnt baseline, RTP loss, reconnects, low uptime,
+ * controller (ONVIF/ISAPI/PSIA) not connected = warning.
+ */
+struct CameraStreamInput {
+    bool present = false;          // configured and not disabled
+    bool live = false;
+    double last_frame_age_ms = -1; // -1 = unknown
+    double fps_ratio = -1;         // -1 = no baseline yet
+    double bitrate_ratio = -1;
+    double loss_pct = -1;
+    int disconnects_1h = 0;
+    double uptime_pct_24h = -1;
+};
+struct CameraInput {
+    bool recording_stalled = false;
+    bool controller_expected = false; // not a generic RTSP camera
+    bool controller_connected = true;
+    CameraStreamInput streams[2];     // primary, secondary
+};
+struct CameraThresholds {
+    HealthThreshold fps_ratio, bitrate_ratio, loss_pct, last_frame_age_ms, disconnects_1h, uptime_pct_24h;
+    static CameraThresholds fromConfig();
+};
+// Online = at least one stream live (like the device statistics API).
+bool cameraOnline(const CameraInput &in);
+// True when a live stream sent no video for at least the critical frame age.
+bool cameraNoVideo(const CameraInput &in, const CameraThresholds &th);
+HealthLevel evaluateCamera(const CameraInput &in, const CameraThresholds &th, std::vector<std::string> &reasons);
+
+/**
  * The result of one evaluation cycle. Immutable once published; the API serializes it without
  * touching any monitor or camera (N1).
  */
@@ -90,6 +130,8 @@ struct HealthSnapshot {
     HealthEvaluation eval;
     Json::Value health;         // data of /media/monitor/health (without per-request fields)
     Json::Value summary;        // data of /media/monitor/summary
+    // Cameras of /media/monitor/cameras, most severe first; each has "health".
+    std::vector<Json::Value> cameras;
 };
 
 /**
@@ -149,6 +191,7 @@ private:
     void collectProcess(HealthEvaluator &ev, Json::Value &summary, int64_t now);
     void collectStorage(HealthEvaluator &ev, Json::Value &summary, int64_t now);
     void collectRecording(HealthEvaluator &ev, Json::Value &summary, int64_t now);
+    void collectIngest(HealthEvaluator &ev, Json::Value &summary, std::vector<Json::Value> &cameras, int64_t now);
     void collectDelivery(HealthEvaluator &ev, Json::Value &summary, int64_t now);
 
 private:

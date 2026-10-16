@@ -1,6 +1,6 @@
 # Giám sát sức khỏe và chất lượng MediaServer cho app desktop monitor
 
-Trạng thái: **đang làm** — H1, H3 xong (2026-10-16), hợp đồng ở [api-health-monitor.md](api-health-monitor.md). Câu hỏi mở đã chốt 2026-10-15, xem mục 9.
+Trạng thái: **đang làm** — H1, H3, H2 xong (2026-10-16), hợp đồng ở [api-health-monitor.md](api-health-monitor.md). Câu hỏi mở đã chốt 2026-10-15, xem mục 9.
 
 Mục tiêu: mở rộng `GlobalMonitor` để MediaServer tự đánh giá **sức khỏe** (máy và tiến trình có
 chạy ổn không) và **chất lượng dịch vụ VMS** (camera có hình, có ghi, người xem có xem được), rồi

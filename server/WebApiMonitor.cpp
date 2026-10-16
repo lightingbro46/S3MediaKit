@@ -1,3 +1,4 @@
+#include <set>
 #include "ApiWorkDispatcher.h"
 #include "WebApi.h"
 #include "WebApiErrCode.h"
@@ -142,6 +143,53 @@ static void registerHealthMonitorApis() {
         GET_CONFIG(string, api_secret, API::kSecret);
         CHECK_SECRET();
         monitorSnapshotResponse(allArgs, val, true);
+    });
+
+    // Cameras with their quality metrics, most severe first. ?health=warning,critical (default),
+    // or "all"; ?page= (from 1) and ?size= (default 50, at most 500).
+    api_regist("/media/monitor/cameras", [](API_ARGS_MAP) {
+        GET_CONFIG(string, api_secret, API::kSecret);
+        CHECK_SECRET();
+        auto snap = HealthMonitor::Instance().snapshot();
+        if (!snap) {
+            val["data"] = disabledHealthJson();
+            return;
+        }
+        string health = allArgs["health"];
+        if (health.empty()) {
+            health = "warning,critical";
+        }
+        set<string> wanted;
+        for (auto &h : split(health, ",")) {
+            wanted.insert(trim(h));
+        }
+        const bool all = wanted.count("all") > 0;
+        int page = std::max(1, atoi(allArgs["page"].data()));
+        int size = atoi(allArgs["size"].data());
+        size = size <= 0 ? 50 : std::min(size, 500);
+
+        Json::Value list(Json::arrayValue);
+        size_t matched = 0;
+        const size_t first = (size_t)(page - 1) * size;
+        for (const auto &cam : snap->cameras) {
+            if (!all && !wanted.count(cam["health"].asString())) {
+                continue;
+            }
+            if (matched >= first && list.size() < (Json::ArrayIndex)size) {
+                list.append(cam);
+            }
+            ++matched;
+        }
+        GET_CONFIG(string, media_server_id, General::kMediaServerId);
+        Json::Value &data = val["data"];
+        data["schemaVersion"] = 1;
+        data["mediaServerId"] = media_server_id;
+        data["generatedAt"] = (Json::Int64)snap->generated_at;
+        data["rev"] = (Json::UInt64)snap->rev;
+        data["total"] = (Json::UInt64)matched;
+        data["page"] = page;
+        data["size"] = size;
+        data["cameras"] = list;
     });
 
     // Open alerts + events after `since` (the `seq` of the previous answer): the app polls with it to

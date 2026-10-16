@@ -6,6 +6,7 @@
 #include "StreamSink.h"
 #include "Local/StatisticRecorder.h"
 #include "RecordPolicy.h"
+#include "StreamQuality.h"
 
 namespace managerkit {
 
@@ -54,6 +55,9 @@ public:
         int64_t since = 0;        // unix seconds `expected` last changed
     };
     RecordExpectation getRecordExpectation() const;
+
+    // Quality counters of a stream (StreamType), any thread; nullptr for an invalid type.
+    StreamQuality::Ptr getStreamQuality(int type) const;
 
     void setupStreamRegist(int type, bool regist);
 
@@ -136,6 +140,8 @@ private:
 
     void publishRecordExpectation(int mode, bool event_active);
 
+    void updateStreamQuality(int type, bool live, const mediakit::TranslationInfo *info);
+
 private:
     toolkit::EventPoller::Ptr _poller;
     bool _all_stream_ready = false;
@@ -156,6 +162,14 @@ private:
     // Written on the owner poller, read by the health monitor: bits 0-7 mode, bit 8 event, bit 9 expected.
     std::atomic<uint32_t> _record_expectation { 0 };
     std::atomic<int64_t> _record_expectation_since { 0 };
+    // Created in the constructor and never replaced, so other threads may read the pointers.
+    StreamQuality::Ptr _quality[StreamMax];
+    // Video frame count at the previous statistic sample (owner poller only).
+    struct FrameMeter {
+        uint64_t frames = 0;
+        uint64_t at_ms = 0;
+    };
+    FrameMeter _frame_meter[StreamMax];
 };
 
 } // namespace managerkit

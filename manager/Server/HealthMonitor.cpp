@@ -7,6 +7,8 @@
 #include "Codec/TranscodeStats.h"
 #include "Camera/GenericRtspCameraImp.h"
 #include "Common/DeviceSource.h"
+#include "Common/MediaSource.h"
+#include "Common/MultiMediaSourceMuxer.h"
 #include "Util/NoticeCenter.h"
 #ifdef ENABLE_MP4
 #include "Record/MP4Recorder.h"
@@ -36,6 +38,8 @@ const string kGpuFallbackWindowSec = HM_FIELD "gpuFallbackWindowSec";
 const string kRecordStaleSec = HM_FIELD "recordStaleSec";
 const string kPlayWindowSec = HM_FIELD "playWindowSec";
 const string kPlayMinRequests = HM_FIELD "playMinRequests";
+const string kBaselineWarmupSec = HM_FIELD "baselineWarmupSec";
+const string kBaselineWindowSec = HM_FIELD "baselineWindowSec";
 
 const vector<ThresholdDef> &thresholdDefs() {
     static const vector<ThresholdDef> defs = {
@@ -57,6 +61,16 @@ const vector<ThresholdDef> &thresholdDefs() {
         // delivery (4.5)
         { "viewerLimitPct", "viewers.limit_used_pct", 80, 95, true },
         { "playFailurePct", "play.failure_pct", 5, 20, true },
+        // ingest (4.3), share of the enabled cameras
+        { "cameraOfflinePct", "cameras.offline_pct", 5, 20, true },
+        { "cameraNoVideoPct", "cameras.no_video_pct", 0.01, 5, true },
+        // per camera stream (5.4)
+        { "fpsRatio", "fps_ratio", 0.8, 0.5, false },
+        { "bitrateRatio", "bitrate_ratio", 0.5, 0.2, false },
+        { "lossPct", "loss_pct", 1, 5, true },
+        { "lastFrameAgeMs", "last_frame_age_ms", 3000, 10000, true },
+        { "disconnects1h", "disconnects_1h", 3, 10, true },
+        { "uptimePct24h", "uptime_pct_24h", 99, 95, false },
     };
     return defs;
 }
@@ -77,6 +91,8 @@ static onceToken token([]() {
     mINI::Instance()[kRecordStaleSec] = 0;
     mINI::Instance()[kPlayWindowSec] = 300;
     mINI::Instance()[kPlayMinRequests] = 20;
+    mINI::Instance()[kBaselineWarmupSec] = 120;
+    mINI::Instance()[kBaselineWindowSec] = 300;
     for (const auto &def : thresholdDefs()) {
         mINI::Instance()[warnKey(def)] = def.warn;
         mINI::Instance()[critKey(def)] = def.crit;
@@ -122,18 +138,27 @@ static const vector<pair<string, string> > &globalPairs() {
     return pairs;
 }
 
-const vector<pair<string, string> > &thresholdPairs() {
-    static const vector<pair<string, string> > pairs = []() {
-        vector<pair<string, string> > out;
+const vector<ThresholdPair> &thresholdPairs() {
+    static const vector<ThresholdPair> pairs = []() {
+        vector<ThresholdPair> out;
         for (const auto &def : thresholdDefs()) {
-            out.emplace_back(warnKey(def), critKey(def));
+            out.push_back(ThresholdPair { warnKey(def), critKey(def), def.higher_is_worse });
         }
         for (const auto &pr : globalPairs()) {
-            out.push_back(pr);
+            out.push_back(ThresholdPair { pr.first, pr.second, true });
         }
         return out;
     }();
     return pairs;
+}
+
+StreamBaselineConfig baselineConfig() {
+    GET_CONFIG(int, warmup_sec, kBaselineWarmupSec);
+    GET_CONFIG(int, window_sec, kBaselineWindowSec);
+    StreamBaselineConfig cfg;
+    cfg.warmup_sec = warmup_sec;
+    cfg.window_sec = std::max(60, window_sec);
+    return cfg;
 }
 
 // Integer keys and their minimum.
@@ -146,6 +171,8 @@ static const map<string, int> &countKeys() {
         { kRecordStaleSec, 0 },
         { kPlayWindowSec, 10 },
         { kPlayMinRequests, 1 },
+        { kBaselineWarmupSec, 0 },
+        { kBaselineWindowSec, 60 },
         { GlobalMonitorConfig::kDiskIoSustainSamples, 1 },
     };
     return keys;
@@ -158,8 +185,8 @@ const vector<string> &editableKeys() {
             out.push_back(kv.first);
         }
         for (const auto &pr : thresholdPairs()) {
-            out.push_back(pr.first);
-            out.push_back(pr.second);
+            out.push_back(pr.warn_key);
+            out.push_back(pr.crit_key);
         }
         return out;
     }();
@@ -205,15 +232,18 @@ string validateChanges(const map<string, string> &changes, const function<string
         return it != changes.end() ? it->second : current(key);
     };
     for (const auto &pr : thresholdPairs()) {
-        if (!changes.count(pr.first) && !changes.count(pr.second)) {
+        if (!changes.count(pr.warn_key) && !changes.count(pr.crit_key)) {
             continue;
         }
         double warn = 0, crit = 0;
-        if (!parseNumber(value(pr.first), warn) || !parseNumber(value(pr.second), crit)) {
-            return "not a number: " + pr.first + "/" + pr.second;
+        if (!parseNumber(value(pr.warn_key), warn) || !parseNumber(value(pr.crit_key), crit)) {
+            return "not a number: " + pr.warn_key + "/" + pr.crit_key;
         }
-        if (warn >= crit) {
-            return "warning must be lower than critical: " + pr.first + " < " + pr.second;
+        if (pr.higher_is_worse && warn >= crit) {
+            return "warning must be lower than critical: " + pr.warn_key + " < " + pr.crit_key;
+        }
+        if (!pr.higher_is_worse && warn <= crit) {
+            return "warning must be higher than critical: " + pr.warn_key + " > " + pr.crit_key;
         }
     }
     return string();
@@ -272,6 +302,83 @@ RecordingState evaluateRecording(bool expected, int64_t expected_since, int64_t 
         return RecordingState::STARTING;
     }
     return RecordingState::STALLED;
+}
+
+CameraThresholds CameraThresholds::fromConfig() {
+    using namespace HealthMonitorConfig;
+    CameraThresholds th;
+    th.fps_ratio = threshold("fpsRatio");
+    th.bitrate_ratio = threshold("bitrateRatio");
+    th.loss_pct = threshold("lossPct");
+    th.last_frame_age_ms = threshold("lastFrameAgeMs");
+    th.disconnects_1h = threshold("disconnects1h");
+    th.uptime_pct_24h = threshold("uptimePct24h");
+    return th;
+}
+
+bool cameraOnline(const CameraInput &in) {
+    return (in.streams[0].present && in.streams[0].live) || (in.streams[1].present && in.streams[1].live);
+}
+
+bool cameraNoVideo(const CameraInput &in, const CameraThresholds &th) {
+    for (const auto &st : in.streams) {
+        if (st.present && st.live && st.last_frame_age_ms >= th.last_frame_age_ms.crit) {
+            return true;
+        }
+    }
+    return false;
+}
+
+HealthLevel evaluateCamera(const CameraInput &in, const CameraThresholds &th, vector<string> &reasons) {
+    HealthLevel level = HealthLevel::OK;
+    auto raise = [&](HealthLevel l, const string &why) {
+        level = worseLevel(level, l);
+        reasons.push_back(why);
+    };
+    if (!cameraOnline(in)) {
+        raise(HealthLevel::CRITICAL, "offline");
+    }
+    if (in.recording_stalled) {
+        raise(HealthLevel::CRITICAL, "recording.stalled");
+    }
+    if (in.controller_expected && !in.controller_connected) {
+        raise(HealthLevel::WARNING, "controller.disconnected");
+    }
+    static const char *names[2] = { "main", "sub" };
+    for (int i = 0; i < 2; ++i) {
+        const auto &st = in.streams[i];
+        if (!st.present) {
+            continue;
+        }
+        const string prefix = string(names[i]) + ".";
+        if (!st.live) {
+            // One of two streams down: the camera is still online.
+            if (cameraOnline(in)) {
+                raise(HealthLevel::WARNING, prefix + "offline");
+            }
+            continue;
+        }
+        auto age = classifyValue(st.last_frame_age_ms >= 0 ? st.last_frame_age_ms : NAN, th.last_frame_age_ms);
+        if (age == HealthLevel::CRITICAL || age == HealthLevel::WARNING) {
+            raise(age, prefix + (age == HealthLevel::CRITICAL ? "no_video" : "last_frame_age_ms"));
+        }
+        // Degraded quality only warns (5.4); a VBR camera's bitrate moves with the scene.
+        auto warn_if = [&](double v, const HealthThreshold &t, const char *metric) {
+            if (v < 0) {
+                return;
+            }
+            auto l = classifyValue(v, t);
+            if (l == HealthLevel::WARNING || l == HealthLevel::CRITICAL) {
+                raise(HealthLevel::WARNING, prefix + metric);
+            }
+        };
+        warn_if(st.fps_ratio, th.fps_ratio, "fps_ratio");
+        warn_if(st.bitrate_ratio, th.bitrate_ratio, "bitrate_ratio");
+        warn_if(st.loss_pct, th.loss_pct, "loss_pct");
+        warn_if(st.disconnects_1h, th.disconnects_1h, "disconnects_1h");
+        warn_if(st.uptime_pct_24h, th.uptime_pct_24h, "uptime_pct_24h");
+    }
+    return level;
 }
 
 int defaultRecordStaleSec(int mp4_max_second) {
@@ -437,12 +544,14 @@ void HealthMonitor::collectNow() {
     GET_CONFIG(int, sustain, HealthMonitorConfig::kSustainSamples);
     HealthEvaluator ev(_hysteresis, sustain, now);
     Json::Value summary(Json::objectValue);
+    vector<Json::Value> cameras;
 
     try {
         collectHost(ev, summary, now);
         collectProcess(ev, summary, now);
         collectStorage(ev, summary, now);
         collectRecording(ev, summary, now);
+        collectIngest(ev, summary, cameras, now);
         collectDelivery(ev, summary, now);
     } catch (const std::exception &ex) {
         WarnL << "Health monitor collect failed: " << ex.what();
@@ -495,6 +604,7 @@ void HealthMonitor::collectNow() {
     summary["alerts"] = h["alerts"];
     snap->summary = std::move(summary);
     snap->eval = std::move(eval);
+    snap->cameras = std::move(cameras);
 
     lock_guard<mutex> lck(_snap_mtx);
     _snapshot = snap;
@@ -941,6 +1051,183 @@ void HealthMonitor::collectDelivery(HealthEvaluator &ev, Json::Value &summary, i
     del["play"]["failure_pct"] = num(failure_pct);
     del["play"]["failures_by_reason"] = reasons;
     (void)now;
+}
+
+} // namespace managerkit
+
+namespace managerkit {
+
+static Json::Value optNum(double v) {
+    return v < 0 ? Json::Value(Json::nullValue) : num(v);
+}
+
+void HealthMonitor::collectIngest(HealthEvaluator &ev, Json::Value &summary, vector<Json::Value> &cameras, int64_t now) {
+    using namespace HealthMonitorConfig;
+    GET_CONFIG(int, sustain, kSustainSamples);
+    const auto th = CameraThresholds::fromConfig();
+    const uint64_t now_ms = getCurrentMillisecond();
+
+    vector<pair<string, GenericRtspCameraImp::Ptr> > list;
+    DeviceSource::for_each_device([&](const DeviceSource::Ptr &src) {
+        auto impl = std::dynamic_pointer_cast<GenericRtspCameraImp>(src->getListener().lock());
+        if (impl && impl->isEnabled()) {
+            list.emplace_back(src->getDeviceTuple().device_id, impl);
+        }
+    });
+
+    int total = 0, online = 0, no_video = 0, warning = 0, critical = 0, unknown = 0;
+    for (const auto &cam : list) {
+        const string &camera_id = cam.first;
+        auto stats = cam.second->getCameraStatisticImp();
+        if (!stats) {
+            continue;
+        }
+        ++total;
+        auto params = stats->getParams();
+        const auto &opt = params.option;
+
+        CameraInput in;
+        auto rs = _recording_states.find(camera_id);
+        in.recording_stalled = rs != _recording_states.end() && rs->second == RecordingState::STALLED;
+        in.controller_expected = !opt.manufacturer.empty() && opt.manufacturer != GENERIC_RTSP_CAMERA;
+        in.controller_connected = params.device_stats.connect;
+
+        Json::Value cj;
+        cj["cameraId"] = camera_id;
+        cj["name"] = opt.name;
+        cj["ip"] = opt.ip;
+        cj["manufacturer"] = opt.manufacturer;
+        static const char *names[2] = { "main", "sub" };
+        for (int type = 0; type < 2; ++type) {
+            auto &st = in.streams[type];
+            auto tuple_it = params.stream_map.find(type);
+            bool disabled = type == PrimaryStream ? opt.disablePrimaryStream : opt.disableSecondaryStream;
+            st.present = tuple_it != params.stream_map.end() && !tuple_it->second.empty() && !disabled;
+            if (!st.present) {
+                cj["streams"][names[type]] = Json::nullValue;
+                continue;
+            }
+            auto info_it = params.sinfo_map.find(type);
+            const StreamStatistic *sinfo = info_it != params.sinfo_map.end() ? &info_it->second : nullptr;
+            st.live = sinfo && sinfo->live;
+
+            StreamQualitySnapshot q;
+            if (auto quality = cam.second->getStreamQuality(type)) {
+                q = quality->snapshot(now);
+            }
+            if (st.live) {
+                auto media = MediaSource::find(RTSP_SCHEMA, tuple_it->second.vhost, tuple_it->second.device_id, tuple_it->second.stream_id);
+                auto muxer = media ? media->getMuxer() : nullptr;
+                uint64_t last = muxer ? muxer->lastVideoFrameMs() : 0;
+                if (last > 0) {
+                    st.last_frame_age_ms = now_ms > last ? (double)(now_ms - last) : 0;
+                }
+            }
+            if (q.fps > 0 && q.fps_baseline > 0) {
+                st.fps_ratio = q.fps / q.fps_baseline;
+            }
+            if (q.bitrate_kbps > 0 && q.bitrate_baseline > 0) {
+                st.bitrate_ratio = q.bitrate_kbps / q.bitrate_baseline;
+            }
+            st.loss_pct = st.live ? q.loss_pct : -1;
+            st.disconnects_1h = q.disconnects_1h;
+            // Over a short window one reconnect already looks like a bad day: judge from 1 h on.
+            st.uptime_pct_24h = now - q.window_started_at >= 3600 ? q.uptime_pct_24h : -1;
+
+            Json::Value sj;
+            sj["streamId"] = tuple_it->second.stream_id;
+            sj["live"] = st.live;
+            sj["status"] = sinfo ? sinfo->status : "";
+            sj["lastChangeAt"] = sinfo ? (Json::Int64)sinfo->last_change_status : 0;
+            sj["codec"] = sinfo ? sinfo->vcodec : "";
+            sj["width"] = sinfo ? sinfo->width : 0;
+            sj["height"] = sinfo ? sinfo->height : 0;
+            sj["fps"] = optNum(q.fps);
+            sj["fps_baseline"] = optNum(q.fps_baseline);
+            sj["fps_ratio"] = optNum(st.fps_ratio);
+            sj["bitrate_kbps"] = optNum(q.bitrate_kbps);
+            sj["bitrate_baseline"] = optNum(q.bitrate_baseline);
+            sj["bitrate_ratio"] = optNum(st.bitrate_ratio);
+            sj["baseline_at"] = q.baseline_at > 0 ? Json::Value((Json::Int64)q.baseline_at) : Json::Value(Json::nullValue);
+            sj["sampled_at"] = q.sampled_at > 0 ? Json::Value((Json::Int64)q.sampled_at) : Json::Value(Json::nullValue);
+            sj["loss_pct"] = optNum(st.loss_pct);
+            sj["last_frame_age_ms"] = optNum(st.last_frame_age_ms);
+            sj["disconnects_1h"] = q.disconnects_1h;
+            sj["disconnects_24h"] = q.disconnects_24h;
+            sj["uptime_pct_24h"] = optNum(q.uptime_pct_24h);
+            sj["window_started_at"] = (Json::Int64)q.window_started_at;
+            cj["streams"][names[type]] = sj;
+        }
+
+        vector<string> reasons;
+        auto observed = evaluateCamera(in, th, reasons);
+        int64_t since = now;
+        // The same hysteresis as the server metrics: a camera does not flip per sample.
+        auto level = _hysteresis.update("camera/" + camera_id, observed, sustain, now, &since);
+        bool is_online = cameraOnline(in);
+        bool is_no_video = is_online && cameraNoVideo(in, th);
+        online += is_online ? 1 : 0;
+        no_video += is_no_video ? 1 : 0;
+        warning += level == HealthLevel::WARNING ? 1 : 0;
+        critical += level == HealthLevel::CRITICAL ? 1 : 0;
+        unknown += level == HealthLevel::UNKNOWN ? 1 : 0;
+
+        cj["health"] = healthLevelString(level);
+        cj["healthSince"] = (Json::Int64)since;
+        cj["observed"] = healthLevelString(observed);
+        cj["reasons"] = Json::arrayValue;
+        for (const auto &r : reasons) {
+            cj["reasons"].append(r);
+        }
+        cj["online"] = is_online;
+        cj["recording"]["state"] = rs != _recording_states.end() ? recordingStateString(rs->second) : "not_expected";
+        auto expectation = cam.second->getRecordExpectation();
+        cj["recording"]["expected"] = expectation.expected;
+        cj["recording"]["mode"] = getRecordModeString(static_cast<RecordMode>(expectation.mode));
+        {
+            lock_guard<mutex> lck(_record_mtx);
+            auto wit = _record_writes.find(camera_id);
+            cj["recording"]["lastWriteAt"] = wit != _record_writes.end() ? Json::Value((Json::Int64)wit->second.last_write)
+                                                                          : Json::Value(Json::nullValue);
+        }
+        if (in.controller_expected) {
+            cj["controller"]["connected"] = params.device_stats.connect;
+            cj["controller"]["status"] = params.device_stats.status;
+        } else {
+            cj["controller"] = Json::nullValue;
+        }
+        cameras.push_back(std::move(cj));
+    }
+
+    // Most severe first, then by name.
+    auto rank = [](const Json::Value &c) {
+        const string h = c["health"].asString();
+        return h == "critical" ? 0 : (h == "warning" ? 1 : (h == "unknown" ? 2 : 3));
+    };
+    std::stable_sort(cameras.begin(), cameras.end(), [&](const Json::Value &a, const Json::Value &b) {
+        int ra = rank(a), rb = rank(b);
+        if (ra != rb) {
+            return ra < rb;
+        }
+        return a["name"].asString() < b["name"].asString();
+    });
+
+    double offline_pct = total > 0 ? 100.0 * (total - online) / total : 0;
+    double no_video_pct = total > 0 ? 100.0 * no_video / total : 0;
+    ev.addValue("ingest", "cameras.offline_pct", offline_pct, threshold("cameraOfflinePct"));
+    ev.addValue("ingest", "cameras.no_video_pct", no_video_pct, threshold("cameraNoVideoPct"));
+
+    Json::Value &ing = summary["ingest"];
+    ing["cameras"] = total;
+    ing["online"] = online;
+    ing["offline"] = total - online;
+    ing["offline_pct"] = num(offline_pct);
+    ing["no_video"] = no_video;
+    ing["no_video_pct"] = num(no_video_pct);
+    ing["health"]["critical"] = critical;
+    ing["health"]["warning"] = warning;
+    ing["health"]["unknown"] = unknown;
+    ing["health"]["ok"] = total - critical - warning - unknown;
 }
 
 } // namespace managerkit

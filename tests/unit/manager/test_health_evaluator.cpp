@@ -2,6 +2,7 @@
 #include <cmath>
 #include <map>
 #include "Camera/RecordPolicy.h"
+#include "Camera/StreamQuality.h"
 #include "Server/AlertRegistry.h"
 #include "Server/GlobalMonitor.h"
 #include "Server/HealthEvaluator.h"
@@ -289,4 +290,151 @@ TEST(HealthAlerts, RegistryKeepsOpenAlertsAndRecentEvents) {
     EXPECT_EQ(604u, j3["seq"].asUInt64());
     EXPECT_EQ(1u, reg.toJson(0, 1)["recent"].size());
     reg.clear();
+}
+
+TEST(StreamQuality, UptimeAndDisconnects) {
+    const int64_t t0 = 1000000;
+    StreamQuality q(t0);
+    q.onLive(true, t0);
+    q.onLive(false, t0 + 600);   // 10 min live, then down
+    q.onLive(true, t0 + 900);    // 5 min down
+    q.onLive(true, t0 + 950);    // same state: ignored
+    auto s = q.snapshot(t0 + 1200);
+    EXPECT_TRUE(s.live);
+    EXPECT_EQ(1, s.disconnects_1h);
+    EXPECT_EQ(1, s.disconnects_24h);
+    EXPECT_NEAR(75.0, s.uptime_pct_24h, 0.01); // 900 of 1200 s
+    EXPECT_EQ(t0, s.window_started_at);
+    // Two hours later the disconnect left the 1 h window; a day later the 24 h one too.
+    s = q.snapshot(t0 + 600 + 7200);
+    EXPECT_EQ(0, s.disconnects_1h);
+    EXPECT_EQ(1, s.disconnects_24h);
+    s = q.snapshot(t0 + 600 + 90000);
+    EXPECT_EQ(0, s.disconnects_24h);
+    EXPECT_NEAR(100.0, s.uptime_pct_24h, 0.01);
+}
+
+TEST(StreamQuality, BaselineAfterWarmupOnSteadyWindow) {
+    StreamBaselineConfig cfg;
+    cfg.warmup_sec = 120;
+    cfg.window_sec = 300;
+    const int64_t t0 = 0;
+    StreamQuality q(t0);
+    q.onLive(true, t0);
+    // Samples during warm-up do not count.
+    q.onSample(5, 100, "H264 1920x1080", t0 + 60, cfg);
+    EXPECT_LT(q.snapshot(t0 + 60).fps_baseline, 0);
+    for (int i = 0; i < 6; ++i) {
+        q.onSample(25 + (i % 2), 2000, "H264 1920x1080", t0 + 120 + 60 * i, cfg);
+    }
+    auto s = q.snapshot(t0 + 500);
+    EXPECT_NEAR(25.5, s.fps_baseline, 0.6);
+    EXPECT_NEAR(2000, s.bitrate_baseline, 0.1);
+    EXPECT_GT(s.baseline_at, 0);
+    EXPECT_DOUBLE_EQ(26, s.fps);
+}
+
+TEST(StreamQuality, UnsteadyWindowIsDroppedAndBaselineSurvivesDisconnect) {
+    StreamBaselineConfig cfg;
+    cfg.warmup_sec = 0;
+    cfg.window_sec = 240;
+    StreamQuality q(0);
+    q.onLive(true, 0);
+    const double wild[] = { 5, 25, 5, 25, 5 };
+    for (int i = 0; i < 5; ++i) {
+        q.onSample(wild[i], 1000, "H264 1280x720", 60 * (i + 1), cfg);
+    }
+    EXPECT_LT(q.snapshot(400).fps_baseline, 0);
+    for (int i = 0; i < 5; ++i) {
+        q.onSample(15, 1000, "H264 1280x720", 400 + 60 * i, cfg);
+    }
+    EXPECT_NEAR(15, q.snapshot(700).fps_baseline, 0.01);
+    // A reconnect keeps it, but the sample of the old connection is dropped.
+    q.onLive(false, 800);
+    q.onLive(true, 900);
+    EXPECT_NEAR(15, q.snapshot(950).fps_baseline, 0.01);
+    EXPECT_LT(q.snapshot(950).fps, 0);
+    // A new resolution restarts learning.
+    q.onSample(15, 1000, "H264 1920x1080", 1000, cfg);
+    EXPECT_LT(q.snapshot(1000).fps_baseline, 0);
+}
+
+TEST(StreamQuality, LongDriftIsLearntAgain) {
+    StreamBaselineConfig cfg;
+    cfg.warmup_sec = 0;
+    cfg.window_sec = 120;
+    cfg.drift_relearn_sec = 3600;
+    StreamQuality q(0);
+    q.onLive(true, 0);
+    for (int i = 0; i < 4; ++i) {
+        q.onSample(25, 1000, "H264", 60 * (i + 1), cfg);
+    }
+    ASSERT_NEAR(25, q.snapshot(300).fps_baseline, 0.01);
+    // The installer lowered the camera to 12 fps: kept as a deviation for an hour...
+    int64_t t = 300;
+    for (; t < 300 + 3540; t += 60) {
+        q.onSample(12, 500, "H264", t, cfg);
+    }
+    EXPECT_NEAR(25, q.snapshot(t).fps_baseline, 0.01);
+    // ... then learnt again.
+    for (int i = 0; i < 6; ++i, t += 60) {
+        q.onSample(12, 500, "H264", t, cfg);
+    }
+    EXPECT_NEAR(12, q.snapshot(t).fps_baseline, 0.01);
+}
+
+TEST(HealthCamera, EvaluatesOfflineNoVideoAndDegraded) {
+    CameraThresholds th = CameraThresholds::fromConfig();
+    CameraInput in;
+    in.streams[0].present = true;
+    in.streams[1].present = true;
+    std::vector<std::string> reasons;
+    // Both streams down: offline.
+    EXPECT_EQ(HealthLevel::CRITICAL, evaluateCamera(in, th, reasons));
+    EXPECT_FALSE(cameraOnline(in));
+    EXPECT_EQ("offline", reasons[0]);
+
+    // Main live and fine, sub down: online, warning.
+    in.streams[0].live = true;
+    in.streams[0].last_frame_age_ms = 40;
+    reasons.clear();
+    EXPECT_EQ(HealthLevel::WARNING, evaluateCamera(in, th, reasons));
+    EXPECT_TRUE(cameraOnline(in));
+
+    // Both live; main sends nothing for 15 s: no video = critical.
+    in.streams[1].live = true;
+    in.streams[1].last_frame_age_ms = 40;
+    in.streams[0].last_frame_age_ms = 15000;
+    reasons.clear();
+    EXPECT_EQ(HealthLevel::CRITICAL, evaluateCamera(in, th, reasons));
+    EXPECT_TRUE(cameraNoVideo(in, th));
+
+    // Healthy frames but fps at 40 % of the baseline: only a warning (5.4).
+    in.streams[0].last_frame_age_ms = 40;
+    in.streams[0].fps_ratio = 0.4;
+    reasons.clear();
+    EXPECT_EQ(HealthLevel::WARNING, evaluateCamera(in, th, reasons));
+    ASSERT_EQ(1u, reasons.size());
+    EXPECT_EQ("main.fps_ratio", reasons[0]);
+
+    // No baseline yet (-1): not judged. Not recording while it should: critical.
+    in.streams[0].fps_ratio = -1;
+    in.recording_stalled = true;
+    reasons.clear();
+    EXPECT_EQ(HealthLevel::CRITICAL, evaluateCamera(in, th, reasons));
+    in.recording_stalled = false;
+    in.controller_expected = true;
+    in.controller_connected = false;
+    reasons.clear();
+    EXPECT_EQ(HealthLevel::WARNING, evaluateCamera(in, th, reasons));
+    EXPECT_EQ("controller.disconnected", reasons[0]);
+}
+
+TEST(HealthMonitorConfig, LowerIsWorsePairsCheckTheOtherWay) {
+    using namespace HealthMonitorConfig;
+    auto get = [](const std::string &key) {
+        return key == "monitor.fpsRatioWarn" ? std::string("0.8") : (key == "monitor.fpsRatioCrit" ? std::string("0.5") : std::string());
+    };
+    EXPECT_EQ("", validateChanges({ { "monitor.fpsRatioWarn", "0.9" } }, get));
+    EXPECT_NE("", validateChanges({ { "monitor.fpsRatioWarn", "0.4" } }, get));
 }

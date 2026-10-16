@@ -3,8 +3,9 @@
 Hợp đồng cho app desktop monitor (vận hành/NOC). App gọi định kỳ tới **từng** MediaServer; mỗi
 node tự đánh giá trạng thái và trả snapshot đã tính sẵn, nên gọi dồn không làm nặng server.
 
-Trạng thái triển khai: nhóm `host`, `process`, `storage` (H1), `recording`, `delivery` và
-`/media/monitor/alerts` (H3). Các nhóm `ingest`, `cluster` trả `"unknown"` cho tới khi có số liệu.
+Trạng thái triển khai: nhóm `host`, `process`, `storage` (H1), `recording`, `delivery`,
+`/media/monitor/alerts` (H3), `ingest` và `/media/monitor/cameras` (H2). Nhóm `cluster` trả
+`"unknown"` cho tới khi có số liệu.
 
 ## 1. Xác thực
 
@@ -46,7 +47,7 @@ Trạng thái triển khai: nhóm `host`, `process`, `storage` (H1), `recording`
 | `host` | CPU, load, RAM, swap, NIC, file descriptor |
 | `process` | độ trễ/tải poller, hàng đợi pool blocking, GPU fallback |
 | `storage` | dung lượng, nghẽn IO, khả năng ghi của các ổ chứa bản ghi / DB / pool tier |
-| `ingest` | camera / luồng vào (chưa có) |
+| `ingest` | tỉ lệ camera offline, camera online mà không có hình |
 | `recording` | camera lẽ ra đang ghi mà không ghi, lỗi ghi file, thư mục bản ghi ghi được |
 | `delivery` | người xem so với giới hạn license, tỉ lệ từ chối yêu cầu xem |
 | `cluster` | sync, cụm, tích hợp (chưa có) |
@@ -61,6 +62,7 @@ Thêm field mới không đổi `schemaVersion`; app phải bỏ qua field lạ.
 | `/media/monitor/health` | 5–10 s | trạng thái tổng, thành phần, lý do |
 | `/media/monitor/summary` | 15–30 s | như `health` + toàn bộ số liệu theo nhóm |
 | `/media/monitor/alerts?since=<seq>` | 10 s | cảnh báo đang mở + sự kiện mới sau `seq` |
+| `/media/monitor/cameras?health=&page=&size=` | 30–60 s | camera kèm chỉ số chất lượng từng luồng |
 | `/media/monitor/config/get` | khi mở tab cấu hình | ngưỡng và tham số hiện hành |
 | `/media/monitor/config/set` | khi bấm lưu | POST JSON, đổi ngưỡng/tham số |
 
@@ -129,6 +131,7 @@ Tham số tuỳ chọn `rev`: nếu bằng `rev` hiện tại (mức và lý do 
 | `delivery.viewers` | `live`, `playback`, `total`, `limit` (giới hạn license, null = không giới hạn), `limit_used_pct` |
 | `delivery.play` | `window_sec`, `requests`, `failures`, `failure_pct` (trong cửa sổ), `failures_by_reason` (từ lúc khởi động: `Unauthorized`, `MaxRequest`, `ResourceUnavailable`, `OverlayForbidden`, `TranscodeDisabled`, ...) |
 | `alerts` | `active`, `critical`: số cảnh báo đang mở |
+| `ingest` | `cameras` (đang bật), `online`, `offline`, `offline_pct`, `no_video`, `no_video_pct`, `health` (`ok`/`warning`/`critical`/`unknown`: số camera theo mức) |
 
 Số không đo được trả `null`.
 
@@ -161,6 +164,19 @@ Poller không trả lời lệnh đo độ trễ sau 1 s (bị kẹt trong một
 | `recording.storage_writable` | recording | thư mục bản ghi chính không ghi được = critical | |
 | `viewers.limit_used_pct` | delivery | 80 / 95 (chỉ khi license có giới hạn) | `monitor.viewerLimitPctWarn` / `Crit` |
 | `play.failure_pct` | delivery | 5 / 20 (khi cửa sổ có ≥ `monitor.playMinRequests` yêu cầu) | `monitor.playFailurePctWarn` / `Crit` |
+| `cameras.offline_pct` | ingest | 5 / 20 (% camera đang bật) | `monitor.cameraOfflinePctWarn` / `Crit` |
+| `cameras.no_video_pct` | ingest | > 0 / 5 | `monitor.cameraNoVideoPctWarn` / `Crit` |
+
+Ngưỡng theo camera (mục 3.6), cùng dạng `monitor.<tên>Warn` / `Crit`:
+
+| Chỉ số luồng | Warn / Crit | Tên |
+|---|---|---|
+| `fps_ratio` = fps đo được / `fps_baseline` | ≤ 0.8 / ≤ 0.5 (thấp là xấu) | `fpsRatio` |
+| `bitrate_ratio` | ≤ 0.5 / ≤ 0.2 (thấp là xấu) | `bitrateRatio` |
+| `loss_pct` | 1 / 5 | `lossPct` |
+| `last_frame_age_ms` | 3000 / 10000 | `lastFrameAgeMs` |
+| `disconnects_1h` | 3 / 10 | `disconnects1h` |
+| `uptime_pct_24h` | ≤ 99 / ≤ 95 (thấp là xấu) | `uptimePct24h` |
 
 Ngưỡng là `>=`. Drop gói ở NIC ảo/multicast thường khác 0 nên ngưỡng `net.drops_per_sec` rộng hơn lỗi.
 
@@ -185,7 +201,66 @@ Ngưỡng là `>=`. Drop gói ở NIC ảo/multicast thường khác 0 nên ngư
   phân quyền cho mỗi lần tải playlist nên số yêu cầu HLS cao hơn số người xem. Yêu cầu tới stream không
   tồn tại không được tính (stream xem lại được tạo theo yêu cầu nên "chưa có" không phải lỗi).
 
-### 3.6 `/media/monitor/alerts`
+### 3.6 `/media/monitor/cameras`
+
+Tham số: `health` = danh sách mức cách nhau dấu phẩy (mặc định `warning,critical`; `all` = mọi
+camera), `page` (từ 1), `size` (mặc định 50, tối đa 500). Camera xấu nhất trước, cùng mức theo tên.
+
+```json
+{
+  "code": 0,
+  "data": {
+    "schemaVersion": 1, "mediaServerId": "ms-01", "generatedAt": 1760500000, "rev": 12,
+    "total": 3, "page": 1, "size": 50,
+    "cameras": [{
+      "cameraId": "cam-01", "name": "Cổng chính", "ip": "10.0.0.5", "manufacturer": "Hikvision",
+      "health": "warning", "healthSince": 1760499000, "observed": "warning",
+      "reasons": ["main.fps_ratio", "main.bitrate_ratio"],
+      "online": true,
+      "recording": {"state": "active", "expected": true, "mode": "RecordAlways", "lastWriteAt": 1760499990},
+      "controller": {"connected": true, "status": "success"},
+      "streams": {
+        "main": {"streamId": "cam-01-main", "live": true, "status": "success", "lastChangeAt": 1760400000,
+                 "codec": "H264", "width": 1920, "height": 1080,
+                 "fps": 10.4, "fps_baseline": 25.0, "fps_ratio": 0.42,
+                 "bitrate_kbps": 2630, "bitrate_baseline": 6700, "bitrate_ratio": 0.39,
+                 "baseline_at": 1760401000, "sampled_at": 1760499960,
+                 "loss_pct": 0.0, "last_frame_age_ms": 40,
+                 "disconnects_1h": 0, "disconnects_24h": 1, "uptime_pct_24h": 99.9, "window_started_at": 1760413600},
+        "sub": null
+      }
+    }]
+  }
+}
+```
+
+- `health`: mức của camera sau hysteresis (`monitor.sustainSamples` chu kỳ), `observed`: mức của chu kỳ
+  vừa đo (đổi ngay), `healthSince`: lúc `health` bắt đầu.
+- Luật: **critical** khi camera offline (không luồng nào live), lẽ ra đang ghi mà
+  không ghi (`recording.stalled`), hoặc luồng live mà không có frame video ≥ `lastFrameAgeMs` crit
+  (`<luồng>.no_video`); **warning** khi một trong hai luồng mất, `last_frame_age_ms` ≥ warn, fps/bitrate
+  thấp hơn baseline, mất gói, mất kết nối nhiều, uptime thấp, hoặc controller (ONVIF/ISAPI/PSIA) không
+  kết nối (camera không phải `GENERIC-RTSP`). Mã trong `reasons[]`: `offline`, `recording.stalled`,
+  `controller.disconnected`, `main.offline`, `main.no_video`, `main.last_frame_age_ms`, `main.fps_ratio`,
+  `main.bitrate_ratio`, `main.loss_pct`, `main.disconnects_1h`, `main.uptime_pct_24h` (tương tự `sub.`).
+- Luồng bị tắt trong cấu hình camera hoặc không có URL: `null`.
+- `fps` là fps **đo được** (số frame video nhận / thời gian giữa hai mẫu), không phải fps khai báo trong
+  SPS. `bitrate_kbps` lấy từ track, track không báo thì từ tốc độ byte của luồng. Cả hai lấy mẫu cùng
+  thống kê luồng, mỗi 60 s, nên đổi fps/bitrate hiện ra sau tối đa ~1 phút; sau khi mất kết nối là
+  `null` cho tới mẫu đầu của kết nối mới.
+- **Baseline** (`fps_baseline`, `bitrate_baseline`, `baseline_at`): trung bình các mẫu trong
+  `monitor.baselineWindowSec` (300 s) sau khi luồng live liên tục `monitor.baselineWarmupSec` (120 s);
+  cửa sổ có độ lệch chuẩn fps > 15 % trung bình bị bỏ, đo lại. Giữ qua mất kết nối; học lại khi codec
+  hoặc độ phân giải đổi, khi cấu hình luồng camera được đổi qua API (media profile, video config rule),
+  hoặc khi fps lệch > 20 % liên tục 1 giờ (người cài đặt chủ động đổi fps). Chưa có baseline → ratio
+  `null`, không đánh giá. Baseline nằm trong RAM, học lại sau khi khởi động lại.
+- `loss_pct`: tỉ lệ mất gói RTP từ lúc kết nối (chỉ nguồn RTSP), `null` với nguồn khác.
+- `last_frame_age_ms`: thời gian từ frame video cuối vào MediaServer.
+- `disconnects_*`, `uptime_pct_24h` tính từ lúc MediaServer bắt đầu theo dõi luồng
+  (`window_started_at`), mất khi khởi động lại. `uptime_pct_24h` chỉ được đánh giá sau 1 giờ theo dõi.
+- Không có mật khẩu/URL của camera trong response.
+
+### 3.7 `/media/monitor/alerts`
 
 ```json
 {
@@ -255,9 +330,11 @@ Ngưỡng là `>=`. Drop gói ở NIC ảo/multicast thường khác 0 nên ngư
   `code=902001` HTTP 400, không đổi gì.
 - Giá trị phải là số ≥ 0; khoá đếm (`monitor.enable` 0/1, `monitor.intervalSec` ≥ 1,
   `monitor.sustainSamples` ≥ 1, `monitor.gpuFallbackWindowSec` ≥ 0, `monitor.recordStaleSec` ≥ 0,
-  `monitor.playWindowSec` ≥ 10, `monitor.playMinRequests` ≥ 1,
+  `monitor.playWindowSec` ≥ 10, `monitor.playMinRequests` ≥ 1, `monitor.baselineWarmupSec` ≥ 0,
+  `monitor.baselineWindowSec` ≥ 60,
   `globalmonitor.disk_io_sustain_samples` ≥ 1) phải là số nguyên.
-- Mỗi cặp warn/crit phải có warn < crit (so với giá trị mới hoặc giá trị đang lưu).
+- Mỗi cặp warn/crit phải có warn < crit, riêng chỉ số "thấp là xấu" (`fpsRatio`, `bitrateRatio`,
+  `uptimePct24h`) phải có warn > crit; so với giá trị mới hoặc giá trị đang lưu.
 - Thành công: `{"code":0,"changed":<số khoá đổi>,"data":<như config/get>}`; ghi file cấu hình.
 - Request không phải POST → `code=902001`.
 
@@ -272,6 +349,8 @@ Ngưỡng là `>=`. Drop gói ở NIC ảo/multicast thường khác 0 nên ngư
 | `monitor.recordStaleSec` | 0 | không có segment trong chừng này giây = không ghi; 0 = `mp4_max_second × 1.5 + 60` |
 | `monitor.playWindowSec` | 300 | cửa sổ đếm yêu cầu/lỗi xem |
 | `monitor.playMinRequests` | 20 | ít yêu cầu hơn thì không đánh giá tỉ lệ lỗi |
+| `monitor.baselineWarmupSec` | 120 | luồng live liên tục chừng này giây mới bắt đầu học baseline |
+| `monitor.baselineWindowSec` | 300 | số giây mẫu được lấy trung bình thành baseline |
 | `monitor.<tên>Warn` / `monitor.<tên>Crit` | xem bảng 3.3 | ngưỡng |
 
 ## 5. Ảnh hưởng tới API cũ
