@@ -1290,6 +1290,20 @@ bool SyncManager::isRunning() {
     return _running;
 }
 
+SyncManager::HealthView SyncManager::healthView() {
+    lock_guard<mutex> lock(_mtx);
+    HealthView v;
+    v.running = _running;
+    v.bootstrapped = _bootstrapped;
+    v.single_node = _single_node;
+    v.decommissioned = _decommissioned.load();
+    for (const auto &peer : _peers) {
+        auto it = _last_complete_pull_ms.find(peer.first);
+        v.last_complete_pull_ms[peer.first] = it == _last_complete_pull_ms.end() ? 0 : it->second;
+    }
+    return v;
+}
+
 bool SyncManager::isCaughtUpSince(uint64_t since_ms) {
     lock_guard<mutex> lock(_mtx);
     if (!_running || !_bootstrapped) {

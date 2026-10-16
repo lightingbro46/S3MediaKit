@@ -438,3 +438,30 @@ TEST(HealthMonitorConfig, LowerIsWorsePairsCheckTheOtherWay) {
     EXPECT_EQ("", validateChanges({ { "monitor.fpsRatioWarn", "0.9" } }, get));
     EXPECT_NE("", validateChanges({ { "monitor.fpsRatioWarn", "0.4" } }, get));
 }
+
+TEST(HealthStorage, PoolLevelFollowsPoolHealthCheck) {
+    EXPECT_EQ(HealthLevel::OK, poolHealthLevel("OK", false));
+    EXPECT_EQ(HealthLevel::WARNING, poolHealthLevel("WARNING", false));
+    EXPECT_EQ(HealthLevel::WARNING, poolHealthLevel("HIGH", false));
+    EXPECT_EQ(HealthLevel::CRITICAL, poolHealthLevel("CRITICAL", false));
+    // MinIO stopped: the health check marks the pool OFFLINE after its failure threshold.
+    EXPECT_EQ(HealthLevel::CRITICAL, poolHealthLevel("OFFLINE", false));
+    EXPECT_EQ(HealthLevel::UNKNOWN, poolHealthLevel("UNKNOWN", false));
+    // No recent check: the last status is not trusted either way.
+    EXPECT_EQ(HealthLevel::UNKNOWN, poolHealthLevel("OFFLINE", true));
+    EXPECT_EQ(HealthLevel::UNKNOWN, poolHealthLevel("OK", true));
+}
+
+TEST(HealthCluster, WebhookFailureRate) {
+    const auto t = th(0.01, 20);
+    double pct = -1;
+    EXPECT_EQ(HealthLevel::OK, failureRateLevel(0, 0, 10, t, pct));
+    EXPECT_EQ(0, pct);
+    EXPECT_EQ(HealthLevel::OK, failureRateLevel(50, 0, 10, t, pct));
+    // Few calls: one lost hook is a warning, never critical.
+    EXPECT_EQ(HealthLevel::WARNING, failureRateLevel(1, 1, 10, t, pct));
+    EXPECT_EQ(100, pct);
+    EXPECT_EQ(HealthLevel::WARNING, failureRateLevel(100, 5, 10, t, pct));
+    EXPECT_EQ(HealthLevel::CRITICAL, failureRateLevel(10, 2, 10, t, pct));
+    EXPECT_EQ(20, pct);
+}

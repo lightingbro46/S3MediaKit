@@ -117,6 +117,17 @@ public:
 
     bool isRunning();
 
+    // State for the health monitor, copied under the lock (no database access).
+    struct HealthView {
+        bool running = false;
+        bool bootstrapped = false;
+        bool single_node = false;
+        bool decommissioned = false;
+        // peer -> wall clock ms of the last pull answered with everything (0 = none yet).
+        std::unordered_map<std::string, uint64_t> last_complete_pull_ms;
+    };
+    HealthView healthView();
+
     // Bootstrapped, and every peer answered a pull sent at or after `since_ms` with all it had: the ESC
     // data includes everything the peers held at that time. True without peers.
     bool isCaughtUpSince(uint64_t since_ms);

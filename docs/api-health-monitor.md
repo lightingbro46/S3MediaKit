@@ -4,8 +4,8 @@ Hợp đồng cho app desktop monitor (vận hành/NOC). App gọi định kỳ 
 node tự đánh giá trạng thái và trả snapshot đã tính sẵn, nên gọi dồn không làm nặng server.
 
 Trạng thái triển khai: nhóm `host`, `process`, `storage` (H1), `recording`, `delivery`,
-`/media/monitor/alerts` (H3), `ingest` và `/media/monitor/cameras` (H2). Nhóm `cluster` trả
-`"unknown"` cho tới khi có số liệu.
+`/media/monitor/alerts` (H3), `ingest` và `/media/monitor/cameras` (H2), pool tier / job / độ trễ
+ghi DB trong `storage` và nhóm `cluster` (H4).
 
 ## 1. Xác thực
 
@@ -46,11 +46,11 @@ Trạng thái triển khai: nhóm `host`, `process`, `storage` (H1), `recording`
 |---|---|
 | `host` | CPU, load, RAM, swap, NIC, file descriptor |
 | `process` | độ trễ/tải poller, hàng đợi pool blocking, GPU fallback |
-| `storage` | dung lượng, nghẽn IO, khả năng ghi của các ổ chứa bản ghi / DB / pool tier |
+| `storage` | dung lượng, nghẽn IO, khả năng ghi của các ổ chứa bản ghi / DB / pool tier; độ trễ lấy khoá ghi DB; sức khỏe, throughput, backlog của pool tier; job tier lỗi |
 | `ingest` | tỉ lệ camera offline, camera online mà không có hình |
 | `recording` | camera lẽ ra đang ghi mà không ghi, lỗi ghi file, thư mục bản ghi ghi được |
-| `delivery` | người xem so với giới hạn license, tỉ lệ từ chối yêu cầu xem |
-| `cluster` | sync, cụm, tích hợp (chưa có) |
+| `delivery` | người xem so với giới hạn license, tỉ lệ từ chối yêu cầu xem, restore S3 cho xem lại bị lỗi |
+| `cluster` | node khác trong cụm liên lạc được không, sync ESC, node bị bỏ khỏi cụm, webhook tới VMS/ESC, Kafka |
 
 ## 3. Endpoint
 
@@ -132,6 +132,17 @@ Tham số tuỳ chọn `rev`: nếu bằng `rev` hiện tại (mức và lý do 
 | `delivery.play` | `window_sec`, `requests`, `failures`, `failure_pct` (trong cửa sổ), `failures_by_reason` (từ lúc khởi động: `Unauthorized`, `MaxRequest`, `ResourceUnavailable`, `OverlayForbidden`, `TranscodeDisabled`, ...) |
 | `alerts` | `active`, `critical`: số cảnh báo đang mở |
 | `ingest` | `cameras` (đang bật), `online`, `offline`, `offline_pct`, `no_video`, `no_video_pct`, `health` (`ok`/`warning`/`critical`/`unknown`: số camera theo mức) |
+| `storage.database` | `checked_at`, `stale`, `write_ms` (thời gian lấy khoá ghi `BEGIN IMMEDIATE` DB MediaServer, null khi lỗi), `error` |
+| `storage.tier` | `enabled` (false khi build tắt tier storage); khi bật: `pools[]` (`id`, `name`, `tier`, `type`, `enabled`, `usage_pct`, `health_check`, `health_status` `OK`/`WARNING`/`HIGH`/`CRITICAL`/`OFFLINE`/`UNKNOWN`, `health_stale`, `message`, `throughput_low`, `write_mbps`, `backlog_bytes`, `backlog_eta_sec`), `jobs` (`tiering_failed_24h`, `tiering_pending`, `tiering_running`, `restore_failed_24h`, `restore_failed_1h`, `restore_pending`) |
+| `delivery.restore` | `failed_1h`, `failed_24h` (khi bật tier storage) |
+| `cluster` | `peers_known`, `peers_unreachable`, `peers[]` (`id`, `name`, `reachable`) |
+| `cluster.sync` | `enabled` (false khi build tắt sync hoặc `database.enable_sync_db=0`), `bootstrapped`, `single_node`, `decommissioned`, `peers[]` (`id`, `last_ok_at`, `last_ok_age_sec`) |
+| `cluster.webhook` | `window_sec`, `requests`, `failures`, `failure_pct`: các lần gọi tới `hook.api_url` (VMS/ESC), kết quả cuối sau khi đã retry; lời gọi giữa các node không tính (đã có `peers_unreachable`) |
+| `cluster.kafka` | `enabled`; khi bật: `mode` (`LIVE`/`SPOOL`/`DRAIN`), `brokers_up`, `brokers_known`, `queued`, `delivered`, `spool_pending`, `spool_bytes`, `dropped_rate` (vượt hạn mức/camera, không tính là lỗi), `dropped` (mất do giới hạn spool/hàng đợi), `last_drop_at` |
+
+Số liệu `storage.database`, `storage.tier`, `delivery.restore` đọc SQLite nên chạy trên pool `api` mỗi
+`monitor.slowIntervalSec` (60 s), chu kỳ đánh giá dùng kết quả gần nhất; kết quả cũ hơn 3 lần chu kỳ đó
+(`stale`) vẫn trả về nhưng không đánh giá.
 
 Số không đo được trả `null`.
 
@@ -166,6 +177,19 @@ Poller không trả lời lệnh đo độ trễ sau 1 s (bị kẹt trong một
 | `play.failure_pct` | delivery | 5 / 20 (khi cửa sổ có ≥ `monitor.playMinRequests` yêu cầu) | `monitor.playFailurePctWarn` / `Crit` |
 | `cameras.offline_pct` | ingest | 5 / 20 (% camera đang bật) | `monitor.cameraOfflinePctWarn` / `Crit` |
 | `cameras.no_video_pct` | ingest | > 0 / 5 | `monitor.cameraNoVideoPctWarn` / `Crit` |
+| `replay.restore_failures_1h` | delivery | 1 / 10 job restore lỗi trong 1 h | `monitor.restoreFailed1hWarn` / `Crit` |
+| `db.write_ms` | storage | 500 / 2000 ms; lấy khoá ghi lỗi (DB khoá quá `busy_timeout`, file không ghi được) = critical | `monitor.dbWriteMsWarn` / `Crit` |
+| `pool.health` (theo pool) | storage | theo health check của pool: `WARNING`/`HIGH` = warning, `CRITICAL`/`OFFLINE` = critical, quá hạn = unknown (đã có ngưỡng lỗi/hồi phục riêng) | `storage.pool_health_*` |
+| `pool.throughput_low` (theo pool) | storage | pool nhận dữ liệu tier chậm hơn nhu cầu = warning (đã sustain trong PoolThroughputTracker) | `storage.pool_throughput_*` |
+| `pool.backlog_eta_sec` (theo pool) | storage | 6 h / 24 h | `monitor.poolBacklogEtaSecWarn` / `Crit` |
+| `jobs.tiering_failed_24h` | storage | 1 / 10 | `monitor.tierJobsFailed24hWarn` / `Crit` |
+| `cluster.peers_unreachable` | cluster | có node không trả lời health check (60 s) = warning | |
+| `cluster.decommissioned` | cluster | node bị bỏ khỏi cụm = critical | |
+| `sync.bootstrapped` | cluster | chưa bootstrap ESC xong = warning | |
+| `sync.last_ok_age_sec` (theo peer) | cluster | 120 / 600 s từ lần pull gần nhất lấy hết dữ liệu của peer | `monitor.syncLastOkAgeSecWarn` / `Crit` |
+| `webhook.failure_pct` | cluster | > 0 / 20 % trong `monitor.integrationWindowSec`; dưới 10 lần gọi thì lỗi chỉ là warning; 4xx là câu trả lời của backend, không tính lỗi | `monitor.webhookFailurePctWarn` / `Crit` |
+| `kafka.spool` | cluster | không broker nào nhận, sự kiện đang ghi xuống spool = warning | |
+| `kafka.dropped` | cluster | warning trong `monitor.integrationWindowSec` sau mỗi lần mất sự kiện | |
 
 Ngưỡng theo camera (mục 3.6), cùng dạng `monitor.<tên>Warn` / `Crit`:
 
@@ -331,7 +355,7 @@ camera), `page` (từ 1), `size` (mặc định 50, tối đa 500). Camera xấu
 - Giá trị phải là số ≥ 0; khoá đếm (`monitor.enable` 0/1, `monitor.intervalSec` ≥ 1,
   `monitor.sustainSamples` ≥ 1, `monitor.gpuFallbackWindowSec` ≥ 0, `monitor.recordStaleSec` ≥ 0,
   `monitor.playWindowSec` ≥ 10, `monitor.playMinRequests` ≥ 1, `monitor.baselineWarmupSec` ≥ 0,
-  `monitor.baselineWindowSec` ≥ 60,
+  `monitor.baselineWindowSec` ≥ 60, `monitor.slowIntervalSec` ≥ 10, `monitor.integrationWindowSec` ≥ 10,
   `globalmonitor.disk_io_sustain_samples` ≥ 1) phải là số nguyên.
 - Mỗi cặp warn/crit phải có warn < crit, riêng chỉ số "thấp là xấu" (`fpsRatio`, `bitrateRatio`,
   `uptimePct24h`) phải có warn > crit; so với giá trị mới hoặc giá trị đang lưu.
@@ -351,6 +375,8 @@ camera), `page` (từ 1), `size` (mặc định 50, tối đa 500). Camera xấu
 | `monitor.playMinRequests` | 20 | ít yêu cầu hơn thì không đánh giá tỉ lệ lỗi |
 | `monitor.baselineWarmupSec` | 120 | luồng live liên tục chừng này giây mới bắt đầu học baseline |
 | `monitor.baselineWindowSec` | 300 | số giây mẫu được lấy trung bình thành baseline |
+| `monitor.slowIntervalSec` | 60 | chu kỳ kiểm tra cần SQLite (độ trễ ghi DB, pool tier, job) |
+| `monitor.integrationWindowSec` | 300 | cửa sổ đếm webhook, thời gian giữ cảnh báo sau khi Kafka mất sự kiện |
 | `monitor.<tên>Warn` / `monitor.<tên>Crit` | xem bảng 3.3 | ngưỡng |
 
 ## 5. Ảnh hưởng tới API cũ

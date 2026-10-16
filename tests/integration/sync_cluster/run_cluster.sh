@@ -12,6 +12,7 @@
 #                                        # offline, move back, cross-node timeline, retention
 #   run_cluster.sh [work_dir] speaker    # speaker config sync: add, change, move, restart,
 #                                        # sync_config_to_db=0, delete
+#   run_cluster.sh [work_dir] monitor    # /media/monitor cluster component: node-b down, back, hook API down
 #   run_cluster.sh [work_dir] removal    # node-b removed from the cluster (HTTP 412), cleanup of
 #                                        # its ESC data on node-a, node-b added back
 #
@@ -59,7 +60,7 @@ stop_nodes() {
 
 stop_all() {
     stop_nodes
-    for p in mock_api rtsp_source; do
+    for p in mock_api rtsp_source fake_s3; do
         if [ -f "$WORK/$p.pid" ]; then
             kill "$(cat "$WORK/$p.pid")" 2>/dev/null
             rm -f "$WORK/$p.pid"
@@ -175,6 +176,30 @@ if [ "${2:-}" = "failover" ]; then
     check retention
     report fo4_retention
     echo "failover scenario: $fail check(s) failed"
+    exit "$fail"
+fi
+
+if [ "${2:-}" = "monitor" ]; then
+    fail=0
+    check() { python3 "$HERE/check_monitor.py" "$WORK" "$@" || fail=$((fail + 1)); }
+    for n in $NODES; do start_node "$n" init; done
+    wait_healthy 18081
+    echo "m1: both nodes up"; check m1_ok 240
+    # ClusterManager health-checks peers every 60 s, then monitor.sustainSamples cycles.
+    echo "m2: node-b stopped"; stop_nodes node-b; check m2_peer_down 180
+    echo "m3: node-b back"; start_node node-b back; check m3_peer_back 180
+    echo "m4: hook API stopped"
+    kill "$(cat "$WORK/mock_api.pid")"; check m4_hook_down 120
+    nohup python3 "$HERE/mock_api.py" 18090 "$WORK/not_qualified.txt" >> "$WORK/mock_api.log" 2>&1 &
+    echo $! > "$WORK/mock_api.pid"
+    echo "m5: object storage pool on a fake S3"
+    nohup python3 "$HERE/fake_s3.py" 19000 > "$WORK/fake_s3.log" 2>&1 &
+    echo $! > "$WORK/fake_s3.pid"
+    check m5_pool_ok 180
+    echo "m6: object storage stopped"
+    kill "$(cat "$WORK/fake_s3.pid")"; rm -f "$WORK/fake_s3.pid"; check m6_pool_down 240
+    report monitor
+    echo "monitor scenario: $fail check(s) failed"
     exit "$fail"
 fi
 

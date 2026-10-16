@@ -31,6 +31,8 @@ extern const std::string kPlayWindowSec;   // window of the play request/failure
 extern const std::string kPlayMinRequests; // fewer requests in the window: failure rate not evaluated (default 20)
 extern const std::string kBaselineWarmupSec; // a stream must be live this long before its fps/bitrate is learnt (default 120)
 extern const std::string kBaselineWindowSec; // fps/bitrate samples averaged into the baseline (default 300)
+extern const std::string kSlowIntervalSec;   // database checks (pools, jobs, write latency) on the API pool (default 60)
+extern const std::string kIntegrationWindowSec; // window of the webhook counters and of a Kafka drop warning (default 300)
 
 /**
  * One warn/crit pair of a numeric metric: config keys "monitor.<name>Warn" / "monitor.<name>Crit".
@@ -87,6 +89,16 @@ const char *recordingStateString(RecordingState state);
 RecordingState evaluateRecording(bool expected, int64_t expected_since, int64_t last_write, int64_t now, int stale_sec);
 // Default stale time: a segment closes every mp4_max_second, plus margin for the close itself.
 int defaultRecordStaleSec(int mp4_max_second);
+
+// Level of a tier pool from TierStorageManager's health check, which already applies its own
+// failure/recovery thresholds: OFFLINE/CRITICAL = critical, HIGH/WARNING = warning, stale = unknown.
+HealthLevel poolHealthLevel(const std::string &health_status, bool stale);
+/**
+ * Failure rate of calls to an outside system (webhooks) in a window. With fewer than
+ * `min_requests` calls a rate says little: any failure is a warning, never critical.
+ */
+HealthLevel failureRateLevel(uint64_t requests, uint64_t failures, uint64_t min_requests,
+                             const HealthThreshold &th, double &failure_pct);
 
 /**
  * Per camera evaluation (section 5.4): offline, not recording while it should, or no video on a
@@ -168,6 +180,8 @@ public:
     void onRecordWritten(const std::string &camera_id, uint64_t bytes);
     // Result of a play authorization (kBroadcastMediaPlayed): empty = allowed. Any thread.
     void onPlayResult(const std::string &err);
+    // Final result of a webhook call to the VMS/ESC (after its retries). Any thread.
+    void onWebhookResult(bool ok);
 
 private:
     HealthMonitor();
@@ -193,6 +207,11 @@ private:
     void collectRecording(HealthEvaluator &ev, Json::Value &summary, int64_t now);
     void collectIngest(HealthEvaluator &ev, Json::Value &summary, std::vector<Json::Value> &cameras, int64_t now);
     void collectDelivery(HealthEvaluator &ev, Json::Value &summary, int64_t now);
+    void collectCluster(HealthEvaluator &ev, Json::Value &summary, int64_t now);
+    // Database part (SQLite) on BlockingExecutors::api(); the cycle evaluates its last result.
+    void startSlowCollect(int64_t now);
+    void slowCollect();
+    void evaluateSlow(HealthEvaluator &ev, Json::Value &summary, int64_t now);
 
 private:
     std::atomic<bool> _running{false};
@@ -229,6 +248,12 @@ private:
         uint64_t failures = 0;
     };
     std::deque<PlayBucket> _play_buckets;   // one per cycle, newest last
+    std::deque<PlayBucket> _webhook_buckets;
+    int64_t _slow_started_at = 0;  // unix seconds of the last slowCollect() dispatch
+    uint64_t _kafka_dropped = 0;   // EventBus drops at the previous cycle
+    int64_t _kafka_dropped_at = 0; // unix seconds of the last increase
+    // Sync peer -> wall clock ms it was first seen, the reference before its first complete pull.
+    std::map<std::string, uint64_t> _sync_peer_seen_ms;
 
     // Written from record-close threads and session pollers.
     mutable std::mutex _record_mtx;
@@ -240,6 +265,38 @@ private:
     std::mutex _play_mtx;
     PlayBucket _play_current;
     std::map<std::string, uint64_t> _play_failure_reasons; // since start
+    std::mutex _webhook_mtx;
+    PlayBucket _webhook_current;
+
+    // Result of the last slowCollect(), written on the API pool.
+    struct PoolView {
+        std::string id, name, tier, type;
+        bool enabled = true;
+        bool health_check = true;   // health_check_enabled of the pool
+        std::string health_status;  // UNKNOWN | OK | WARNING | HIGH | CRITICAL | OFFLINE
+        bool health_known = false;
+        bool stale = true;
+        float usage_pct = 0;
+        std::string message;
+        bool throughput_known = false;
+        bool throughput_low = false;
+        float write_mbps = 0;
+        int64_t backlog_bytes = 0;
+        int64_t backlog_eta_sec = -1;
+    };
+    struct SlowResult {
+        bool valid = false;
+        int64_t at = 0;
+        double db_write_ms = -1;   // BEGIN IMMEDIATE on the MediaServer database, -1 = failed
+        std::string db_error;
+        bool tier = false;
+        std::vector<PoolView> pools;
+        int tiering_failed_24h = 0, tiering_pending = 0, tiering_running = 0;
+        int restore_failed_24h = 0, restore_failed_1h = 0, restore_pending = 0;
+    };
+    mutable std::mutex _slow_mtx;
+    SlowResult _slow;
+    std::atomic<bool> _slow_running{false};
 };
 
 } // namespace managerkit

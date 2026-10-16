@@ -302,6 +302,22 @@ string getVhost(const HttpArgs &value) {
 
 static atomic<uint64_t> s_hook_index { 0 };
 
+// Final result of a hook delivery (after retries) for the health monitor. Only calls to the VMS/ESC
+// (hook.api_url): do_http_hook also carries peer calls (sync pulls, health checks), which the
+// monitor sees as peer reachability. A 4xx refusal is the backend's answer; an exception in the
+// caller's handler is reported a second time, not a delivery.
+static void noteHookResult(const string &url, const string &err) {
+    GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
+    if (hook_api_url.empty() || url.compare(0, hook_api_url.size(), hook_api_url) != 0) {
+        return;
+    }
+    static const string invoker_failed = "[do hook invoker failed]";
+    if (err.compare(0, invoker_failed.size(), invoker_failed) == 0) {
+        return;
+    }
+    HealthMonitor::Instance().onWebhookResult(err.empty() || isHookDenied(err));
+}
+
 void do_http_hook(const string &url, const ArgsType &body, const HeaderType &header, const function<void(const Value &, const string &)> &func, uint32_t retry) {
     GET_CONFIG(string, mediaServerId, General::kMediaServerId);
     GET_CONFIG(float, hook_timeoutSec, Hook::kTimeoutSec);
@@ -343,6 +359,7 @@ void do_http_hook(const string &url, const ArgsType &body, const HeaderType &hea
                 // Hook succeeded, but hook response exceeded 500ms, print warning log
                 DebugL << "hook " << url << " " << ticker.elapsedTime() << "ms,success:" << bodyStr;
             }
+            noteHookResult(url, err);
 
             if (func) {
                 func(obj, err);
@@ -446,6 +463,7 @@ void do_http_hook(const string &url, const HttpArgs &param, const HeaderType &he
                 // Hook succeeded, but hook response exceeded 500ms, print warning log
                 DebugL << "hook " << url << " " << ticker.elapsedTime() << "ms,success:" << paramStr;
             }
+            noteHookResult(url, err);
 
             if (func) {
                 func(obj, err);

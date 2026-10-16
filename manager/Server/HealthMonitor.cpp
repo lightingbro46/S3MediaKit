@@ -18,6 +18,15 @@
 #include "Util/onceToken.h"
 #include "GlobalMonitor.h"
 #include "HealthProbe.h"
+#include "ClusterManager.h"
+#include "Common/EventBus.h"
+#include "Storage/DbStorage.h"
+#ifdef ENABLE_SYNC_CHANGES
+#include "Extension/SyncManager.h"
+#endif
+#ifdef ENABLE_TIER_STORAGE
+#include "Local/TierStorageManager.h"
+#endif
 
 using namespace std;
 using namespace toolkit;
@@ -40,6 +49,8 @@ const string kPlayWindowSec = HM_FIELD "playWindowSec";
 const string kPlayMinRequests = HM_FIELD "playMinRequests";
 const string kBaselineWarmupSec = HM_FIELD "baselineWarmupSec";
 const string kBaselineWindowSec = HM_FIELD "baselineWindowSec";
+const string kSlowIntervalSec = HM_FIELD "slowIntervalSec";
+const string kIntegrationWindowSec = HM_FIELD "integrationWindowSec";
 
 const vector<ThresholdDef> &thresholdDefs() {
     static const vector<ThresholdDef> defs = {
@@ -61,6 +72,14 @@ const vector<ThresholdDef> &thresholdDefs() {
         // delivery (4.5)
         { "viewerLimitPct", "viewers.limit_used_pct", 80, 95, true },
         { "playFailurePct", "play.failure_pct", 5, 20, true },
+        { "restoreFailed1h", "replay.restore_failures_1h", 1, 10, true },
+        // storage (4.6), database checks every monitor.slowIntervalSec
+        { "dbWriteMs", "db.write_ms", 500, 2000, true },
+        { "poolBacklogEtaSec", "pool.backlog_eta_sec", 21600, 86400, true },
+        { "tierJobsFailed24h", "jobs.tiering_failed_24h", 1, 10, true },
+        // cluster (4.7)
+        { "syncLastOkAgeSec", "sync.last_ok_age_sec", 120, 600, true },
+        { "webhookFailurePct", "webhook.failure_pct", 0.01, 20, true },
         // ingest (4.3), share of the enabled cameras
         { "cameraOfflinePct", "cameras.offline_pct", 5, 20, true },
         { "cameraNoVideoPct", "cameras.no_video_pct", 0.01, 5, true },
@@ -93,6 +112,8 @@ static onceToken token([]() {
     mINI::Instance()[kPlayMinRequests] = 20;
     mINI::Instance()[kBaselineWarmupSec] = 120;
     mINI::Instance()[kBaselineWindowSec] = 300;
+    mINI::Instance()[kSlowIntervalSec] = 60;
+    mINI::Instance()[kIntegrationWindowSec] = 300;
     for (const auto &def : thresholdDefs()) {
         mINI::Instance()[warnKey(def)] = def.warn;
         mINI::Instance()[critKey(def)] = def.crit;
@@ -173,6 +194,8 @@ static const map<string, int> &countKeys() {
         { kPlayMinRequests, 1 },
         { kBaselineWarmupSec, 0 },
         { kBaselineWindowSec, 60 },
+        { kSlowIntervalSec, 10 },
+        { kIntegrationWindowSec, 10 },
         { GlobalMonitorConfig::kDiskIoSustainSamples, 1 },
     };
     return keys;
@@ -477,6 +500,14 @@ void HealthMonitor::onPlayResult(const string &err) {
     }
 }
 
+void HealthMonitor::onWebhookResult(bool ok) {
+    lock_guard<mutex> lck(_webhook_mtx);
+    ++_webhook_current.requests;
+    if (!ok) {
+        ++_webhook_current.failures;
+    }
+}
+
 void HealthMonitor::requestPollerDelays() {
     int64_t now_ms = steadyNowMs();
     bool ask_pollers = false, ask_work = false;
@@ -553,11 +584,14 @@ void HealthMonitor::collectNow() {
         collectRecording(ev, summary, now);
         collectIngest(ev, summary, cameras, now);
         collectDelivery(ev, summary, now);
+        collectCluster(ev, summary, now);
+        evaluateSlow(ev, summary, now);
     } catch (const std::exception &ex) {
         WarnL << "Health monitor collect failed: " << ex.what();
     }
-    // The answer is evaluated in the next cycle.
+    // The answers are evaluated in a later cycle.
     requestPollerDelays();
+    startSlowCollect(now);
 
     auto eval = ev.finish();
     _hysteresis.sweep(_cycle);
@@ -1228,6 +1262,340 @@ void HealthMonitor::collectIngest(HealthEvaluator &ev, Json::Value &summary, vec
     ing["health"]["warning"] = warning;
     ing["health"]["unknown"] = unknown;
     ing["health"]["ok"] = total - critical - warning - unknown;
+}
+
+} // namespace managerkit
+
+namespace managerkit {
+
+HealthLevel poolHealthLevel(const string &health_status, bool stale) {
+    if (stale) {
+        return HealthLevel::UNKNOWN;
+    }
+    if (health_status == "OFFLINE" || health_status == "CRITICAL") {
+        return HealthLevel::CRITICAL;
+    }
+    if (health_status == "HIGH" || health_status == "WARNING") {
+        return HealthLevel::WARNING;
+    }
+    return health_status == "OK" ? HealthLevel::OK : HealthLevel::UNKNOWN;
+}
+
+HealthLevel failureRateLevel(uint64_t requests, uint64_t failures, uint64_t min_requests,
+                             const HealthThreshold &th, double &failure_pct) {
+    failure_pct = requests > 0 ? 100.0 * (double)failures / (double)requests : 0;
+    if (failures == 0) {
+        return HealthLevel::OK;
+    }
+    if (requests < min_requests) {
+        return HealthLevel::WARNING;
+    }
+    return classifyValue(failure_pct, th);
+}
+
+// Keeps one bucket per cycle over `window_sec`, returns the totals.
+template <typename Bucket>
+static Bucket rollBuckets(std::deque<Bucket> &buckets, const Bucket &current, int window_sec, float interval_sec) {
+    buckets.push_back(current);
+    size_t max_buckets = (size_t)std::max(1, (int)std::ceil(window_sec / std::max(1.0f, interval_sec)));
+    while (buckets.size() > max_buckets) {
+        buckets.pop_front();
+    }
+    Bucket total;
+    for (const auto &b : buckets) {
+        total.requests += b.requests;
+        total.failures += b.failures;
+    }
+    return total;
+}
+
+void HealthMonitor::collectCluster(HealthEvaluator &ev, Json::Value &summary, int64_t now) {
+    using namespace HealthMonitorConfig;
+    Json::Value &cl = summary["cluster"];
+    GET_CONFIG(string, self_id, General::kMediaServerId);
+    GET_CONFIG(int, window_sec, kIntegrationWindowSec);
+    GET_CONFIG(float, interval_sec, kIntervalSec);
+
+    // Peers answer ClusterManager's health check (every 60 s); only reachable ones have a URL.
+    auto &cm = ClusterManager::Instance();
+    auto reachable = cm.getPeerUrls();
+    int known = 0, unreachable = 0;
+    Json::Value peers(Json::arrayValue);
+    for (const auto &id : cm.getMediaServerIds()) {
+        if (id == self_id) {
+            continue;
+        }
+        ++known;
+        bool ok = reachable.count(id) > 0;
+        unreachable += ok ? 0 : 1;
+        Json::Value pj;
+        pj["id"] = id;
+        pj["name"] = cm.getMediaServer(id).name;
+        pj["reachable"] = ok;
+        peers.append(pj);
+    }
+    // A peer down does not stop this node from serving its own cameras: warning only.
+    ev.addLevel("cluster", "cluster.peers_unreachable", unreachable > 0 ? HealthLevel::WARNING : HealthLevel::OK,
+                unreachable, 0);
+    cl["peers"] = peers;
+    cl["peers_known"] = known;
+    cl["peers_unreachable"] = unreachable;
+
+    Json::Value &sync = cl["sync"];
+#ifdef ENABLE_SYNC_CHANGES
+    auto sv = SyncManager::Instance().healthView();
+    sync["enabled"] = sv.running;
+    if (sv.running) {
+        sync["bootstrapped"] = sv.bootstrapped;
+        sync["single_node"] = sv.single_node;
+        sync["decommissioned"] = sv.decommissioned;
+        // Removed from the cluster by the service API: this node's changes no longer reach the others.
+        ev.addLevel("cluster", "cluster.decommissioned", sv.decommissioned ? HealthLevel::CRITICAL : HealthLevel::OK,
+                    sv.decommissioned ? 1 : 0, 0, std::string(), true);
+        sync["peers"] = Json::arrayValue;
+        map<string, uint64_t> seen;
+        if (!sv.single_node && !sv.decommissioned) {
+            ev.addLevel("cluster", "sync.bootstrapped", sv.bootstrapped ? HealthLevel::OK : HealthLevel::WARNING,
+                        sv.bootstrapped ? 1 : 0, 0);
+            const uint64_t now_ms = getCurrentMillisecond(true);
+            const auto th = threshold("syncLastOkAgeSec");
+            for (const auto &kv : sv.last_complete_pull_ms) {
+                auto it = _sync_peer_seen_ms.find(kv.first);
+                uint64_t first_seen = it != _sync_peer_seen_ms.end() ? it->second : now_ms;
+                seen[kv.first] = first_seen;
+                // Until its first complete pull a peer is measured from when it joined.
+                uint64_t ref = std::max(kv.second, first_seen);
+                double age = now_ms > ref ? (now_ms - ref) / 1000.0 : 0;
+                ev.addValue("cluster", "sync.last_ok_age_sec", age, th, kv.first);
+                Json::Value pj;
+                pj["id"] = kv.first;
+                pj["last_ok_at"] = kv.second > 0 ? Json::Value((Json::Int64)(kv.second / 1000)) : Json::Value(Json::nullValue);
+                pj["last_ok_age_sec"] = num(age);
+                sync["peers"].append(pj);
+            }
+        }
+        _sync_peer_seen_ms.swap(seen);
+    }
+#else
+    sync["enabled"] = false;
+#endif
+
+    // Webhooks to the VMS/ESC, counted after their retries.
+    PlayBucket current;
+    {
+        lock_guard<mutex> lck(_webhook_mtx);
+        current = _webhook_current;
+        _webhook_current = PlayBucket();
+    }
+    auto total = rollBuckets(_webhook_buckets, current, window_sec, interval_sec);
+    double failure_pct = 0;
+    const auto wh_th = threshold("webhookFailurePct");
+    auto wh_level = failureRateLevel(total.requests, total.failures, 10, wh_th, failure_pct);
+    ev.addLevel("cluster", "webhook.failure_pct", wh_level, failure_pct,
+                wh_level == HealthLevel::CRITICAL ? wh_th.crit : wh_th.warn);
+    cl["webhook"]["window_sec"] = window_sec;
+    cl["webhook"]["requests"] = (Json::UInt64)total.requests;
+    cl["webhook"]["failures"] = (Json::UInt64)total.failures;
+    cl["webhook"]["failure_pct"] = num(failure_pct);
+
+    // Device events to Kafka (EventBus is built without ENABLE_KAFKA too, then never enabled).
+    Json::Value &kj = cl["kafka"];
+    auto &bus = EventBus::Instance();
+    kj["enabled"] = bus.enabled();
+    if (bus.enabled()) {
+        auto st = bus.stats();
+        uint64_t dropped = st.droppedSpool + st.droppedMem;
+        if (dropped > _kafka_dropped) {
+            _kafka_dropped_at = now;
+        }
+        _kafka_dropped = dropped;
+        bool recent_drop = _kafka_dropped_at > 0 && now - _kafka_dropped_at < window_sec;
+        // Lost events are single occurrences: keep the warning for the window, without hysteresis.
+        ev.addLevel("cluster", "kafka.dropped", recent_drop ? HealthLevel::WARNING : HealthLevel::OK, (double)dropped, 0,
+                    std::string(), true);
+        // SPOOL: no broker takes the events, they wait on disk.
+        ev.addLevel("cluster", "kafka.spool", st.mode == EventBus::Mode::Spool ? HealthLevel::WARNING : HealthLevel::OK,
+                    (double)st.spoolPending, 0);
+        kj["mode"] = EventBus::modeName(st.mode);
+        kj["brokers_up"] = st.brokersUp;
+        kj["brokers_known"] = st.brokersKnown;
+        kj["queued"] = st.queued;
+        kj["delivered"] = (Json::UInt64)st.delivered;
+        kj["spool_pending"] = (Json::UInt64)st.spoolPending;
+        kj["spool_bytes"] = (Json::UInt64)st.spoolBytes;
+        kj["dropped_rate"] = (Json::UInt64)st.droppedRate;
+        kj["dropped"] = (Json::UInt64)dropped;
+        kj["last_drop_at"] = _kafka_dropped_at > 0 ? Json::Value((Json::Int64)_kafka_dropped_at) : Json::Value(Json::nullValue);
+    }
+}
+
+void HealthMonitor::startSlowCollect(int64_t now) {
+    GET_CONFIG(int, slow_interval, HealthMonitorConfig::kSlowIntervalSec);
+    if (_slow_started_at > 0 && now - _slow_started_at < std::max(10, slow_interval)) {
+        return;
+    }
+    // The previous run still waits on the database: do not queue another one behind it.
+    if (_slow_running.exchange(true)) {
+        return;
+    }
+    _slow_started_at = now;
+    BlockingExecutors::api()->async([]() {
+        auto &self = HealthMonitor::Instance();
+        try {
+            self.slowCollect();
+        } catch (const std::exception &ex) {
+            WarnL << "Health monitor database checks failed: " << ex.what();
+        }
+        self._slow_running = false;
+    });
+}
+
+void HealthMonitor::slowCollect() {
+    SlowResult r;
+    r.valid = true;
+    r.at = (int64_t)time(nullptr);
+    try {
+        // Time to take the write lock of the MediaServer database: every writer waits this long.
+        SqliteQueryExecutor executor(Database::kMediaServerDb);
+        int64_t begin_ms = steadyNowMs();
+        auto txn = executor.beginWriteTxn();
+        txn->commit();
+        r.db_write_ms = (double)(steadyNowMs() - begin_ms);
+    } catch (const std::exception &ex) {
+        r.db_write_ms = -1;
+        r.db_error = ex.what();
+    }
+#ifdef ENABLE_TIER_STORAGE
+    r.tier = true;
+    auto &tsm = TierStorageManager::Instance();
+    for (const auto &p : tsm.listPools()) {
+        PoolView v;
+        v.id = p.id;
+        v.name = p.name;
+        v.tier = p.tier;
+        v.type = p.type;
+        v.enabled = p.enabled != 0;
+        v.health_check = p.health_check_enabled != 0;
+        v.usage_pct = p.usage_pct;
+        PoolHealthInfo health;
+        if (tsm.getPoolHealth(p.id, health)) {
+            v.health_known = true;
+            v.health_status = health.health_status;
+            v.stale = health.stale;
+            v.message = health.message;
+        }
+        PoolThroughputStats throughput;
+        if (tsm.getPoolThroughput(p.id, throughput)) {
+            v.throughput_known = true;
+            v.throughput_low = throughput.low;
+            v.write_mbps = throughput.write_mbps;
+            v.backlog_bytes = throughput.backlog_bytes;
+            v.backlog_eta_sec = throughput.backlog_eta_sec;
+        }
+        r.pools.push_back(v);
+    }
+    const string failed = jobStatusToString(JobStatus::FAILED);
+    r.tiering_failed_24h = tsm.countTieringJobs("", failed, r.at - 86400);
+    r.tiering_pending = tsm.countTieringJobs("", jobStatusToString(JobStatus::PENDING));
+    r.tiering_running = tsm.countTieringJobs("", jobStatusToString(JobStatus::RUNNING));
+    r.restore_failed_24h = tsm.countRestoreJobs("", failed, r.at - 86400);
+    r.restore_failed_1h = tsm.countRestoreJobs("", failed, r.at - 3600);
+    r.restore_pending = tsm.countRestoreJobs("", jobStatusToString(JobStatus::PENDING));
+#endif
+    lock_guard<mutex> lck(_slow_mtx);
+    _slow = std::move(r);
+}
+
+void HealthMonitor::evaluateSlow(HealthEvaluator &ev, Json::Value &summary, int64_t now) {
+    using namespace HealthMonitorConfig;
+    SlowResult r;
+    {
+        lock_guard<mutex> lck(_slow_mtx);
+        r = _slow;
+    }
+    GET_CONFIG(int, slow_interval, kSlowIntervalSec);
+    Json::Value &storage = summary["storage"];
+    Json::Value &db = storage["database"];
+    Json::Value &tier = storage["tier"];
+#ifdef ENABLE_TIER_STORAGE
+    tier["enabled"] = true;
+#else
+    tier["enabled"] = false;
+#endif
+    if (!r.valid) {
+        db["checked_at"] = Json::nullValue;
+        db["write_ms"] = Json::nullValue;
+        return;
+    }
+    // A run stuck behind a busy API pool leaves old numbers: shown, but not evaluated.
+    const bool fresh = now - r.at <= 3 * std::max(10, slow_interval);
+    db["checked_at"] = (Json::Int64)r.at;
+    db["stale"] = !fresh;
+    db["write_ms"] = r.db_write_ms >= 0 ? num(r.db_write_ms) : Json::Value(Json::nullValue);
+    db["error"] = r.db_error;
+    if (fresh) {
+        if (r.db_write_ms < 0) {
+            // BEGIN IMMEDIATE failed after busy_timeout (locked) or the file cannot be written.
+            ev.addLevel("storage", "db.write_ms", HealthLevel::CRITICAL, NAN, 0, std::string(), true);
+        } else {
+            ev.addValue("storage", "db.write_ms", r.db_write_ms, threshold("dbWriteMs"));
+        }
+    }
+    if (!r.tier) {
+        return;
+    }
+
+    tier["pools"] = Json::arrayValue;
+    const auto eta_th = threshold("poolBacklogEtaSec");
+    for (const auto &p : r.pools) {
+        Json::Value pj;
+        pj["id"] = p.id;
+        pj["name"] = p.name;
+        pj["tier"] = p.tier;
+        pj["type"] = p.type;
+        pj["enabled"] = p.enabled;
+        pj["usage_pct"] = num(p.usage_pct);
+        pj["health_check"] = p.health_check;
+        pj["health_status"] = p.health_known ? Json::Value(p.health_status) : Json::Value(Json::nullValue);
+        pj["health_stale"] = p.stale;
+        pj["message"] = p.message;
+        pj["throughput_low"] = p.throughput_known ? Json::Value(p.throughput_low) : Json::Value(Json::nullValue);
+        pj["write_mbps"] = p.throughput_known ? num(p.write_mbps) : Json::Value(Json::nullValue);
+        pj["backlog_bytes"] = p.throughput_known ? Json::Value((Json::Int64)p.backlog_bytes) : Json::Value(Json::nullValue);
+        pj["backlog_eta_sec"] = p.throughput_known && p.backlog_eta_sec >= 0 ? Json::Value((Json::Int64)p.backlog_eta_sec)
+                                                                              : Json::Value(Json::nullValue);
+        tier["pools"].append(pj);
+        if (!fresh || !p.enabled) {
+            continue;
+        }
+        const string &detail = p.name.empty() ? p.id : p.name;
+        if (p.health_check && p.health_known) {
+            // The pool health check has its own failure/recovery thresholds.
+            ev.addLevel("storage", "pool.health", poolHealthLevel(p.health_status, p.stale), p.usage_pct, 0, detail, true);
+        }
+        if (p.throughput_known) {
+            // PoolThroughputTracker already sustains "low".
+            ev.addLevel("storage", "pool.throughput_low", p.throughput_low ? HealthLevel::WARNING : HealthLevel::OK,
+                        p.write_mbps, 0, detail, true);
+            if (p.backlog_eta_sec >= 0) {
+                ev.addValue("storage", "pool.backlog_eta_sec", (double)p.backlog_eta_sec, eta_th, detail);
+            }
+        }
+    }
+    Json::Value &jobs = tier["jobs"];
+    jobs["tiering_failed_24h"] = r.tiering_failed_24h;
+    jobs["tiering_pending"] = r.tiering_pending;
+    jobs["tiering_running"] = r.tiering_running;
+    jobs["restore_failed_24h"] = r.restore_failed_24h;
+    jobs["restore_failed_1h"] = r.restore_failed_1h;
+    jobs["restore_pending"] = r.restore_pending;
+    summary["delivery"]["restore"]["failed_1h"] = r.restore_failed_1h;
+    summary["delivery"]["restore"]["failed_24h"] = r.restore_failed_24h;
+    if (fresh) {
+        ev.addValue("storage", "jobs.tiering_failed_24h", r.tiering_failed_24h, threshold("tierJobsFailed24h"));
+        // A replay waiting on a restore that failed: viewers see no video.
+        ev.addValue("delivery", "replay.restore_failures_1h", r.restore_failed_1h, threshold("restoreFailed1h"));
+    }
 }
 
 } // namespace managerkit
