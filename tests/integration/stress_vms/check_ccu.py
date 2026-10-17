@@ -15,6 +15,7 @@ Dùng:
     check_ccu.py <work> --controller http://127.0.0.1:18600 [--scenario step] [--steps 0,100,...]
 """
 import argparse
+import csv
 import json
 import os
 import re
@@ -385,15 +386,52 @@ def scan_logs(work, node):
     """Như check_stress.scan_logs, thêm số lần luồng kéo camera bị timeout (mất RTP)."""
     out = cs.scan_logs(work, node)
     n = 0
+    threads = defaultdict(lambda: defaultdict(int))
+    segment_ends = {}
     d = os.path.join(work, node)
     for name in os.listdir(d):
         if name.startswith("stdout"):
             try:
                 with open(os.path.join(d, name), errors="replace") as fh:
-                    n += sum(1 for line in fh if "receive rtp timeout" in line)
+                    for line in fh:
+                        n += "receive rtp timeout" in line
+                        kind = ("record" if "Record mp4 file " in line else
+                                "config" if "Server configuration for camera loaded completed" in line else None)
+                        if kind:
+                            thread = re.search(r"\[\d+-([^\]]+)\]", line)
+                            threads[kind][thread_group(thread.group(1)) if thread else "unknown"] += 1
+                        if kind == "record":
+                            seg = re.search(r"Record mp4 file .*?/(\d+)/([\d.]+)/(\/.*?)(?:\x1b\[.*)?\s*$", line)
+                            if seg:
+                                segment_ends[seg.group(3).strip()] = int(seg.group(1)) + float(seg.group(2))
             except OSError:
                 pass
     out["rtp_timeout"] = n
+    out["execution_threads"] = {k: dict(v) for k, v in threads.items()}
+    out["segment_ends"] = segment_ends
+    return out
+
+
+def network_counters():
+    out = {}
+    for path in ("/proc/net/snmp", "/proc/net/netstat"):
+        try:
+            with open(path) as fh:
+                lines = fh.read().splitlines()
+            for header, values in zip(lines[::2], lines[1::2]):
+                fields = dict(zip(header.split()[1:], values.split()[1:]))
+                for key in ("RetransSegs", "ListenOverflows", "TCPLossProbes"):
+                    if key in fields:
+                        out[key] = int(fields[key])
+        except (OSError, ValueError):
+            pass
+    try:
+        with open("/proc/net/softnet_stat") as fh:
+            rows = [line.split() for line in fh]
+        for col, key in ((1, "softnet_dropped"), (2, "softnet_time_squeeze")):
+            out[key] = sum(int(row[col], 16) for row in rows)
+    except (OSError, ValueError, IndexError):
+        pass
     return out
 
 
@@ -430,19 +468,22 @@ def record_streams(work, node, cams):
     return out
 
 
-def record_gaps(work, node, cams, t0, t1, th):
+def record_gaps(work, node, cams, t0, t1, th, segment_ends=None):
     """Khoảng hở ghi hình trong [t0, t1] của các camera ghi 24/7.
 
     Hở = đầu file sau - lần ghi cuối của file trước (mtime). Thêm: file mới nhất phải còn được
     ghi ở cuối cửa sổ, nếu không là ghi hình đã dừng hẳn.
     """
     streams = record_streams(work, node, cams)
+    segment_ends = segment_ends or {}
     gaps, stale, examples = 0, 0, []
     for key, files in streams.items():
         for (s0, m0, f0), (s1, _m1, f1) in zip(files, files[1:]):
-            if s1 < t0 or m0 > t1:
+            # Closing writes moov and updates mtime after the media has stopped.
+            end = segment_ends.get(os.path.join(key, f0), m0)
+            if s1 < t0 or end > t1:
                 continue
-            gap = s1 - m0
+            gap = s1 - end
             if gap > th["record_gap_sec"]:
                 gaps += 1
                 if len(examples) < 6:
@@ -478,6 +519,7 @@ class Runner(object):
         return {"t": time.time(), "cpu": self.s.cpu_ticks(), "tasks": self.s.task_ticks(),
                 "rx": rx, "tx": tx, "rss_kb": self.s.rss_kb(), "fds": self.s.fd_count(),
                 "proc_io": self.s.proc_io(),
+                "network": network_counters(),
                 "io_full_us": psi_total_us("io"), "mem_full_us": psi_total_us("memory"),
                 "iowait": cpu_iowait_ticks()}
 
@@ -566,6 +608,15 @@ class Runner(object):
                for k in ("crash", "db_locked", "failed_apply", "rtp_timeout")}
         row["log_new"] = new
         row["ingest_timeouts"] = new["rtp_timeout"]
+        row["ingest_timeouts_total"] = logs1["rtp_timeout"]
+        row["ingest_timeouts_outside_window"] = max(0, logs1["rtp_timeout"] - new["rtp_timeout"])
+        row["execution_threads"] = logs1.get("execution_threads", {})
+        row["network_delta"] = {k: max(0, v - s0.get("network", {}).get(k, v))
+                                for k, v in s1.get("network", {}).items()}
+        if row["ingest_timeouts_total"]:
+            fails.append("%d timeout kéo từ khi node khởi động (%d ngoài cửa sổ)" % (
+                row["ingest_timeouts_total"], row["ingest_timeouts_outside_window"]))
+            cat.append("recording")
         if not self.s.alive() or new["crash"]:
             fails.append("MediaServer chết/crash")
             cat.append("crash")
@@ -753,7 +804,8 @@ class Runner(object):
             if sched["mismatch"]:
                 fails.append("%d luồng ghi sai lịch" % sched["mismatch"])
                 cat.append("recording")
-        gaps = record_gaps(self.args.work, self.args.node, self.always, s0["t"], s1["t"], th)
+        gaps = record_gaps(self.args.work, self.args.node, self.always, 0, s1["t"], th,
+                           logs1.get("segment_ends"))
         row["record"] = gaps
         if gaps["gaps"] or gaps["stale"]:
             fails.append("ghi hình: %d khoảng hở, %d luồng ngừng ghi" % (gaps["gaps"], gaps["stale"]))
@@ -827,6 +879,9 @@ def render_md(rep):
             r["verdict"] + (" — " + r["limit"] if r.get("limit") else "")))
     lines.append("")
     for r in rep["rows"]:
+        lines.append("- bậc %s: timeout từ lúc khởi động=%d, ngoài cửa sổ=%d; thread record/config: %s" % (
+            r["label"], r.get("ingest_timeouts_total", 0), r.get("ingest_timeouts_outside_window", 0),
+            json.dumps(r.get("execution_threads", {}), ensure_ascii=False, sort_keys=True)))
         if r["failures"] or r["invalid"]:
             lines.append("- bậc %s: %s" % (r["label"], "; ".join(r["invalid"] + r["failures"])))
         if r.get("warnings"):
@@ -956,12 +1011,14 @@ def judge_session(x, th, watch):
 def write_sessions_csv(path, sessions):
     cols = ["slot", "kind", "cam", "stream", "back", "stamp", "ttff_ms", "watched_sec", "media_sec",
             "stall_sec", "stall_count", "stall_max_sec", "long_stalls", "reconnects", "join_fails",
-            "kbps", "state", "last_reason", "reasons", "ok", "why"]
-    with open(path, "w") as fh:
-        fh.write(",".join(cols) + "\n")
+            "stall_events", "kbps", "state", "last_reason", "reasons", "ok", "why"]
+    with open(path, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
+        writer.writeheader()
         for x in sessions:
-            fh.write(",".join('"%s"' % str(x.get(c, "")).replace('"', "'") if c in ("why", "last_reason", "reasons")
-                              else str(x.get(c, "") if x.get(c) is not None else "") for c in cols) + "\n")
+            row = dict(x)
+            row["stall_events"] = json.dumps(x.get("stall_events", []), separators=(",", ":"))
+            writer.writerow(row)
 
 
 def scenario_replay(rn):
