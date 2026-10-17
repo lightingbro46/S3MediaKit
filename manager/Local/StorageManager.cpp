@@ -583,6 +583,10 @@ void StorageManager::evaluateRetentionForecast() {
     }
 }
 
+bool StorageManager::getRecordRetentionForecast(RetentionForecast &out) const {
+    return _record_forecast.get(kRecordDirKey, out);
+}
+
 Json::Value StorageManager::makeRecordWriteJson() {
     GET_CONFIG(int, window_sec, Storage::kPoolThroughputWindowSeconds);
     const string record_path = recordDirPath();

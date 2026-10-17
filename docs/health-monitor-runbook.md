@@ -60,6 +60,7 @@ Cột "Báo giả ở tải định mức" là nhận định trước khi đo, 
 | `pool.throughput_low` | sustain trong PoolThroughputTracker | Pool đích nhận chậm hơn tốc độ dữ liệu cần chuyển | Băng thông tới NAS/S3; xem [pool-throughput-alert](api-system-alert-events.md) | Không, nếu đã định cỡ băng thông |
 | `pool.backlog_eta_sec` | 6 h / 24 h | Dữ liệu chờ chuyển tier tồn đọng | Như trên; backlog tăng mãi thì pool HOT sẽ đầy | Thấp |
 | `jobs.tiering_failed_24h` | 1 / 10 | Lỗi ghi pool đích, file nguồn mất | Log `TierStorageManager`; một vài lỗi lẻ sau sự cố mạng là bình thường | Thấp |
+| `storage.retention` (thư mục record hoặc từng pool HOT) | mức của dự báo retention (đã sustain): thư mục record thiếu = C; pool HOT thiếu = W khi camera chuyển sớm sang tier sau, C khi có camera xoá bản ghi lúc đầy | Thêm camera, bitrate tăng, thời gian lưu tối thiểu (`retain_until_days` / thời gian lưu camera) cao hơn dung lượng | `summary.storage.record_write` (`ingest_mbps`, `retention_days_estimate`, `required_days`); tăng dung lượng/thêm pool, giảm thời gian lưu hoặc bitrate. Tắt bằng `storage.retention_forecast_alert_enabled=0` (tắt cả sự kiện `RetentionCapacityLow`) | Không; cần ≥ 15 phút đo sau khởi động mới có dự báo (trước đó `unknown`) |
 
 ### 2.4 `ingest`: camera
 

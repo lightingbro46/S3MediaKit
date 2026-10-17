@@ -29,7 +29,10 @@
 #endif
 #ifdef ENABLE_TIER_STORAGE
 #include "Local/TierStorageManager.h"
+#else
+#include "Local/StorageManager.h"
 #endif
+#include "Local/RetentionForecast.h"
 #include "Common/SerialTaskQueue.h"
 #include "Local/TimeQuery.h"
 #include "Storage/VmsResourceAssignment.h"
@@ -319,6 +322,22 @@ static HealthLevel fromDiskIoLevel(DiskIoLevel level) {
         case DiskIoLevel::WARNING: return HealthLevel::WARNING;
         default: return HealthLevel::OK;
     }
+}
+
+// Confirmed retention forecast level (1 = moved/deleted early, 2 = recordings lost); no
+// evaluation yet is unknown.
+static HealthLevel retentionLevel(const RetentionForecast &forecast) {
+    if (forecast.level >= 2) {
+        return HealthLevel::CRITICAL;
+    }
+    if (forecast.level == 1) {
+        return HealthLevel::WARNING;
+    }
+    return forecast.observed < 0 ? HealthLevel::UNKNOWN : HealthLevel::OK;
+}
+
+static double daysOrNan(double days) {
+    return days < 0 ? NAN : days;
 }
 
 // GlobalMonitor threshold, or its config default when the monitor has none (-1).
@@ -1096,6 +1115,28 @@ void HealthMonitor::collectStorage(HealthEvaluator &ev, Json::Value &summary, in
         ev.addLevel("storage", "disk_io.host", fromDiskIoLevel(io.system_state),
                     io.has_psi ? io.psi_full_pct : io.iowait_pct, 0, std::string(), true);
     }
+
+    // Recording rate and retention forecast, as systemStatistic.record_write: in-memory caches only.
+    // The forecast level is already sustained by RetentionForecastBook.
+    GET_CONFIG(bool, retention_alert_enabled, Storage::kRetentionForecastAlertEnabled);
+#ifdef ENABLE_TIER_STORAGE
+    storage["record_write"] = TierStorageManager::Instance().makeHotWriteJson();
+    for (const auto &pool : storage["record_write"]["pools"]) {
+        RetentionForecast forecast;
+        if (retention_alert_enabled &&
+            TierStorageManager::Instance().getPoolRetentionForecast(pool["pool_id"].asString(), forecast)) {
+            ev.addLevel("storage", "storage.retention", retentionLevel(forecast), daysOrNan(forecast.retention_days_estimate),
+                        daysOrNan(forecast.required_days), pool["pool_name"].asString(), true);
+        }
+    }
+#else
+    storage["record_write"] = StorageManager::Instance().makeRecordWriteJson();
+    RetentionForecast forecast;
+    if (retention_alert_enabled && StorageManager::Instance().getRecordRetentionForecast(forecast)) {
+        ev.addLevel("storage", "storage.retention", retentionLevel(forecast), daysOrNan(forecast.retention_days_estimate),
+                    daysOrNan(forecast.required_days), storage["record_write"]["path"].asString(), true);
+    }
+#endif
     (void)now;
 }
 
@@ -1263,15 +1304,17 @@ void HealthMonitor::collectDelivery(HealthEvaluator &ev, Json::Value &summary, i
     using namespace HealthMonitorConfig;
     Json::Value &del = summary["delivery"];
     auto &gm = GlobalMonitor::Instance();
-    int live = 0, playback = 0;
+    int live = 0, playback = 0, cameras_viewed = 0;
     for (const auto &kv : gm.getReaderUsage()) {
         live += kv.second.first;
         playback += kv.second.second;
+        cameras_viewed += kv.second.first + kv.second.second > 0 ? 1 : 0;
     }
     const int total = live + playback;
     del["viewers"]["live"] = live;
     del["viewers"]["playback"] = playback;
     del["viewers"]["total"] = total;
+    del["viewers"]["cameras_viewed"] = cameras_viewed;
     // The server-wide reader limit comes from the license (-1 = unlimited).
     auto limit = gm.getThreshold(ResourceType::READER);
     if (limit.first > 0) {
@@ -1386,6 +1429,7 @@ void HealthMonitor::collectIngest(HealthEvaluator &ev, Json::Value &summary, vec
             list.emplace_back(src->getDeviceTuple().device_id, impl);
         }
     });
+    const auto readers = GlobalMonitor::Instance().getReaderUsage();
 
     int total = 0, online = 0, no_video = 0, warning = 0, critical = 0, unknown = 0;
     for (const auto &cam : list) {
@@ -1514,6 +1558,9 @@ void HealthMonitor::collectIngest(HealthEvaluator &ev, Json::Value &summary, vec
             cj["reasons"].append(r);
         }
         cj["online"] = is_online;
+        auto rd = readers.find(camera_id);
+        cj["viewers"]["live"] = rd != readers.end() ? rd->second.first : 0;
+        cj["viewers"]["playback"] = rd != readers.end() ? rd->second.second : 0;
         cj["recording"]["state"] = rs != _recording_states.end() ? recordingStateString(rs->second) : "not_expected";
         auto expectation = cam.second->getRecordExpectation();
         cj["recording"]["expected"] = expectation.expected;

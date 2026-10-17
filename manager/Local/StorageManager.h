@@ -40,6 +40,9 @@ public:
     // Tier storage off: recording rate and retention forecast of the record directory, for
     // systemStatistic. Only locks a mutex and reads the cached mount snapshot.
     Json::Value makeRecordWriteJson();
+    // Tier storage off: last retention forecast of the record directory (with its confirmed
+    // level), false before the first evaluation. For the health monitor.
+    bool getRecordRetentionForecast(RetentionForecast &out) const;
 
     void rebuildTimeFile(const std::string &camera_id, uint64_t threshold);
 

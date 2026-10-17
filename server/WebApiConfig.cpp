@@ -139,7 +139,10 @@ void registerConfigurationApis() {
     });
 
     api_regist("/media/mserver/healthcheck", [](API_ARGS_MAP) {
+        GET_CONFIG(int, server_location_id, Cluster::kServerLocationId);
         val["data"]["mediaServerId"] = mINI::Instance()[General::kMediaServerId];
+        val["data"]["version"] = kServerVersion;
+        val["data"]["serverLocationId"] = server_location_id;
     });
 
     api_regist("/media/mserver/incur", [](API_ARGS_MAP_ASYNC) {

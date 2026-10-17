@@ -145,8 +145,9 @@ trả `{"code":0,"notModified":true}` không kèm `data`.
 | `storage.disks[]` | chỉ các mount chứa bản ghi / DB / pool: `mount`, `device`, `total_bytes`, `used_bytes`, `free_bytes`, `usage_pct`, `read_only`, `retention_limit_pct` (mức retention giữ mount, `null` nếu không có), `warn_pct`/`crit_pct` (ngưỡng đang áp), `io_util_pct`, `await_ms`, `read_mbps`, `write_mbps`, `io_state` |
 | `storage.disk_io` | `valid`, `iowait_pct`, `psi_io_full_pct`, `state` (`normal`/`warning`/`critical`) |
 | `storage.storage_write[]` | kết quả thử ghi từng thư mục (như `storage_write` của `systemStatistic`) |
+| `storage.record_write` | tốc độ ghi hình và dự báo retention, cùng object `record_write` của `systemStatistic` ([api-system-alert-events.md](api-system-alert-events.md), mục dự báo dung lượng): tắt tier `mode=record_dir`, `path`, `mount_point`, `ingest_mbps`, `recording_cameras`, `retention_days_estimate`, `estimated_remaining_days`, `required_days`, `state`, ...; bật tier `mode=hot_tier`, `ingest_mbps`, `recording_cameras`, `state`, `pools[]` (`pool_id`, `pool_name`, `ingest_mbps`, `recording_cameras`, `retention_forecast`) |
 | `recording` | `cameras` (đang bật), `expected`, `active`, `starting`, `stalled`, `stalled_pct`, `stale_sec`, `write_errors` (từ lúc khởi động), `write_errors_cycle`, `stalled_cameras[]` (tối đa 100: `cameraId`, `name`, `ip`, `recordMode`, `lastWriteAt`, `expectedSince`) |
-| `delivery.viewers` | `live`, `playback`, `total`, `limit` (giới hạn license, null = không giới hạn), `limit_used_pct` |
+| `delivery.viewers` | `live`, `playback`, `total`, `cameras_viewed` (số camera có ≥ 1 người xem), `limit` (giới hạn license, null = không giới hạn), `limit_used_pct` |
 | `delivery.play` | `window_sec`, `requests`, `failures`, `failure_pct` (trong cửa sổ), `failures_by_reason` (từ lúc khởi động: `Unauthorized`, `MaxRequest`, `ResourceUnavailable`, `OverlayForbidden`, `TranscodeDisabled`, ...) |
 | `alerts` | `active`, `critical`: số cảnh báo đang mở |
 | `ingest` | `cameras` (đang bật), `online`, `offline`, `offline_pct`, `no_video`, `no_video_pct`, `health` (`ok`/`warning`/`critical`/`unknown`: số camera theo mức) |
@@ -205,6 +206,7 @@ Poller không trả lời lệnh đo độ trễ sau 1 s (bị kẹt trong một
 | `pool.throughput_low` (theo pool) | storage | pool nhận dữ liệu tier chậm hơn nhu cầu = warning (đã sustain trong PoolThroughputTracker) | `storage.pool_throughput_*` |
 | `pool.backlog_eta_sec` (theo pool) | storage | 6 h / 24 h | `monitor.poolBacklogEtaSecWarn` / `Crit` |
 | `jobs.tiering_failed_24h` | storage | 1 / 10 | `monitor.tierJobsFailed24hWarn` / `Crit` |
+| `storage.retention` (thư mục record khi tắt tier, theo pool HOT khi bật tier; `detail` = đường dẫn / tên pool) | storage | mức đã sustain của dự báo retention (sự kiện `RetentionCapacityLow`): thư mục record thiếu = critical; pool HOT thiếu = warning (chuyển sớm sang tier sau) hoặc critical (có camera xoá khi đầy); chưa có dự báo = unknown. `value` = `retention_days_estimate`, `threshold` = `required_days` (ngày) | `storage.retention_forecast_alert_enabled=0` tắt cả chỉ số này |
 | `cluster.peers_unreachable` | cluster | có node không trả lời health check (60 s) = warning | |
 | `cluster.decommissioned` | cluster | node bị bỏ khỏi cụm = critical | |
 | `sync.bootstrapped` | cluster | chưa bootstrap ESC xong = warning | |
@@ -282,6 +284,7 @@ camera), `page` (từ 1), `size` (mặc định 50, tối đa 500). Camera xấu
       "health": "warning", "healthSince": 1760499000, "observed": "warning",
       "reasons": ["main.fps_ratio", "main.bitrate_ratio"],
       "online": true,
+      "viewers": {"live": 2, "playback": 0},
       "recording": {"state": "active", "expected": true, "mode": "RecordAlways", "lastWriteAt": 1760499990,
                     "coverage_pct_24h": 99.8, "expected_sec_24h": 86100, "gaps_24h": 0, "longest_gap_sec": 0,
                     "coverage_at": 1760499100},
@@ -311,6 +314,7 @@ camera), `page` (từ 1), `size` (mặc định 50, tối đa 500). Camera xấu
   kết nối (camera không phải `GENERIC-RTSP`). Mã trong `reasons[]`: `offline`, `recording.stalled`,
   `controller.disconnected`, `main.offline`, `main.no_video`, `main.last_frame_age_ms`, `main.fps_ratio`,
   `main.bitrate_ratio`, `main.loss_pct`, `main.disconnects_1h`, `main.uptime_pct_24h` (tương tự `sub.`).
+- `viewers`: số người xem live / xem lại của camera lúc chụp snapshot (cùng nguồn với `delivery.viewers`).
 - Luồng bị tắt trong cấu hình camera hoặc không có URL: `null`.
 - `fps` là fps **đo được** (số frame video nhận / thời gian giữa hai mẫu), không phải fps khai báo trong
   SPS. `bitrate_kbps` lấy từ track, track không báo thì từ tốc độ byte của luồng. Cả hai lấy mẫu cùng
