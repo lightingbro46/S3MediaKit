@@ -130,6 +130,7 @@ Tham số tuỳ chọn `rev`: nếu bằng `rev` hiện tại (mức và lý do 
 | `host.threads` | số thread của tiến trình |
 | `process` | `uptimeSec`, `startedAt` |
 | `process.pollers`, `process.work_pollers` | `count`, `delay_max_ms`, `delay_avg_ms`, `load_max` (%), `sampled_age_ms` |
+| `process.monitor` | `collect_ms` (thời gian thu thập + đánh giá của chu kỳ này trên luồng `monitor poller`), `collect_max_ms` (lớn nhất từ lúc khởi động), `cycle` |
 | `process.blocking[]` | theo pool: `name`, `threads`, `queued`, `running`, `completed`, `window_tasks`, `wait_avg_ms`, `wait_max_ms`, `busy_pct` (cửa sổ = 1 chu kỳ) |
 | `transcode` | `streams`, `decoders`, `encoders`, `motion`, `mjpeg_ingest` |
 | `gpu` | `backends`, `load`, `decoders`, `encoders`, `fallbacks` (từ lúc khởi động), `last_fallback_at` |

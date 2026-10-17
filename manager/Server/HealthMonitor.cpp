@@ -1,5 +1,6 @@
 #include "HealthMonitor.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <set>
@@ -513,7 +514,7 @@ void HealthMonitor::start() {
         HealthMonitor::Instance().onRecordWritten(info.app, info.file_size);
     });
 #endif
-    _poller = EventPollerPool::Instance().getPoller();
+    _poller = monitorPoller();
     _poller->async([]() { HealthMonitor::Instance().collectNow(); });
     _timer = std::make_shared<Timer>(interval_sec, []() {
         auto &self = HealthMonitor::Instance();
@@ -642,6 +643,7 @@ double HealthMonitor::effectiveDelayMs(const PollerDelay &d, int64_t now_ms) {
 
 void HealthMonitor::collectNow() {
     int64_t now = (int64_t)time(nullptr);
+    const auto collect_start = std::chrono::steady_clock::now();
     ++_cycle;
     _hysteresis.setCycle(_cycle);
     GET_CONFIG(int, sustain, HealthMonitorConfig::kSustainSamples);
@@ -668,6 +670,8 @@ void HealthMonitor::collectNow() {
 
     auto eval = ev.finish();
     _hysteresis.sweep(_cycle);
+    const double collect_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - collect_start).count();
     auto sig = eval.signature();
     if (sig != _last_signature) {
         ++_rev;
@@ -709,6 +713,11 @@ void HealthMonitor::collectNow() {
     summary["components"] = components;
     summary["reasons"] = reasons;
     summary["alerts"] = h["alerts"];
+    // Time on _poller for the collect and evaluate phase of this cycle (excludes this JSON assembly).
+    _collect_max_ms = std::max(_collect_max_ms, collect_ms);
+    summary["process"]["monitor"]["collect_ms"] = num(collect_ms);
+    summary["process"]["monitor"]["collect_max_ms"] = num(_collect_max_ms);
+    summary["process"]["monitor"]["cycle"] = (Json::UInt64)_cycle;
     recordHistory(h, summary, now);
     snap->summary = std::move(summary);
     snap->eval = std::move(eval);

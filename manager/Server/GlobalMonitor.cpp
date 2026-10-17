@@ -108,10 +108,22 @@ DiskIoConfig loadDiskIoConfig() {
     return cfg;
 }
 
+namespace {
+class MonitorPollerPool : public TaskExecutorGetterImp {
+public:
+    MonitorPollerPool() { addPoller("monitor poller", 1, ThreadPool::PRIORITY_NORMAL, true, false); }
+};
+} // namespace
+
+EventPoller::Ptr monitorPoller() {
+    static MonitorPollerPool s_pool;
+    return std::static_pointer_cast<EventPoller>(s_pool.getExecutor());
+}
+
 INSTANCE_IMP(GlobalMonitor)
 
 GlobalMonitor::GlobalMonitor() {
-    _poller = EventPollerPool::Instance().getPoller();
+    _poller = monitorPoller();
     _info = get_os_info();
 }
 

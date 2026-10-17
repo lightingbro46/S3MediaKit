@@ -310,6 +310,7 @@ private:
     HealthHysteresis _hysteresis;
     uint64_t _cycle = 0;
     uint64_t _rev = 0;
+    double _collect_max_ms = 0;  // longest collect phase since start
     std::string _last_signature;
     struct NetCounters {
         uint64_t errors = 0;

@@ -104,9 +104,9 @@ Mục tiêu: ở tải định mức (300 camera ghi 24/7 cả hai luồng + 500
 trong khi vẫn báo khi bậc tải thật sự trượt.
 
 1. Chạy suite live500 bằng bundle `ccu_test.sh` (hướng dẫn: [live500-perf-test.md](live500-perf-test.md)).
-   Mỗi bậc tải lấy mẫu `/media/monitor/health` mỗi 10 s trong cửa sổ đo.
+   Mỗi bậc tải lấy mẫu `/media/monitor/summary` mỗi 10 s trong cửa sổ đo.
 2. Đọc `SUMMARY.md`: dòng **Monitor ở bậc 500** = `đúng (không báo)` là đạt; `báo giả?` kèm danh sách
-   chỉ số cần xem. Bảng "Monitor `/media/monitor/health` trong cửa sổ đo" của từng kịch bản cho mọi bậc:
+   chỉ số cần xem. Bảng "Monitor `/media/monitor/summary` trong cửa sổ đo" (cột `collect ms tb/max` = `process.monitor.collect_ms`) của từng kịch bản cho mọi bậc:
    - `báo giả?`: bậc đạt (người xem và ghi hình tốt) mà monitor báo.
    - `bắt được`: bậc trượt và monitor cũng báo.
    - `bỏ sót`: bậc trượt mà monitor không báo gì: thiếu chỉ số hoặc ngưỡng quá rộng.

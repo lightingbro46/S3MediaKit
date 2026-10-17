@@ -20,6 +20,11 @@ namespace managerkit {
 class SystemMetricsImp;
 class SerialTaskQueue;
 
+// The one thread of GlobalMonitor and HealthMonitor: their periodic collection (statvfs, /proc,
+// walking every MediaSource and camera) neither queues behind nor delays camera and viewer
+// sessions on the network pollers.
+toolkit::EventPoller::Ptr monitorPoller();
+
 // ──────────────────────────────────────────────────────────────────
 // Configuration keys for GlobalMonitor metrics collection & storage
 // ──────────────────────────────────────────────────────────────────
@@ -192,7 +197,7 @@ private:
     RestartScheduler::Ptr _restart_scheduler;
     std::shared_ptr<SystemMetricsImp> _metrics_store;
     // SQLite insert/purge of metric samples, on BlockingExecutors::api(): a locked database waits
-    // busy_timeout, which must not stall _poller (a network poller carrying sessions).
+    // busy_timeout, which must not stall _poller (monitorPoller(), shared with HealthMonitor).
     std::shared_ptr<SerialTaskQueue> _metrics_queue;
 
     toolkit::EventPoller::Ptr _poller;

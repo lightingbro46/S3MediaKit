@@ -238,9 +238,9 @@ class Server(object):
             return []
 
     def monitor_health(self):
-        # None = API không có (binary cũ) hoặc monitor tắt
+        # /summary = health + số liệu (process.monitor.collect_ms); None = API không có (binary cũ) hoặc monitor tắt
         try:
-            data = self.api("/media/monitor/health").get("data") or {}
+            data = self.api("/media/monitor/summary").get("data") or {}
         except (OSError, ValueError):
             return None
         return data if data.get("enabled") else None
@@ -286,7 +286,7 @@ def mem_total_kb():
 
 
 class Sampler(object):
-    """Lấy mẫu trong cửa sổ đo: healthcheck liên tục + getThreadsLoad mỗi 5 s + /media/monitor/health
+    """Lấy mẫu trong cửa sổ đo: healthcheck liên tục + getThreadsLoad mỗi 5 s + /media/monitor/summary
     mỗi 10 s (snapshot của monitor đổi mỗi monitor.intervalSec)."""
 
     def __init__(self, server):
@@ -876,7 +876,7 @@ LEVEL_RANK = {"ok": 0, "unknown": 0, "warning": 1, "critical": 2}
 
 
 def summarize_monitor(samples):
-    """Gộp các snapshot /media/monitor/health của một cửa sổ đo: mức tổng xấu nhất và từng lý do
+    """Gộp các snapshot /media/monitor/summary của một cửa sổ đo: mức tổng xấu nhất và từng lý do
     (component/metric/detail) với mức xấu nhất, giá trị lớn nhất, số mẫu có lý do đó."""
     if not samples:
         return None
@@ -894,7 +894,12 @@ def summarize_monitor(samples):
             if isinstance(v, (int, float)) and (cur["value_max"] is None or v > cur["value_max"]):
                 cur["value_max"] = v
     alerts = max((x.get("alerts") or {}).get("active", 0) for x in samples)
+    # thời gian một chu kỳ thu thập của monitor (binary cũ không có)
+    collect = [v for v in (((x.get("process") or {}).get("monitor") or {}).get("collect_ms") for x in samples)
+               if isinstance(v, (int, float))]
     return {"samples": len(samples), "overall_worst": worst, "alerts_active_max": alerts,
+            "collect_ms_avg": round(sum(collect) / len(collect), 2) if collect else None,
+            "collect_ms_max": max(collect) if collect else None,
             "reasons": sorted(reasons.values(), key=lambda r: (-LEVEL_RANK.get(r["level"], 0), -r["samples"]))}
 
 
@@ -916,17 +921,18 @@ def render_monitor(rep, lines):
     rows = [r for r in rep["rows"] if "monitor" in r]
     if not rows:
         return lines
-    lines += ["", "## Monitor `/media/monitor/health` trong cửa sổ đo", "",
+    lines += ["", "## Monitor `/media/monitor/summary` trong cửa sổ đo", "",
               "Lý do: `thành phần/chỉ số[:thực thể] mức (giá trị max / ngưỡng, số mẫu có lý do / số mẫu)`. "
               "Bậc đạt mà monitor báo là ứng viên báo giả: đối chiếu số đo của bậc trước khi chỉnh ngưỡng.", "",
-              "| bậc | kết luận bậc | overall xấu nhất | so với monitor | lý do |",
-              "|---|---|---|---|---|"]
+              "| bậc | kết luận bậc | overall xấu nhất | so với monitor | collect ms tb/max | lý do |",
+              "|---|---|---|---|---|---|"]
     for r in rows:
         m = r["monitor"]
         why = "; ".join("%s %s (%s / %s, %d/%d)" % (x["key"], x["level"], x["value_max"], x["threshold"],
                                                      x["samples"], m["samples"]) for x in m["reasons"][:8]) if m else "-"
-        lines.append("| %s | %s | %s | %s | %s |" % (
-            r["label"], r["verdict"], m["overall_worst"] if m else "-", monitor_verdict(r), why or "-"))
+        collect = "%s / %s" % (m.get("collect_ms_avg"), m.get("collect_ms_max")) if m else "-"
+        lines.append("| %s | %s | %s | %s | %s | %s |" % (
+            r["label"], r["verdict"], m["overall_worst"] if m else "-", monitor_verdict(r), collect, why or "-"))
     return lines
 
 
