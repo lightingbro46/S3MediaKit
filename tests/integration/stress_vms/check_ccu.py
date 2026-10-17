@@ -963,9 +963,11 @@ def summarize_monitor(samples):
         return [m[key] for m in mon if isinstance(m.get(key), (int, float))]
 
     collect, lag, queue = values("collect_ms"), values("lag_ms"), values("queue_delay_ms")
+    total = values("total_ms_prev")
     return {"samples": len(samples), "overall_worst": worst, "alerts_active_max": alerts,
             "collect_ms_avg": round(sum(collect) / len(collect), 2) if collect else None,
             "collect_ms_max": max(collect) if collect else None,
+            "total_ms_max": max(total) if total else None,
             "lag_ms_max": max(lag) if lag else None, "queue_delay_ms_max": max(queue) if queue else None,
             "reasons": sorted(reasons.values(), key=lambda r: (-LEVEL_RANK.get(r["level"], 0), -r["samples"]))}
 
@@ -991,13 +993,13 @@ def render_monitor(rep, lines):
     lines += ["", "## Monitor `/media/monitor/summary` trong cửa sổ đo", "",
               "Lý do: `thành phần/chỉ số[:thực thể] mức (giá trị max / ngưỡng, số mẫu có lý do / số mẫu)`. "
               "Bậc đạt mà monitor báo là ứng viên báo giả: đối chiếu số đo của bậc trước khi chỉnh ngưỡng.", "",
-              "| bậc | kết luận bậc | overall xấu nhất | so với monitor | collect ms tb/max | lag/queue ms max | lý do |",
+              "| bậc | kết luận bậc | overall xấu nhất | so với monitor | collect ms tb/max / total max | lag/queue ms max | lý do |",
               "|---|---|---|---|---|---|---|"]
     for r in rows:
         m = r["monitor"]
         why = "; ".join("%s %s (%s / %s, %d/%d)" % (x["key"], x["level"], x["value_max"], x["threshold"],
                                                      x["samples"], m["samples"]) for x in m["reasons"][:8]) if m else "-"
-        collect = "%s / %s" % (m.get("collect_ms_avg"), m.get("collect_ms_max")) if m else "-"
+        collect = "%s / %s / %s" % (m.get("collect_ms_avg"), m.get("collect_ms_max"), m.get("total_ms_max")) if m else "-"
         poller = "%s / %s" % (m.get("lag_ms_max"), m.get("queue_delay_ms_max")) if m else "-"
         lines.append("| %s | %s | %s | %s | %s | %s | %s |" % (
             r["label"], r["verdict"], m["overall_worst"] if m else "-", monitor_verdict(r), collect, poller, why or "-"))

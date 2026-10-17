@@ -45,7 +45,7 @@ Cột "Báo giả ở tải định mức" là nhận định trước khi đo, 
 | `blocking.wait_max_ms` (theo pool) | 1000 / 5000 | Pool `api`/`device`/`discovery`/`ffmpeg` hết luồng: SQLite chậm, camera ONVIF chậm, ffmpeg kẹt | `summary.process.blocking[]` (`queued`, `busy_pct`); pool `device` nghẽn thường do vài camera không trả lời | Có thể với pool `device` khi nhiều camera chậm cùng lúc |
 | `blocking.busy_pct` (theo pool) | 80 / 95 | Như trên | Như trên | Có thể |
 | `gpu.fallbacks` | warning 300 s | GPU hết phiên/lỗi driver, transcode rơi về CPU | `summary.gpu`; log `HwCodec` | Không, nếu GPU đủ phiên |
-| `monitor.snapshot_age_sec` (`stale=true`) | critical khi > max(3 chu kỳ, 30 s) | Luồng `monitor poller` kẹt hoặc bị chiếm (GlobalMonitor, webhook cảnh báo đi cùng luồng); các mức khác trong câu trả lời là của snapshot cuối | `summary.process.monitor`: `collect_ms`, `lag_ms`, `queue_delay_ms` trước lúc kẹt (tăng dần = luồng quá tải), `lag_max_ms` sau khi hồi phục ≈ thời gian đã kẹt; `gstack`/`gdb -p` xem luồng `monit...oller 0` rồi gửi đội phát triển | Không |
+| `monitor.snapshot_age_sec` (`stale=true`) | critical khi > max(3 chu kỳ, 30 s) | Luồng `monitor poller` kẹt hoặc bị chiếm (GlobalMonitor, webhook cảnh báo đi cùng luồng); các mức khác trong câu trả lời là của snapshot cuối | `summary.process.monitor`: `collect_ms`, `total_ms_prev`, `lag_ms`, `queue_delay_ms` trước lúc kẹt (tăng dần = luồng quá tải), `lag_max_ms` sau khi hồi phục ≈ thời gian đã kẹt; `gstack`/`gdb -p` xem luồng `monit...oller 0` rồi gửi đội phát triển | Không |
 | `process.unclean_restarts_24h` | 1 / 3 | Crash, bị kill (OOM, watchdog) | `journalctl`, `dmesg | grep -i oom`, file `crash.<pid>` cạnh binary; gửi đội phát triển | Không |
 
 ### 2.3 `storage`: ổ đĩa, DB, pool tier

@@ -4,7 +4,8 @@
 Usage: check_stale.py <cluster_dir> <stall_sec>
 node-a runs with S3MK_TEST_MONITOR_STALL_SEC=<stall_sec> (Debug build only): one cycle sleeps on the
 monitor poller. Checks, in order:
-  s1 before the stall: stale=false, snapshotAgeSec small; process.monitor lag_ms/queue_delay_ms small
+  s1 before the stall: stale=false, snapshotAgeSec small; process.monitor lag_ms/queue_delay_ms small,
+     total_ms_prev set and total_max_ms >= collect_max_ms (whole cycle covers the collect phase)
   s2 during the stall: stale=true, overall=unknown, reason process/monitor.snapshot_age_sec critical,
      /health?rev=<rev> is not notModified, /summary stale too, healthcheck still answers fast
   s3 after the stall: stale=false again, generatedAt moves; lag_max_ms about stall - interval
@@ -91,6 +92,8 @@ def main():
     m = wait_monitor(lambda x: x.get("lag_ms") is not None and x.get("queue_delay_ms") is not None, 30)
     fail += step("s1_poller_idle", m.get("lag_ms") is not None and m["lag_ms"] < 1000
                  and m.get("queue_delay_ms") is not None and m["queue_delay_ms"] < 1000, m)
+    fail += step("s1_total_cycle", m.get("total_ms_prev") is not None
+                 and m.get("total_max_ms", -1) >= m.get("collect_max_ms", 0), m)
 
     d = wait(lambda x: x.get("stale") is True, STALL + 60)
     first = (d or {}).get("reasons") or [{}]

@@ -767,6 +767,9 @@ void HealthMonitor::collectNow() {
     summary["process"]["monitor"]["collect_max_ms"] = num(_collect_max_ms);
     summary["process"]["monitor"]["cycle"] = (Json::UInt64)_cycle;
     Json::Value &mon = summary["process"]["monitor"];
+    // This cycle is not finished while its JSON is built, so report the previous one.
+    mon["total_ms_prev"] = _last_total_ms >= 0 ? num(_last_total_ms) : Json::Value(Json::nullValue);
+    mon["total_max_ms"] = num(_total_max_ms);
     mon["lag_ms"] = _last_cycle_start_ms > 0 && _lag_ms >= 0 ? Json::Value((Json::Int64)_lag_ms) : Json::Value(Json::nullValue);
     mon["lag_max_ms"] = (Json::Int64)_lag_max_ms;
     int64_t queue_delay = _queue_delay_ms;
@@ -781,8 +784,12 @@ void HealthMonitor::collectNow() {
     snap->eval = std::move(eval);
     snap->cameras = std::move(cameras);
 
-    lock_guard<mutex> lck(_snap_mtx);
-    _snapshot = snap;
+    {
+        lock_guard<mutex> lck(_snap_mtx);
+        _snapshot = snap;
+    }
+    _last_total_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - collect_start).count();
+    _total_max_ms = std::max(_total_max_ms, _last_total_ms);
 }
 
 void HealthMonitor::collectHost(HealthEvaluator &ev, Json::Value &summary, int64_t now) {

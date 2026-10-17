@@ -322,6 +322,9 @@ private:
     uint64_t _cycle = 0;
     uint64_t _rev = 0;
     double _collect_max_ms = 0;  // longest collect phase since start
+    // Whole cycle (collect + JSON + recordHistory + publish) of the previous cycle; -1 = none yet.
+    double _last_total_ms = -1;
+    double _total_max_ms = 0;
     // Monitor poller load (process.monitor): cycle start later than planned, and the wait of a
     // probe task halfway between cycles (probeQueueDelay). -1 = no sample yet.
     int64_t _last_cycle_start_ms = 0;

@@ -99,7 +99,15 @@ Nếu không muốn có hook này trong code thì chỉ làm unit test. Khi đó
 Test: `unit.health_monitor_all` (ngưỡng mới vào `editableKeys`, kiểm warn < crit); chạy thật 1 node:
 `lag_ms` ≈ 0, `queue_delay_ms` vài ms.
 
-### P3. Thời gian trọn chu kỳ (L3)
+### P3. Thời gian trọn chu kỳ (L3) — ĐÃ LÀM
+
+`process.monitor.total_ms_prev` (chu kỳ trước, `null` ở chu kỳ đầu) và `total_max_ms`; `check_ccu.py`
+cột `collect ms tb/max / total max`; `run_cluster.sh <dir> stale` thêm `s1_total_cycle`
+(`total_max_ms ≥ collect_max_ms`, so cùng chu kỳ không được vì `total_ms_prev` là của chu kỳ trước):
+10/10, Debug không camera collect 1–4 ms, total 2,7–4,4 ms. Khác mô tả: đo từ cùng mốc với
+`collect_ms` (sau hook test làm kẹt), nên lần kẹt chỉ hiện ở `lag_ms`, không hiện ở `total`.
+
+Mô tả ban đầu:
 
 - Đo thêm từ đầu `collectNow()` tới sau `_snapshot = snap` → `_last_total_ms`; chu kỳ sau ghi
   `process.monitor.total_ms_prev` (của chu kỳ trước, vì chu kỳ hiện tại chưa xong khi ghi JSON).
