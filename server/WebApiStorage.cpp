@@ -10,8 +10,10 @@
  * Routes are mounted under /media/mserver/storage/...
  * All endpoints share the CHECK_AUTH_TOKEN() guard.
  *
- * The handler bodies are declared in WebApiStorage.h. They used to be shared with a
- * /media/api/storage/* family behind CHECK_SECRET(), removed with www/console.
+ * Each route keeps its guard at the registration and runs its body (a plain function in this file)
+ * on the API worker pool. Bodies run blocking work (SQLite, filesystem, object storage), fill `val`
+ * (the `data` field and, on error, the fields the response must keep) and throw
+ * ApiResponseException for business errors, like RETURN_API_RESPONSE(code, msg).
  */
 
 #include <algorithm>
@@ -22,7 +24,6 @@
 #include "Manager.h"
 #include "ApiWorkDispatcher.h"
 #include "WebApi.h"
-#include "WebApiStorage.h"
 #include "WebApiErrCode.h"
 #include "Camera/CameraManager.h"
 #include "Common/StrUtil.h"
@@ -46,7 +47,7 @@ using namespace managerkit;
 #ifdef ENABLE_TIER_STORAGE
 
 // ===================================================================
-// Shared handler bodies (see WebApiStorage.h)
+// Handler bodies
 //
 // These run on the API worker pool. Where the removed /media/api/storage/* family used to answer a
 // different payload, the `/media/mserver/storage/*` payload is the one kept:
@@ -193,8 +194,6 @@ Json::Value failedIdsToJson(const std::vector<std::string> &unknown,
     for (const auto &id : failed) failed_arr.append(id);
     return failed_arr;
 }
-
-} // namespace
 
 // --- Section 1: storage pools -------------------------------------------------------------
 
@@ -1107,6 +1106,7 @@ void storageMountpointAvailable(const ArgsMap &allArgs, Json::Value &val) {
     val["data"] = data;
 }
 
+} // namespace
 } // namespace managerkit
 
 // ===================================================================

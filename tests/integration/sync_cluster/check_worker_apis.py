@@ -342,8 +342,6 @@ def api_call(path, params=None, timeout=30):
 
 api_reads = [
     ("getSyncStatus", "/media/api/getSyncStatus", None, 200, 0),
-    ("listFiles", "/media/api/listFiles", None, 200, 0),
-    ("serveFile(unknown)", "/media/api/serveFile", {"path": "no-such-file"}, 404, None),
     ("monitor/summary", "/media/monitor/summary", None, 200, 0),
     ("monitor/history", "/media/monitor/history", {"fields": "score,system"}, 200, 0),
 ]
@@ -355,7 +353,8 @@ for name, path, params, want_status, want_code in api_reads:
 # Removed with www/console: the desktop monitor app uses /media/monitor/*, VMS /media/mserver/*.
 for path in ("/media/api/storage/pool/list", "/media/api/storage/dashboard/summary", "/media/api/systemStatistic",
              "/media/api/systemStatisticHistory", "/media/api/getStatistic", "/media/api/getThreadsLoad",
-             "/media/api/getWorkThreadsLoad", "/media/api/device/statisticsList"):
+             "/media/api/getWorkThreadsLoad", "/media/api/device/statisticsList", "/media/api/listFiles",
+             "/media/api/serveFile"):
     status, data, _ = api_call(path)
     check("step6 removed %s" % path, status == 404, "status=%s code=%s" % (status, data.get("code")))
 

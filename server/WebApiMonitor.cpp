@@ -2,7 +2,6 @@
 #include "ApiWorkDispatcher.h"
 #include "WebApi.h"
 #include "WebApiErrCode.h"
-#include "WebApiMonitor.h"
 
 #include "Manager.h"
 #include "Server/GlobalMonitor.h"
@@ -22,9 +21,11 @@ using namespace mediakit;
 
 namespace managerkit {
 
-// --- Bodies of /media/mserver/systemStatistic* (WebApiMonitor.h) -------------------------------
+// --- Bodies of /media/mserver/systemStatistic* -------------------------------------------------
 
-void systemStatistic(Json::Value &val) {
+// Cached monitor snapshot (OS, CPU, RAM, network, disks, readers): no blocking work, answered on
+// the request poller.
+static void systemStatistic(Json::Value &val) {
     val["data"] = GlobalMonitor::Instance().makeSystemStatisticJson();
     // Recording rate into the record directory, or into the HOT tier when storage tiering is on.
 #ifdef ENABLE_TIER_STORAGE
@@ -34,7 +35,8 @@ void systemStatistic(Json::Value &val) {
 #endif
 }
 
-void systemStatisticHistory(const ArgsMap &allArgs, Json::Value &val) {
+// Statistics DB query over a time range: runs on the API worker pool.
+static void systemStatisticHistory(const ArgsMap &allArgs, Json::Value &val) {
     int64_t from_ts = allArgs["from"];
     int64_t to_ts   = allArgs["to"];
     int     limit   = allArgs["limit"];

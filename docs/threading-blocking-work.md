@@ -456,8 +456,7 @@ Script gọi discovery ONVIF **và** discovery RTSP tới một IP bị drop gó
 `/media/mserver/healthcheck` trong suốt thời gian đó. Kết quả mong đợi: discovery mất
 20s/10s trong khi healthcheck vẫn ở mức vài milli giây.
 
-Bước 6 phủ phần còn lại của họ `/media/api/*` (trust boundary `CHECK_SECRET`; `getSyncStatus`, `listFiles`,
-`serveFile`) và `/media/monitor/summary|history`, kiểm tra status/code không đổi và các route đã gỡ cùng
+Bước 6 phủ phần còn lại của họ `/media/api/*` (`getSyncStatus`) và `/media/monitor/summary|history`, kiểm tra status/code không đổi và các route đã gỡ cùng
 `www/console` trả 404.
 `run_cluster.sh` truyền secret của node qua `API_SECRET` — secret được MediaServer sinh ngẫu nhiên
 lúc khởi động rồi ghi vào `config.ini` (file dump theo CRLF nên phải `tr -d '\r'`).

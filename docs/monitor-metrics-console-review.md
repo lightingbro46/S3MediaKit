@@ -89,7 +89,6 @@ app phải nằm trong `http.allow_ip_range`. App không dùng cơ chế `author
 | | `/media/monitor/history` | khi mở biểu đồ |
 | B. Xem chi tiết (đọc, theo yêu cầu, không định kỳ) | `/index/api/getThreadsLoad`, `getWorkThreadsLoad`, `getBlockingExecutors`, `getStatistic` | khi mở panel thread / gỡ lỗi |
 | | `/media/api/getSyncStatus` | khi mở bảng sync một node (quét SQLite) |
-| | `/media/api/listFiles`, `serveFile` | xem/tải log, file |
 | C. Kiểm tra kết nối | `/media/mserver/healthcheck` (không khoá): node trả lời, `mediaServerId`, `version`, `serverLocationId` | khi thêm/sửa node, trước khi có khoá |
 | | `/media/monitor/health` | khoá + IP đúng |
 | D. Cấu hình | `/media/monitor/config/get`, `config/set` | ngưỡng giám sát (có kiểm tra khoá, giá trị) |
@@ -226,16 +225,16 @@ Từng route được xác nhận riêng trước khi gỡ. Trước đây có 3
 | `/media/api/systemStatistic`, `systemStatisticHistory` | **Đã gỡ** | `/media/monitor/summary`, `/history`; VMS: `/media/mserver/systemStatistic*` (JWT) |
 | `/media/api/cluster/access` + `CHECK_CLUSTER_AUTHOR_ASYNC` | **Giữ** (theo xác nhận) | — |
 | `/media/api/getSyncStatus` | **Giữ**, guard không đổi (`CHECK_CLUSTER_AUTHOR_ASYNC`) | — |
-| `/media/api/listFiles`, `serveFile` | **Giữ** | — |
+| `/media/api/listFiles`, `serveFile` | **Đã gỡ** (sau, cùng ngày): chỉ đọc được file dưới `api.downloadRoot` (`./www`), không lấy được log | — |
 
-Sau khi gỡ, `/media/api/*` còn 4 route: `getSyncStatus`, `cluster/access`, `listFiles`, `serveFile`.
+Sau khi gỡ, `/media/api/*` còn 2 route: `getSyncStatus`, `cluster/access`.
 
 Đã làm cùng commit:
 
-- `server/WebApi.cpp`: xoá các `api_regist` trên và 2 include `WebApiMonitor.h`, `WebApiStorage.h` không còn
-  dùng. Thân hàm dùng chung giữ nguyên (họ `/media/mserver/*` vẫn gọi), chỉ sửa chú thích đầu
-  `WebApiStorage.{h,cpp}`, `WebApiMonitor.{h,cpp}`.
-- `tests/integration/sync_cluster/check_worker_apis.py` mục 11–12: chỉ kiểm 3 route `/media/api/*` còn lại +
+- `server/WebApi.cpp`: xoá các `api_regist` trên. Thân hàm không còn dùng chung giữa hai file nên bỏ
+  `WebApiStorage.h`, `WebApiMonitor.h`: thân hàm storage nằm trong namespace ẩn danh của `WebApiStorage.cpp`,
+  `systemStatistic*` là hàm `static` trong `WebApiMonitor.cpp`.
+- `tests/integration/sync_cluster/check_worker_apis.py` mục 11–12: chỉ kiểm `/media/api/getSyncStatus` +
   `/media/monitor/summary|history`, kiểm route đã gỡ trả 404; vòng chặn worker chuyển sang
   `/media/mserver/storage/pool/testConnection` và `pool/list` (mục 8, 10 đã phủ họ `/media/mserver/storage/*`).
 - Tài liệu: `api-storage-tiering.md`, `api-system-alert-events.md`, `e2e-test-plan.md` (bỏ TIR-24),
