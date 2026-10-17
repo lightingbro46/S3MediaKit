@@ -1,7 +1,10 @@
 ﻿#ifdef ENABLE_MP4
 #include <ctime>
 #include <sys/stat.h>
+#include <map>
+#include <mutex>
 #include "Util/File.h"
+#include "Util/onceToken.h"
 #include "Common/config.h"
 #include "Common/Parser.h"
 #include "MP4Recorder.h"
@@ -13,6 +16,108 @@ using namespace toolkit;
 
 namespace mediakit {
 
+namespace {
+struct CloseCounters {
+    mutex mtx;
+    map<uint64_t, uint64_t> queued;
+    uint64_t next_id = 0, completed = 0, cancelled = 0, started = 0;
+    uint64_t wait_us = 0, wait_max_us = 0, run_us = 0, run_max_us = 0;
+    size_t running = 0;
+};
+
+struct CloseTicket {
+    explicit CloseTicket(shared_ptr<CloseCounters> counters) : counters(std::move(counters)) {
+        lock_guard<mutex> lock(this->counters->mtx);
+        queued_at = getCurrentMicrosecond(true);
+        id = ++this->counters->next_id;
+        this->counters->queued.emplace(id, queued_at);
+    }
+    ~CloseTicket() {
+        // A cancelled Task destroys its callable without running it.
+        lock_guard<mutex> lock(counters->mtx);
+        if (counters->queued.erase(id)) ++counters->cancelled;
+    }
+    void start() {
+        started_at = getCurrentMicrosecond(true);
+        lock_guard<mutex> lock(counters->mtx);
+        counters->queued.erase(id);
+        ++counters->running;
+        ++counters->started;
+        const auto wait = started_at - queued_at;
+        counters->wait_us += wait;
+        counters->wait_max_us = std::max(counters->wait_max_us, wait);
+    }
+    void finish() {
+        const auto elapsed = getCurrentMicrosecond(true) - started_at;
+        lock_guard<mutex> lock(counters->mtx);
+        --counters->running;
+        ++counters->completed;
+        counters->run_us += elapsed;
+        counters->run_max_us = std::max(counters->run_max_us, elapsed);
+    }
+    shared_ptr<CloseCounters> counters;
+    uint64_t id, queued_at, started_at = 0;
+};
+
+class ClosePool : public ThreadPool {
+public:
+    explicit ClosePool(string name)
+        : ThreadPool(1, ThreadPool::PRIORITY_NORMAL, true, false, name)
+        , name(std::move(name)), counters(make_shared<CloseCounters>()) {}
+
+    Task::Ptr async(TaskIn task, bool may_sync = true) override {
+        return ThreadPool::async(wrap(std::move(task)), may_sync);
+    }
+    Task::Ptr async_first(TaskIn task, bool may_sync = true) override {
+        return ThreadPool::async_first(wrap(std::move(task)), may_sync);
+    }
+    MP4Recorder::ClosePoolStats stats() const {
+        MP4Recorder::ClosePoolStats ret;
+        ret.name = name;
+        lock_guard<mutex> lock(counters->mtx);
+        ret.queued = counters->queued.size();
+        ret.running = counters->running;
+        ret.completed = counters->completed;
+        ret.cancelled = counters->cancelled;
+        if (!counters->queued.empty())
+            ret.oldest_queued_ms = (getCurrentMicrosecond(true) - counters->queued.begin()->second) / 1000.0;
+        ret.wait_avg_ms = counters->started ? counters->wait_us / (1000.0 * counters->started) : 0;
+        ret.wait_max_ms = counters->wait_max_us / 1000.0;
+        ret.run_avg_ms = counters->completed ? counters->run_us / (1000.0 * counters->completed) : 0;
+        ret.run_max_ms = counters->run_max_us / 1000.0;
+        return ret;
+    }
+private:
+    TaskIn wrap(TaskIn task) {
+        auto ticket = make_shared<CloseTicket>(counters);
+        return [ticket, task]() {
+            ticket->start();
+            onceToken finish(nullptr, [ticket]() { ticket->finish(); });
+            task();
+        };
+    }
+    string name;
+    shared_ptr<CloseCounters> counters;
+};
+
+mutex s_close_pools_mutex;
+vector<weak_ptr<ClosePool>> s_close_pools;
+}
+
+vector<MP4Recorder::ClosePoolStats> MP4Recorder::closePoolStats() {
+    vector<shared_ptr<ClosePool>> pools;
+    {
+        lock_guard<mutex> lock(s_close_pools_mutex);
+        for (const auto &weak : s_close_pools) {
+            auto pool = weak.lock();
+            if (pool) pools.emplace_back(std::move(pool));
+        }
+    }
+    vector<ClosePoolStats> ret;
+    for (const auto &pool : pools) ret.emplace_back(pool->stats());
+    return ret;
+}
+
 TaskExecutor::Ptr MP4Recorder::closeExecutorFor(const string &stream_key) {
     // Closing blocks on disk (moov write, rename) and so do the kBroadcastRecordMP4 listeners
     // (timefile, SQLite), so none of it may run on a poller. One single-thread pool per slot keeps
@@ -23,8 +128,10 @@ TaskExecutor::Ptr MP4Recorder::closeExecutorFor(const string &stream_key) {
         threads = std::max(1, threads);
         auto ret = new vector<TaskExecutor::Ptr>();
         for (int i = 0; i < threads; ++i) {
-            ret->emplace_back(std::make_shared<ThreadPool>(1, ThreadPool::PRIORITY_NORMAL, true, false,
-                                                           "rec close " + to_string(i)));
+            auto pool = std::make_shared<ClosePool>("rec close " + to_string(i));
+            ret->emplace_back(pool);
+            lock_guard<mutex> lock(s_close_pools_mutex);
+            s_close_pools.emplace_back(pool);
         }
         return ret;
     }();
@@ -45,6 +152,12 @@ MP4Recorder::MP4Recorder(const MediaTuple &tuple, const string &path, size_t max
     }
     GET_CONFIG(uint32_t, s_max_second, Protocol::kMP4MaxSecond);
     _max_second = max_second ? max_second : s_max_second;
+    GET_CONFIG(bool, stagger_start, Record::kSegmentStartStagger);
+    _first_max_second = _max_second;
+    if (stagger_start && !_continuous_file_time && _max_second >= 2) {
+        const size_t half = _max_second / 2;
+        _first_max_second = half + std::hash<string>()(_info.shortUrl()) % half;
+    }
 }
 
 MP4Recorder::~MP4Recorder() {
@@ -101,6 +214,7 @@ void MP4Recorder::asyncClose() {
     auto info = _info;
     TraceL << "Start close tmp mp4 file: " << full_path_tmp;
     closeExecutorFor(_info.shortUrl())->async([muxer, full_path_tmp, info]() mutable {
+        Ticker close_ticker;
         info.time_len = muxer->getDuration() / 1000.0f;
         // Closing mp4 can be very time-consuming, so it should be executed in the background thread
         TraceL << "Closing tmp mp4 file: " << full_path_tmp;
@@ -117,9 +231,16 @@ void MP4Recorder::asyncClose() {
             // Change the temporary file name to the official file name to prevent access to the mp4 before it is completed
             rename(full_path_tmp.data(), info.file_path.data());
         }
+        const auto io_ms = close_ticker.elapsedTime();
+        close_ticker.resetTime();
         TraceL << "Emit mp4 record event: " << info.file_path;
         // Trigger mp4 recording slice generation event
         NOTICE_EMIT(BroadcastRecordMP4Args, Broadcast::kBroadcastRecordMP4, info);
+        const auto listeners_ms = close_ticker.elapsedTime();
+        DebugL << "MP4 close timing: io_ms=" << io_ms << ", listeners_ms=" << listeners_ms;
+        if (io_ms > 1000 || listeners_ms > 1000) {
+            WarnL << "Slow MP4 close: io_ms=" << io_ms << ", listeners_ms=" << listeners_ms;
+        }
     });
 }
 
@@ -138,7 +259,8 @@ void MP4Recorder::flush() {
 
 bool MP4Recorder::inputFrame(const Frame::Ptr &frame) {
     auto stamp_inc = _delta_stamp[frame->getTrackType()].relativeStamp(frame->pts(), false);
-    if (!_muxer || (stamp_inc > int64_t(_max_second) * 1000 && (!_have_video || frame->keyFrame()))) {
+    const auto segment_second = _file_index <= 1 ? _first_max_second : _max_second;
+    if (!_muxer || (stamp_inc > int64_t(segment_second) * 1000 && (!_have_video || frame->keyFrame()))) {
         // Conditions for establishment
         // 1. _muxer is empty
         // 2. It's time to slice, and there is only audio

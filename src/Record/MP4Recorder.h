@@ -3,6 +3,7 @@
 
 #include <mutex>
 #include <memory>
+#include <vector>
 #include "Common/MediaSink.h"
 #include "Record/Recorder.h"
 #include "MP4Muxer.h"
@@ -23,6 +24,21 @@ public:
     // Single-thread pool ("rec close N") that closes the segments of `stream_key`
     // (MediaTuple::shortUrl()); the same key always maps to the same pool.
     static toolkit::TaskExecutor::Ptr closeExecutorFor(const std::string &stream_key);
+
+    struct ClosePoolStats {
+        std::string name;
+        size_t queued = 0;
+        size_t running = 0;
+        uint64_t completed = 0;
+        uint64_t cancelled = 0;
+        double oldest_queued_ms = 0;
+        double wait_avg_ms = 0;
+        double wait_max_ms = 0;
+        double run_avg_ms = 0;
+        double run_max_ms = 0;
+    };
+    // Snapshot of initialized shards, without starting the pools or resetting counters.
+    static std::vector<ClosePoolStats> closePoolStats();
 
     /**
      * Reset all Tracks
@@ -52,6 +68,7 @@ private:
 private:
     bool _have_video = false;
     size_t _max_second;
+    size_t _first_max_second;
     /**
      * Override the wall-clock time used to name the very next file created.
      * Pass 0 to clear the override (use current time).

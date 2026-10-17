@@ -6,7 +6,7 @@
 #include "Extension/Factory.h"
 #include "Extension/Frame.h"
 #include "Thread/ThreadPool.h"
-#include "Thread/WorkThreadPool.h"
+#include "ReplayPoller.h"
 #include "Util/logger.h"
 
 #include <algorithm>
@@ -93,7 +93,7 @@ MergedMP4Reader::~MergedMP4Reader() {
 void MergedMP4Reader::setup(const MediaTuple &tuple,
                             const ProtocolOption &option,
                             toolkit::EventPoller::Ptr poller) {
-    _poller = poller ? std::move(poller) : WorkThreadPool::Instance().getPoller();
+    _poller = poller ? std::move(poller) : ReplayPollerPool::Instance().getPoller();
     _tuple = tuple;
     _option = option;
     _enable_audio = option.enable_audio;

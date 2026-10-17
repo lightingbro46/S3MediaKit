@@ -24,6 +24,7 @@ class CapacityEvidenceTest(unittest.TestCase):
         rn.source_window = {"cpu_pct_max": 0, "tick_late_p99_ms": 0}
         snap = dict(cpu=0, tasks={}, rss_kb=0, fds=0, tx=0)
         with patch.object(cc.cs, "check_schedules", return_value={"mismatch": 0}), \
+                patch.object(cc, "mem_total_kb", return_value=1024 * 1024), \
                 patch.object(cc, "record_gaps", return_value={"gaps": 0, "stale": 0}):
             row = rn.evaluate(0, "0", 0, None, {}, dict(snap, t=100), dict(snap, t=160),
                               SimpleNamespace(loads={}, health=[1]),

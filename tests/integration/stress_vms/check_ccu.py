@@ -288,6 +288,7 @@ class Sampler(object):
         self.health_err = 0
         self.loads = defaultdict(list)
         self.source = []
+        self.record_close = []
         self.threads = []
 
     def _probe(self):
@@ -315,6 +316,11 @@ class Sampler(object):
         while not self.stop_ev.is_set():
             for i, row in enumerate(self.s.threads_load()):
                 self.loads[row.get("name") or str(i)].append(row.get("load", 0))
+            try:
+                stats = self.s.api("/index/api/getBlockingExecutors")
+                self.record_close.append({"at": time.time(), "shards": stats.get("record_close", [])})
+            except (OSError, ValueError):
+                pass
             self.stop_ev.wait(5)
 
     def start(self):
@@ -611,6 +617,7 @@ class Runner(object):
         row["ingest_timeouts_total"] = logs1["rtp_timeout"]
         row["ingest_timeouts_outside_window"] = max(0, logs1["rtp_timeout"] - new["rtp_timeout"])
         row["execution_threads"] = logs1.get("execution_threads", {})
+        row["record_close_samples"] = getattr(smp, "record_close", [])
         row["network_delta"] = {k: max(0, v - s0.get("network", {}).get(k, v))
                                 for k, v in s1.get("network", {}).items()}
         if row["ingest_timeouts_total"]:

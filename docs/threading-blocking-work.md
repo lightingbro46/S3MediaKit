@@ -336,7 +336,27 @@ nên phải đóng bất đồng bộ. Ở đây đóng đồng bộ vừa hợp
 một lần đóng bất đồng bộ còn giữ dữ liệu trong buffer trong khi writer mới mở lại cùng file sẽ làm
 `TimeMuxer::setLastOffset()` đọc kích thước file cũ.
 
-### 4.6 Xác thực JWT và phiên người dùng
+### 4.6 Service configuration và ghi/phát lại MP4
+
+Callback HTTP server_load chỉ giải mã và chuyển response sang ServerConfigLoader trên pool api.
+Queue giữ một apply đang chạy và một response mới nhất đang chờ; revision gắn lúc gửi HTTP loại
+response cũ đến muộn. Qualified/not-qualified đi qua cùng queue. Chỉ cache response sau khi manager
+ready và apply thành công; cấu hình không đổi vẫn đối soát qualification mỗi lần, áp lại sau
+hook.configReapplySec (300 s; 0 = mọi response). Các trường so sánh gồm cả list_audio_file.
+
+Đóng MP4 và listener chạy trên các shard rec close N, cùng stream luôn cùng shard.
+/index/api/getBlockingExecutors giữ nguyên data và thêm record_close: queued/running,
+completed/cancelled, tuổi task chờ lâu nhất và thời gian chờ/chạy trung bình/tối đa từng shard.
+Counters tích luỹ từ lúc khởi tạo, không reset khi đọc. Đo thông lượng bằng delta completed/thời gian;
+không kết luận tăng record.closeThreads sẽ tăng thông lượng SQLite tương ứng.
+
+MP4Reader/MergedMP4Reader dùng nhóm replay poller N riêng, trừ khi caller truyền poller.
+record.replayPollerThreads=8 đọc lúc khởi tạo pool; 0 dùng work pool cho baseline A/B.
+record.segmentStartStagger=1 đọc lúc tạo recorder, rút ngắn segment live đầu tiên theo hash stream;
+segment sau và recorder continuous giữ duration gốc. Đặt 0 để so baseline không rải segment.
+Các biện pháp này cô lập queue/timer và giảm tải đỉnh; disk read/write vẫn có thể block khi ổ bão hoà.
+
+### 4.7 Xác thực JWT và phiên người dùng
 
 `UserAuthorManager::getTokenCache()` được gọi trên poller của session/request. Nó verify chữ ký RSA
 **ngoài** `_mtx` toàn cục, và đẩy việc ghi phiên người dùng xuống SQLite
