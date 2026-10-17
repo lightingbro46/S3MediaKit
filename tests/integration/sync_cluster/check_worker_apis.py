@@ -330,11 +330,9 @@ step4_call("protected/delete(unknown)", S + "/protected/delete", {"protected_id"
 step4_call("restoreJob/create(unknown camera)", S + "/restoreJob/create",
            {"camera_id": "no-such-camera", "start_time": 1, "end_time": 5}, 404, 905001, as_json=False)
 
-# 11. The /media/api/* family (CHECK_SECRET / CHECK_CLUSTER_AUTHOR_ASYNC trust boundary), which was
-#     dispatched to the API worker in the API-blocking backlog pass. Route, status and code must be
-#     unchanged, and a heavy read must not delay the pollers.
-A = "/media/api/storage"
-# This family is behind CHECK_SECRET(), unlike /media/mserver/* which uses the user JWT.
+# 11. What is left of the /media/api/* family (CHECK_SECRET / CHECK_CLUSTER_AUTHOR_ASYNC trust
+#     boundary) after www/console was removed, and the /media/monitor/* reads that replaced the
+#     removed routes. Route, status and code must be unchanged.
 API_SECRET = os.environ.get("API_SECRET", "")
 
 
@@ -342,68 +340,27 @@ def api_call(path, params=None, timeout=30):
     return call(path, dict(params or {}, secret=API_SECRET), timeout=timeout)
 
 
-def api_post(path, body, timeout=30):
-    return post_json(path + "?secret=" + urllib.parse.quote(API_SECRET), body, timeout=timeout)
-
-
 api_reads = [
-    ("dashboard/summary", A + "/dashboard/summary", None, 200, 0),
-    ("pool/options", A + "/pool/options", None, 200, 0),
-    ("pool/list", A + "/pool/list", None, 200, 0),
-    ("pool/detail(unknown)", A + "/pool/detail", {"id": "no-such-pool"}, 404, 914001),
-    ("policy/list", A + "/policy/list", None, 200, 0),
-    ("policy/detail(unknown)", A + "/policy/detail", {"id": "no-such-policy"}, 404, 914002),
-    ("alert/list", A + "/alert/list", None, 200, 0),
-    ("restoreJob/list", A + "/restoreJob/list", None, 200, 0),
-    ("tieringJob/list", A + "/tieringJob/list", None, 200, 0),
-    ("expiredSegment/list", A + "/expiredSegment/list", None, 200, 0),
-    ("protected/list", A + "/protected/list", None, 200, 0),
-    ("mountpoint/available", A + "/mountpoint/available", None, 200, 0),
-    ("camera/effectivePolicy/list", A + "/camera/effectivePolicy/list", None, 200, 0),
-    ("camera/timeline(missing args)", A + "/camera/timeline", None, 400, 902001),
-    ("camera/timeline(unknown)", A + "/camera/timeline",
-     {"camera_id": "no-such-camera", "start_time": 1, "end_time": 5}, 404, 905001),
-    ("camera/summary(unknown)", A + "/camera/summary", {"camera_id": "no-such-camera"}, 404, 905001),
     ("getSyncStatus", "/media/api/getSyncStatus", None, 200, 0),
-    # Shared body with /media/mserver/systemStatistic* (WebApiMonitor.h).
-    ("systemStatistic", "/media/api/systemStatistic", None, 200, 0),
-    ("systemStatisticHistory", "/media/api/systemStatisticHistory",
-     {"from": 0, "to": int(time.time()), "limit": 10}, 200, 0),
     ("listFiles", "/media/api/listFiles", None, 200, 0),
     ("serveFile(unknown)", "/media/api/serveFile", {"path": "no-such-file"}, 404, None),
+    ("monitor/summary", "/media/monitor/summary", None, 200, 0),
+    ("monitor/history", "/media/monitor/history", {"fields": "score,system"}, 200, 0),
 ]
 for name, path, params, want_status, want_code in api_reads:
     status, data, elapsed = api_call(path, params)
     ok = status == want_status and (want_code is None or data.get("code") == want_code)
     check("step6 %s" % name, ok, "status=%s code=%s elapsed=%.2fs" % (status, data.get("code"), elapsed))
 
-# dashboard/detail is an API_ARGS_JSON endpoint, so it needs a JSON body.
-status, data, elapsed = api_post(A + "/dashboard/detail", {})
-check("step6 dashboard/detail", status == 200 and data.get("code") == 0,
-      "status=%s code=%s elapsed=%.2fs" % (status, data.get("code"), elapsed))
-
-
-# Mutations of this family share the serial storage.mutation group with /media/mserver/storage/*.
-def api_step_call(name, path, body, want_status, want_code, as_json=True):
-    status, data, _ = api_post(path, body) if as_json else api_call(path, body)
-    if probe_only or want_status is None:
-        print("PROBE %s status=%s code=%s body=%s" % (name, status, data.get("code"), json.dumps(data)[:200]))
-    else:
-        check("step6 %s" % name, status == want_status and data.get("code") == want_code,
-              "status=%s code=%s body=%s" % (status, data.get("code"), json.dumps(data)[:120]))
-
-
-api_step_call("pool/create(bad watermark)", A + "/pool/create",
-              dict(pool, high_watermark_percent=95, critical_watermark_percent=90), 404, 902008)
-api_step_call("pool/update(unknown)", A + "/pool/update", {"id": "no-such-pool", "name": "x"}, 404, 914001)
-api_step_call("policy/delete(unknown)", A + "/policy/delete", {"id": "no-such-policy"}, 404, 914002, as_json=False)
-api_step_call("policy/assignCamera(unknown)", A + "/policy/assignCamera",
-              {"camera_id": "no-such-camera", "policy_id": "no-such-policy"}, 404, 905001, as_json=False)
-api_step_call("policy/removeCamera(unknown)", A + "/policy/removeCamera",
-              {"camera_id": "no-such-camera"}, 404, 905001, as_json=False)
+# Removed with www/console: the desktop monitor app uses /media/monitor/*, VMS /media/mserver/*.
+for path in ("/media/api/storage/pool/list", "/media/api/storage/dashboard/summary", "/media/api/systemStatistic",
+             "/media/api/systemStatisticHistory", "/media/api/getStatistic", "/media/api/getThreadsLoad",
+             "/media/api/getWorkThreadsLoad", "/media/api/device/statisticsList"):
+    status, data, _ = api_call(path)
+    check("step6 removed %s" % path, status == 404, "status=%s code=%s" % (status, data.get("code")))
 
 # 12. With every API worker blocked: the request pollers stay free, and the `storage.read` cap
-#     really is shared by the two families.
+#     holds.
 #
 #     `pool/testConnection` on an object storage at BLACKHOLE_IP is the slow endpoint of this
 #     family: the AWS SDK sets its client up and then waits out its 5s connect timeout, which takes
@@ -427,17 +384,15 @@ burst_lock = threading.Lock()
 
 
 def blackhole_probe():
-    r = api_post(A + "/pool/testConnection", blackhole_pool, timeout=180)
+    r = post_json(S + "/pool/testConnection", blackhole_pool, timeout=180)
     with burst_lock:
         probes.append(r)
 
 
-def burst_read(family):
-    # Both families share one storage.read budget: the same group, counted once.
-    path = (A if family == "api" else S) + "/pool/list"
-    r = api_call(path, timeout=180) if family == "api" else call(path, {}, timeout=180)
+def burst_read():
+    r = call(S + "/pool/list", {}, timeout=180)
     with burst_lock:
-        burst.append((family, r))
+        burst.append(("read", r))
 
 
 def burst_playback():
@@ -455,8 +410,7 @@ for t in probe_threads:
 # API pool, so each dispatched request keeps its in-flight slot until the probes are done.
 time.sleep(1.5)
 total_burst = STORAGE_READ_INFLIGHT + BURST_OVER
-burst_threads = [threading.Thread(target=burst_read, args=("mserver" if i % 2 else "api",))
-                 for i in range(total_burst)]
+burst_threads = [threading.Thread(target=burst_read) for _ in range(total_burst)]
 burst_threads += [threading.Thread(target=burst_playback) for _ in range(2)]
 for t in burst_threads:
     t.start()

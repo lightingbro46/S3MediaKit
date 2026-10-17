@@ -378,7 +378,6 @@ Với `retain_until_days=0` và độ mịn 60 s, segment được move sau ~1�
 | TIR-21 | P1 | M | Xoá tay 1 object trên MinIO | reconcile đánh dấu `MISSING`; replay range đó báo rõ, không crash |
 | TIR-22 | P2 | A | `dashboard/summary`, `dashboard/detail`, `alert/list`, `alert/ack` | số liệu khớp pool/job |
 | TIR-23 | P1 | A | `storage.object_read_mode` presigned: thumbnail/extract range COLD không restore | đọc trực tiếp qua URL presigned |
-| TIR-24 | P2 | A | Bản `/media/api/storage/*` (secret) cho cùng thao tác | payload giống bản JWT |
 
 ### ENC — Mã hoá bản ghi
 

@@ -1,24 +1,16 @@
 /**
  * WebApiStorage.h
  *
- * Bodies shared by the two storage-tiering endpoint families:
- *
- *   /media/mserver/storage/*   behind CHECK_AUTH_TOKEN() + CHECK_USER_PERMISSION  (WebApiStorage.cpp)
- *   /media/api/storage/*       behind CHECK_SECRET()                              (WebApi.cpp)
- *
- * Only the body is shared. Each family keeps its own guards and its own registration, because the
- * two have different trust boundaries: merging them into an HTTP forwarder would move that
- * boundary. The functions below are plain functions, so a route added to one family cannot silently
- * diverge from the other — which is what used to happen (one family dispatched to the API worker,
- * the other still ran on the request poller).
+ * Bodies of the storage-tiering endpoints /media/mserver/storage/* (CHECK_AUTH_TOKEN() +
+ * CHECK_USER_PERMISSION, WebApiStorage.cpp). A second family, /media/api/storage/* behind
+ * CHECK_SECRET(), used to share them; it was removed with www/console. Kept as plain functions so the
+ * guard stays at the registration and the body on the API worker pool.
  *
  * Contract of every function here:
  *   - runs on the API worker pool (blocking: SQLite, filesystem, object storage);
  *   - fills `val` (the `data` field and, on error, the fields the response must keep);
  *   - throws ApiResponseException for business errors, like RETURN_API_RESPONSE(code, msg).
  *
- * Both families answer the same payload; where they used to differ, the `/media/mserver/storage/*`
- * payload is the one kept.
  */
 
 #ifndef S3MEDIAKIT_WEBAPI_STORAGE_H

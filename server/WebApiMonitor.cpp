@@ -22,7 +22,7 @@ using namespace mediakit;
 
 namespace managerkit {
 
-// --- Bodies shared with the /media/api/* family (WebApiMonitor.h) ----------------------------
+// --- Bodies of /media/mserver/systemStatistic* (WebApiMonitor.h) -------------------------------
 
 void systemStatistic(Json::Value &val) {
     val["data"] = GlobalMonitor::Instance().makeSystemStatisticJson();

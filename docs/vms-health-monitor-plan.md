@@ -61,7 +61,7 @@ cung cấp một nhóm API chỉ đọc cho app desktop monitor gọi định k�
 | Độ trễ / tải poller | `getThreadsLoad` (`server/WebApi.cpp:803`) | phải gọi async |
 | Hàng đợi pool blocking | `BlockingExecutors::stats()` | **cửa sổ bị reset mỗi lần gọi, chỉ một người gọi** |
 | Transcode/GPU | `src/Codec/TranscodeStats.h` | đếm decoder/encoder/fallback/tải GPU |
-| API xem từ ngoài | `/media/api/systemStatistic` (cluster author), `/media/api/device/statisticsList` (`CHECK_SECRET`) | |
+| API xem từ ngoài | `/media/api/systemStatistic` (cluster author), `/media/api/device/statisticsList` (`CHECK_SECRET`) — cả hai đã gỡ cùng `www/console` (2026-10-17) | |
 
 ### Khoảng trống cần lấp
 

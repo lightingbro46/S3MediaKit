@@ -6,7 +6,7 @@ liệu; chỉ được: kiểm tra kết nối, đọc, đặt cấu hình, kh�
 1. rà soát các API theo dõi trạng thái console đang dùng (mục 1–2);
 2. trả lời `/media/monitor/*` đã thay được các API đó chưa (mục 3);
 3. chốt danh sách API cho app desktop (mục 4) và bộ thông số giám sát (mục 5);
-4. plan thực hiện: G1–G3 + healthcheck (đã làm), phương án gỡ console và `/media/api/*` (mục 6).
+4. plan thực hiện: G1–G3 + healthcheck, gỡ console và `/media/api/*` — đều đã làm (mục 6).
 
 Hợp đồng `/media/monitor/*`: [api-health-monitor.md](api-health-monitor.md) (`schemaVersion: 1`).
 
@@ -79,8 +79,7 @@ vệ, timeline camera. Đây là việc quản trị trên VMS, app desktop khô
 
 Mọi API dưới đây xác thực bằng `api.secret` **của từng node** (app lưu khoá theo node), gửi qua header
 `secret` (`ArgsMap` đọc cả header, `WebApi.h:110`; app native không vướng CORS; không đưa khoá lên URL). IP
-app phải nằm trong `http.allow_ip_range`. App không dùng cơ chế `authorId` (một khoá gọi sang node khác) — xem
-mục 6.2.
+app phải nằm trong `http.allow_ip_range`. App không dùng cơ chế `authorId` (một khoá gọi sang node khác); cơ chế này vẫn giữ trên server.
 
 | Nhóm | API | Cách gọi |
 |---|---|---|
@@ -213,51 +212,36 @@ Còn phải chạy thật (tier OFF và ON, có camera ghi; dự báo cần ≥ 
 3. 1 người xem live + 1 xem lại một camera → `/cameras?health=all` có `viewers` = {1, 1},
    `cameras_viewed` = 1, khớp `systemStatistic.reader.devices`.
 
-### 6.2 Gỡ `www/console` và các API `/media/api/*` — CHỐT, làm khi app desktop hoàn thiện
+### 6.2 Gỡ `www/console` và các API `/media/api/*` — ĐÃ LÀM (2026-10-17)
 
-Điều kiện bắt đầu: app desktop đã chạy thật trên cụm, team vận hành xác nhận không còn script/tích hợp nào gọi
-các API dưới đây (đã kiểm trong repo: ngoài console chỉ có `check_worker_apis.py` và tài liệu).
+Từng route được xác nhận riêng trước khi gỡ. Trước đây có 38 route `/media/api/*`, tất cả trong
+`server/WebApi.cpp`.
 
-Hiện có 38 route `/media/api/*`, tất cả trong `server/WebApi.cpp`.
+| API | Quyết định | Thay bằng |
+|---|---|---|
+| `www/console/` (20 file) | **Đã gỡ** | app desktop |
+| `/media/api/storage/*` — 28 route: `dashboard/{detail,summary}`, `alert/list`, `restoreJob/list`, `tieringJob/list`, `expiredSegment/list`, `protected/list`, `mountpoint/available`, `pool/{options,list,detail,testConnection,create,update,delete,encrypt/changePassword}`, `camera/{effectivePolicy/list,summary,timeline}`, `policy/{list,detail,create,update,delete,assignCamera,assignCameras,removeCamera,removeCameras}` | **Đã gỡ** | VMS: `/media/mserver/storage/*` (JWT, cùng thân hàm `WebApiStorage.cpp`); app: `/summary.storage.*` |
+| `/media/api/device/statisticsList` | **Đã gỡ** | `/media/monitor/cameras?health=all` |
+| `/media/api/getStatistic`, `getThreadsLoad`, `getWorkThreadsLoad` | **Đã gỡ** | `/index/api/getStatistic`, `getThreadsLoad`, `getWorkThreadsLoad` (CHECK_SECRET, cùng hàm) |
+| `/media/api/systemStatistic`, `systemStatisticHistory` | **Đã gỡ** | `/media/monitor/summary`, `/history`; VMS: `/media/mserver/systemStatistic*` (JWT) |
+| `/media/api/cluster/access` + `CHECK_CLUSTER_AUTHOR_ASYNC` | **Giữ** (theo xác nhận) | — |
+| `/media/api/getSyncStatus` | **Giữ**, guard không đổi (`CHECK_CLUSTER_AUTHOR_ASYNC`) | — |
+| `/media/api/listFiles`, `serveFile` | **Giữ** | — |
 
-| API | Ngoài console ai dùng | Quyết định | Thay bằng |
-|---|---|---|---|
-| `/media/api/storage/*` (30 route: dashboard, pool, policy, job, segment, protected, mountpoint, camera summary/timeline, testConnection, encrypt/changePassword) | `check_worker_apis.py` mục 11 | **Gỡ hết** | VMS dùng `/media/mserver/storage/*` (JWT, cùng thân hàm trong `WebApiStorage.cpp`, giữ nguyên); app: `/summary.storage.*` |
-| `/media/api/device/statisticsList` | không | **Gỡ** | `/media/monitor/cameras?health=all` |
-| `/media/api/getStatistic` | `docs/hw-codec.md` | **Gỡ** | `/index/api/getStatistic` (CHECK_SECRET, cùng hàm); sửa tài liệu |
-| `/media/api/getThreadsLoad`, `getWorkThreadsLoad` | không | **Gỡ** | `/index/api/getThreadsLoad`, `getWorkThreadsLoad` (cùng hàm) |
-| `/media/api/systemStatistic`, `systemStatisticHistory` | `check_worker_apis.py`, `api-system-alert-events.md` | **Gỡ** | `/media/monitor/summary`, `/history`; VMS giữ `/media/mserver/systemStatistic*` (JWT) |
-| `/media/api/cluster/access` + guard `CHECK_CLUSTER_AUTHOR_ASYNC` | chỉ các route trên | **Gỡ** | không cần: app có khoá từng node |
-| `/media/api/getSyncStatus` | `check_worker_apis.py`; app nhóm B | **Giữ**, đổi guard sang `CHECK_SECRET()` (bỏ `authorId`) | — |
-| `/media/api/listFiles`, `serveFile` | `check_worker_apis.py`; app nhóm B | **Giữ** | — |
+Sau khi gỡ, `/media/api/*` còn 4 route: `getSyncStatus`, `cluster/access`, `listFiles`, `serveFile`.
 
-Sau khi gỡ, `/media/api/*` còn 3 route: `getSyncStatus`, `listFiles`, `serveFile`.
+Đã làm cùng commit:
 
-Các bước (một commit, build cả bản bật/tắt tier storage và bản tắt sync):
+- `server/WebApi.cpp`: xoá các `api_regist` trên và 2 include `WebApiMonitor.h`, `WebApiStorage.h` không còn
+  dùng. Thân hàm dùng chung giữ nguyên (họ `/media/mserver/*` vẫn gọi), chỉ sửa chú thích đầu
+  `WebApiStorage.{h,cpp}`, `WebApiMonitor.{h,cpp}`.
+- `tests/integration/sync_cluster/check_worker_apis.py` mục 11–12: chỉ kiểm 3 route `/media/api/*` còn lại +
+  `/media/monitor/summary|history`, kiểm route đã gỡ trả 404; vòng chặn worker chuyển sang
+  `/media/mserver/storage/pool/testConnection` và `pool/list` (mục 8, 10 đã phủ họ `/media/mserver/storage/*`).
+- Tài liệu: `api-storage-tiering.md`, `api-system-alert-events.md`, `e2e-test-plan.md` (bỏ TIR-24),
+  `hw-codec.md`, `restore-job-client-integration.md`, `threading-blocking-work.md`, `vms-health-monitor-plan.md`.
 
-1. Xoá thư mục `www/console/` (CMake chỉ `file(COPY www ...)`, `CMakeLists.txt:647`; không có code server nào
-   trỏ tới `console`). Giữ phần còn lại của `www/`.
-2. `server/WebApi.cpp`: xoá các `api_regist` "Gỡ" ở bảng trên (khối `#ifdef ENABLE_TIER_STORAGE` của họ
-   `/media/api/storage/*` từ dòng ~2779, và các route quanh dòng 2553, 2705-2770). `getSyncStatus`: thay
-   `CHECK_CLUSTER_AUTHOR_ASYNC(on_access)` bằng `CHECK_SECRET(); on_access();`.
-3. Gỡ cơ chế cluster-across-auth đã hết người dùng: macro `CHECK_CLUSTER_AUTHOR_ASYNC` (`server/WebApi.h:324`),
-   listener `kBroadcastClusterAcrossAccess` (`server/WebHook.cpp:2527`), khoá `hook.on_cluster_across_auth`
-   (`WebHook.cpp:82,134`), broadcast `kBroadcastClusterAcrossAccess` và `BroadcastClusterAcrossAccessArgs`,
-   cache `UserAuthorManager::{get,add,cleanExpired}ClusterAuthorCache`. Bỏ khoá config không cần migration
-   (mINI bỏ qua khoá lạ trong file cũ).
-4. Chú thích đầu `server/WebApiStorage.h`, `WebApiStorage.cpp`, `WebApiMonitor.h`: bỏ phần nói về họ
-   `/media/api/*` (thân hàm giờ chỉ có một họ gọi; không gộp/inline lại để giữ diff nhỏ).
-5. `tests/integration/sync_cluster/check_worker_apis.py`: bỏ mục 11 phần `/media/api/storage/*`,
-   `systemStatistic*`; kiểm tương đương qua `/media/mserver/storage/*` (node chạy `auth.enableAuthorize=0`) và
-   `/media/monitor/summary|history`; `getSyncStatus` gửi `secret`.
-6. Tài liệu: `docs/hw-codec.md` (`/index/api/getStatistic`), `docs/api-system-alert-events.md` (bỏ
-   `/media/api/systemStatistic`, thêm `/media/monitor/summary.storage.record_write`),
-   `docs/vms-health-monitor-plan.md` nếu còn dẫn, tài liệu này (trạng thái).
-7. Kiểm: build `MediaServer` (Debug, tier ON/OFF, sync OFF); `run_cluster.sh` mục worker APIs đạt; gọi một route
-   đã gỡ trả 404; `getSyncStatus` thiếu/sai `secret` bị từ chối.
-
-Không gỡ: `/index/api/*` (ZLMediaKit gốc, app nhóm B/D/E dùng), `/media/mserver/*` (VMS),
-`/media/monitor/*`.
+Không gỡ: `/index/api/*` (ZLMediaKit gốc, app nhóm B/D/E dùng), `/media/mserver/*` (VMS), `/media/monitor/*`.
 
 ### 6.3 Bàn giao team app
 
