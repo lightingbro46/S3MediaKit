@@ -207,3 +207,5 @@ P1 và P2 là bắt buộc trước P7; P3, P4 nên có; P5 cần để đọc �
   LOWEST như work pool (SCHED_FIFO HIGHEST ngang poller ingest, A/B lẫn hai biến); base64/AES/parse
   response server_load chuyển hẳn sang pool api; loader so sánh tại chỗ, chỉ copy khi apply thành công.
   unit_server_config_loader 6/6, unit_replay 37/37 đạt. Bundle cho G-r2 phải dựng sau commit này.
+- Smoke sau 734008f3: 20/50 camera và replay 20 camera (4/4) đạt, 0 timeout/hở, thread đúng
+  (báo cáo mục 10.5). Bundle release/ccu_test.sh dựng từ commit ghi kết quả này.

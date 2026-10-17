@@ -842,5 +842,20 @@ sang replay poller. Artifacts ở `/tmp/s3mk-capacity-local.vJvYdT/replay_20`, g
 `ccu_replay_report.json/.md` và CSV có trường stall_events. Đây là kiểm tra replay fMP4 nhỏ;
 không thay lượt G-c 80 phiên / 300 s, replay HLS/RTSP, A/B hay soak trên db3.
 
+Chạy lại sau review `734008f3` (2026-10-17): clip sự kiện không rải segment đầu, replay poller
+priority LOWEST, giải mã response server_load trên pool api. Cùng tham số trên (light, một node,
+segment 20 s, `hook.configReapplySec=30`, 0 viewer, giữ 40 s):
+
+| lượt | luồng | timeout từ khởi động | hở / stale | queue tối đa (mẫu 5 s) | wait max shard (ms) | thread | kết quả |
+|---|---|---|---|---|---|---|---|
+| 20 camera | 40 | 0 | 0 / 0 | 0 | 67, 112 | config: api worker 6; record: rec close 360 | đạt |
+| 50 camera | 100 | 0 | 0 / 0 | 0 | 207, 259 | config: api worker 6; record: rec close 900 | đạt |
+| replay 20 camera | 40 | 0 | 0 / 0 | – | – | config: api worker 8; record: rec close 549 | đạt |
+
+21 lần nhận config (`Load server config success`) đều trên `api worker`; chỉ 6 lần apply thật, các lần
+còn lại bỏ qua vì không đổi. Replay 16 live + 4 replay, lùi 36–40 s, xem 20 s: **4/4 đạt**, TTFF max
+526 ms, không khựng; cả 4 phiên chạy trên `replay poller N`. Binary Debug cùng source `734008f3`, SHA256
+`2f3b035fcfff7be0c55c81d27f23016b40fd0f01e8d8617cb96b0208f0e91529`.
+
 **Chưa xác nhận:** throughput trên SSD db3 khi đã hết cache, mức closeThreads tối ưu (vẫn giữ 2),
 soak dài, so A/B P3/P4 trên tải bitrate thật và capacity G-r2. Chưa chạy fio, đổi sysctl hoặc chạm db3.
