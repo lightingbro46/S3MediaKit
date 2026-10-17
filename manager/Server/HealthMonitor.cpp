@@ -774,6 +774,11 @@ void HealthMonitor::collectNow() {
 
     summary["schemaVersion"] = 1;
     summary["mediaServerId"] = media_server_id;
+    // Pushed by the VMS (serverGroupId, failover), may change while running.
+    GET_CONFIG(int, server_location_id, Cluster::kServerLocationId);
+    GET_CONFIG(bool, enable_failover, Cluster::kEnableFailover);
+    summary["serverLocationId"] = server_location_id;
+    summary["enableFailover"] = enable_failover;
     summary["generatedAt"] = (Json::Int64)now;
     summary["rev"] = (Json::UInt64)_rev;
     summary["overall"] = h["overall"];

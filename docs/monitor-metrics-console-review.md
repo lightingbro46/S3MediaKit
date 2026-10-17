@@ -89,7 +89,7 @@ app phải nằm trong `http.allow_ip_range`. App không dùng cơ chế `author
 | | `/media/monitor/history` | khi mở biểu đồ |
 | B. Xem chi tiết (đọc, theo yêu cầu, không định kỳ) | `/index/api/getThreadsLoad`, `getWorkThreadsLoad`, `getBlockingExecutors`, `getStatistic` | khi mở panel thread / gỡ lỗi |
 | | `/media/api/getSyncStatus` | khi mở bảng sync một node (quét SQLite) |
-| C. Kiểm tra kết nối | `/media/mserver/healthcheck` (không khoá): node trả lời, `mediaServerId`, `version`, `serverLocationId` | khi thêm/sửa node, trước khi có khoá |
+| C. Kiểm tra kết nối | `/media/mserver/healthcheck` (không khoá): node trả lời, `mediaServerId`, `version` | khi thêm/sửa node, trước khi có khoá |
 | | `/media/monitor/health` | khoá + IP đúng |
 | D. Cấu hình | `/media/monitor/config/get`, `config/set` | ngưỡng giám sát (có kiểm tra khoá, giá trị) |
 | | `/index/api/getServerConfig`, `setServerConfig` | cấu hình chung |
@@ -108,7 +108,7 @@ Lưu ý cho app:
   `restartRequired`).
 - Danh sách node: lấy từ `getServerConfig` của một node (peer list như `cluster.js:67-95`) hoặc nhập tay; khoá
   từng node do người vận hành nhập.
-- Nhóm node theo `serverLocationId` (healthcheck): cùng giá trị = cùng site/nhóm đồng bộ.
+- Nhóm node theo `serverLocationId` + `enableFailover` của `/summary`: cùng `serverLocationId` và `enableFailover = true` = một cluster (healthcheck không còn trả `serverLocationId`).
 
 ## 5. Bộ thông số giám sát cho app
 

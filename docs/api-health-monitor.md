@@ -128,8 +128,14 @@ trả `{"code":0,"notModified":true}` không kèm `data`.
 
 `data` gồm các field của `health` (trừ `uptimeSec`, `version` nằm trong `process`/top-level) và:
 
+Nhận diện cluster cho app: các server có cùng `serverLocationId` **chỉ là một cluster khi
+`enableFailover = true`**; `enableFailover = false` thì server đứng riêng dù trùng `serverLocationId`.
+`serverLocationId = 0` là giá trị hợp lệ (VMS gửi 0 hoặc không gửi `serverGroupId`), không có nghĩa là
+"chưa đặt". `/media/mserver/healthcheck` (không khoá) không trả các field này.
+
 | Nhóm | Field |
 |---|---|
+| (gốc `data`) | `serverLocationId` (số, nhóm server VMS đẩy xuống qua `serverGroupId`), `enableFailover` (boolean, cờ `failover` VMS đẩy xuống): cấu hình hiện tại, đổi khi VMS đẩy cấu hình mới, hiện ở snapshot ngay sau đó |
 | `host.cpu` | `cores`, `usage_pct` (máy), `proc_usage_pct`, `load1`, `load1_per_core` |
 | `host.ram` | `total`, `used`, `usage_pct`, `proc_rss` (byte), `proc_usage_pct` |
 | `host.swap` | `total`, `used`, `used_pct` |
