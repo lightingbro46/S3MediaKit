@@ -26,8 +26,10 @@ private:
     ReplayPollerPool() {
         GET_CONFIG(uint32_t, threads, Record::kReplayPollerThreads);
         if (threads) {
+            // Same priority as the work pool it replaces: ingest pollers (HIGHEST, SCHED_FIFO when
+            // permitted) must keep preempting replay, and A/B with 0 changes only the pool.
             // Preserve process affinity; do not pin replay threads outside the test's cpuset.
-            addPoller("replay poller", threads, toolkit::ThreadPool::PRIORITY_HIGHEST, true, false);
+            addPoller("replay poller", threads, toolkit::ThreadPool::PRIORITY_LOWEST, true, false);
         }
     }
     std::mutex _mutex;

@@ -816,14 +816,17 @@ static void reportServerStatistic() {
                 ArgsType body;
                 do_http_hook(hook_api_url + hook_server_load, body, [revision](const Value &obj, const string &err) {
                     if (err.empty()) {
-                        TraceL << "hook " << hook_api_url + hook_server_load << " success: " << obj.toStyledString();
-                        Value config;
-                        if (!decryptServerConfigJson(obj, config)) {
-                            return;
-                        }
-                        InfoL << "Load server config success: " << config["devices"].size() << " devices, " << config["list_media_server"].size() << " servers";
-                        GET_CONFIG(uint32_t, reapply_sec, Hook::kConfigReapplySec);
-                        submitServerConfig(std::move(config), true, revision, uint64_t(reapply_sec) * 1000);
+                        // Base64 + AES-GCM + JSON of every device (and styling it for a log line) cost tens
+                        // of ms at 800 cameras: do none of it on the event poller. Revision keeps order.
+                        BlockingExecutors::api()->async([obj, revision]() {
+                            Value config;
+                            if (!decryptServerConfigJson(obj, config)) {
+                                return;
+                            }
+                            InfoL << "Load server config success: " << config["devices"].size() << " devices, " << config["list_media_server"].size() << " servers";
+                            GET_CONFIG(uint32_t, reapply_sec, Hook::kConfigReapplySec);
+                            submitServerConfig(std::move(config), true, revision, uint64_t(reapply_sec) * 1000);
+                        });
                     } else {
                         // Load server config failed
                         TraceL << "hook " << hook_api_url + hook_server_load << " failed:" << err;

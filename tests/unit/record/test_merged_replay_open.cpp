@@ -728,9 +728,11 @@ TEST(MP4MuxerParameterSetsTest, FirstKeyframeSampleCarriesSpsAndPps) {
 // segments of one stream close one after another in order.
 TEST(MP4RecorderStaggerTest, ShortensOnlyFirstLiveSegmentAndPreservesContinuous) {
     for (const unsigned max_second : {1u, 6u}) {
-      for (const bool continuous : {false, true}) {
+      // 0 = live, 1 = continuous gap fill, 2 = event clip (stagger disabled by the caller)
+      for (const int mode : {0, 1, 2}) {
+        const bool continuous = mode == 1;
         const string root = "/tmp/s3-stagger-" + to_string(getCurrentMicrosecond(true)) + "/";
-        const MediaTuple tuple(DEFAULT_VHOST, "stagger-test", continuous ? "continuous" : "live",
+        const MediaTuple tuple(DEFAULT_VHOST, "stagger-test", mode == 1 ? "continuous" : mode == 2 ? "event" : "live",
                                continuous ? "continuous=1&start_time_ms=100000" : "");
         auto lengths = make_shared<vector<double>>();
         auto listener = make_shared<char>(0);
@@ -742,6 +744,7 @@ TEST(MP4RecorderStaggerTest, ShortensOnlyFirstLiveSegmentAndPreservesContinuous)
         audio->setExtraData(kAacConfig, sizeof(kAacConfig));
         {
             MP4Recorder recorder(tuple, root, max_second);
+            if (mode == 2) recorder.disableStartStagger();
             ASSERT_TRUE(recorder.addTrack(audio));
             for (uint64_t dts = 0; dts < 24000; dts += 128) {
                 recorder.inputFrame(nalFrame(CodecAAC, vector<uint8_t>(256, 0x21), dts, audio->getIndex()));
@@ -753,7 +756,7 @@ TEST(MP4RecorderStaggerTest, ShortensOnlyFirstLiveSegmentAndPreservesContinuous)
         ASSERT_EQ(future.wait_for(chrono::seconds(3)), future_status::ready);
         NoticeCenter::Instance().delListener(listener.get());
         ASSERT_GE(lengths->size(), 3u);
-        const bool staggered = !continuous && max_second >= 2;
+        const bool staggered = mode == 0 && max_second >= 2;
         // RecordInfo reports first-to-last DTS, excluding the final AAC sample's 128 ms.
         const double sample_sec = 0.1281;
         EXPECT_GE(lengths->front(), (staggered ? max_second / 2.0 : max_second) - sample_sec);

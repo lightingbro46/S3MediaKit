@@ -203,3 +203,7 @@ P1 và P2 là bắt buộc trước P7; P3, P4 nên có; P5 cần để đọc �
   Bundle dựng bằng bash tests/integration/stress_vms/make_ccu_bundle.sh release/ccu_test.sh sau
   commit validation để phần BUNDLE_INFO chỉ đúng source được giao.
 - P6/P7 và so A/B/soak trên tải bitrate thật cần db3; chưa kết luận tăng capacity.
+- Review 2026-10-17 sau 82302316: clip sự kiện không rải segment đầu; replay poller về priority
+  LOWEST như work pool (SCHED_FIFO HIGHEST ngang poller ingest, A/B lẫn hai biến); base64/AES/parse
+  response server_load chuyển hẳn sang pool api; loader so sánh tại chỗ, chỉ copy khi apply thành công.
+  unit_server_config_loader 6/6, unit_replay 37/37 đạt. Bundle cho G-r2 phải dựng sau commit này.

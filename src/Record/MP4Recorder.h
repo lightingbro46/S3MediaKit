@@ -40,6 +40,10 @@ public:
     // Snapshot of initialized shards, without starting the pools or resetting counters.
     static std::vector<ClosePoolStats> closePoolStats();
 
+    // Event clips start on demand, not in a startup burst: keep their first file full length.
+    // Call before the first frame.
+    void disableStartStagger() { _first_max_second = _max_second; }
+
     /**
      * Reset all Tracks
      */

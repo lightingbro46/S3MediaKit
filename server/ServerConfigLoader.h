@@ -2,6 +2,7 @@
 #define S3MEDIAKIT_SERVERCONFIGLOADER_H
 
 #include <functional>
+#include <initializer_list>
 #include <cstdint>
 #include <condition_variable>
 #include <memory>
@@ -52,13 +53,27 @@ private:
         uint64_t reapply_ms;
     };
 
+    static const std::initializer_list<const char *> &relevantKeys() {
+        static const std::initializer_list<const char *> keys {
+            "devices", "speakers", "media_server", "list_media_server", "watermark_configs", "list_audio_file"};
+        return keys;
+    }
+
     static Json::Value relevantConfig(const Json::Value &config) {
         Json::Value result(Json::objectValue);
-        for (const auto key : {"devices", "speakers", "media_server", "list_media_server",
-                               "watermark_configs", "list_audio_file"}) {
+        for (const auto key : relevantKeys()) {
             if (config.isMember(key)) result[key] = config[key];
         }
         return result;
+    }
+
+    // Compared in place: copying every device each response would cost as much as the compare.
+    static bool sameRelevant(const Json::Value &config, const Json::Value &applied) {
+        for (const auto key : relevantKeys()) {
+            const bool has = config.isMember(key);
+            if (has != applied.isMember(key) || (has && config[key] != applied[key])) return false;
+        }
+        return true;
     }
 
     void schedule() {
@@ -82,15 +97,14 @@ private:
             if (!_qualify(update->qualified)) {
                 _has_applied = false;
             } else {
-                auto config = relevantConfig(update->config);
                 const auto now = _clock();
-                if (_has_applied && config == _applied && update->reapply_ms &&
-                    now - _applied_at < update->reapply_ms) {
+                if (_has_applied && update->reapply_ms && now - _applied_at < update->reapply_ms &&
+                    sameRelevant(update->config, _applied)) {
                     TraceL << "Server configuration unchanged, skip apply";
                 } else {
                     _has_applied = false;
                     if (_apply(update->config)) {
-                        _applied = std::move(config);
+                        _applied = relevantConfig(update->config);
                         _applied_at = _clock();
                         _has_applied = true;
                     }
