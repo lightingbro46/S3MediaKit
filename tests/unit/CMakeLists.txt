@@ -206,6 +206,12 @@ target_link_libraries(unit_blocking_executors PRIVATE S3MediaKit::ManagerKit)
 add_test(NAME unit.blocking_executors_all COMMAND unit_blocking_executors)
 set_tests_properties(unit.blocking_executors_all PROPERTIES LABELS unit TIMEOUT 30)
 
+add_s3_unit_test(unit_server_config_loader manager/test_server_config_loader.cpp)
+target_include_directories(unit_server_config_loader PRIVATE "${PROJECT_SOURCE_DIR}/server")
+target_link_libraries(unit_server_config_loader PRIVATE S3MediaKit::ManagerKit)
+add_test(NAME unit.server_config_loader_all COMMAND unit_server_config_loader)
+set_tests_properties(unit.server_config_loader_all PROPERTIES LABELS unit TIMEOUT 15)
+
 # SubnetScan with an injected probe; server/ symbols come from the tier-storage stubs.
 add_s3_unit_test(unit_subnet_scan
   manager/test_subnet_scan.cpp

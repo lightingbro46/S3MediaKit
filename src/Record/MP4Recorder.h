@@ -3,6 +3,7 @@
 
 #include <mutex>
 #include <memory>
+#include <vector>
 #include "Common/MediaSink.h"
 #include "Record/Recorder.h"
 #include "MP4Muxer.h"
@@ -26,6 +27,25 @@ public:
 
     // Segments that could not be opened or renamed into place since startup (health monitor).
     static uint64_t writeErrorCount();
+
+    struct ClosePoolStats {
+        std::string name;
+        size_t queued = 0;
+        size_t running = 0;
+        uint64_t completed = 0;
+        uint64_t cancelled = 0;
+        double oldest_queued_ms = 0;
+        double wait_avg_ms = 0;
+        double wait_max_ms = 0;
+        double run_avg_ms = 0;
+        double run_max_ms = 0;
+    };
+    // Snapshot of initialized shards, without starting the pools or resetting counters.
+    static std::vector<ClosePoolStats> closePoolStats();
+
+    // Event clips start on demand, not in a startup burst: keep their first file full length.
+    // Call before the first frame.
+    void disableStartStagger() { _first_max_second = _max_second; }
 
     /**
      * Reset all Tracks
@@ -55,6 +75,7 @@ private:
 private:
     bool _have_video = false;
     size_t _max_second;
+    size_t _first_max_second;
     /**
      * Override the wall-clock time used to name the very next file created.
      * Pass 0 to clear the override (use current time).

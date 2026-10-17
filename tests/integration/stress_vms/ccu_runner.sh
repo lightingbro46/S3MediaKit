@@ -154,6 +154,34 @@ if [ -n "$MS_CPUS" ]; then
     # MediaServer mac dinh tao so poller = so loi cua may, khong theo affinity
     case " $MS_EXTRA_ARGS " in *" -t "*) ;; *) MS_EXTRA_ARGS="$MS_EXTRA_ARGS -t $MS_NCPU" ;; esac
 fi
+if [ -n "$MS_CPUS" ] && [ -n "$GEN_CPUS" ]; then
+    python3 - "$MS_CPUS" "$GEN_CPUS" <<'PY'
+import sys
+def cpus(value):
+    result = set()
+    for part in value.split(","):
+        ends = [int(x) for x in part.split("-")]
+        result.update(range(ends[0], ends[-1] + 1))
+    return result
+ms, gen = map(cpus, sys.argv[1:])
+shared = set()
+for cpu in ms:
+    try:
+        with open("/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list" % cpu) as fh:
+            siblings = cpus(fh.read().strip())
+        if siblings & gen:
+            shared.add(tuple(sorted(siblings)))
+    except OSError:
+        pass
+if shared:
+    print("CANH BAO: MediaServer va bo sinh tai dung chung loi vat ly/HT: %s" % sorted(shared))
+PY
+fi
+case "$TAG" in *smoke*) ;; *)
+    if [ -n "${CAM_HOLD_SEC:-}" ] || [ -n "${PHASE_SEC:-}" ]; then
+        say "CANH BAO: luot khong phai smoke dang ghi de CAM_HOLD_SEC/PHASE_SEC; kiem tra thoi gian giu tai."
+    fi ;;
+esac
 if [ -n "$GEN_CPUS" ]; then
     # moi tien trinh con (nguon RTSP, viewer, mock, python check) ke thua affinity nay;
     # MediaServer duoc taskset lai sang MS_CPUS khi khoi dong
@@ -338,18 +366,19 @@ cam_table() {
     python3 - "$OUT" $RAN <<'PY'
 import json, os, sys
 out, names = sys.argv[1], [n for n in sys.argv[2:] if n.startswith("cam_")]
-print("| camera | luong online | CPU % (loi MS) | poller max % | RSS MB | ghi dia MB/s | IO full % | NIC Mbps | healthcheck p95 ms | ket luan |")
-print("|---|---|---|---|---|---|---|---|---|---|")
+print("| camera | luong online | CPU % (loi MS) | poller max % | RSS MB | ghi dia MB/s | IO full % | NIC Mbps | healthcheck p95 ms | timeout ngoai cua so | ket luan |")
+print("|---|---|---|---|---|---|---|---|---|---|---|")
 for n in names:
     try:
         r = json.load(open(os.path.join(out, n, "ccu_report.json")))["rows"][0]
     except Exception:
-        print("| %s | - | - | - | - | - | - | - | - | khong co bao cao |" % n[4:])
+        print("| %s | - | - | - | - | - | - | - | - | - | khong co bao cao |" % n[4:])
         continue
     why = "; ".join(r.get("invalid", []) + r.get("failures", []))
-    print("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+    print("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
         n[4:], r.get("live_streams"), r.get("cpu_pct_total"), r.get("poller_load_max"), r.get("rss_mb"),
         r.get("disk_write_mbps"), r.get("io_full_pct"), r.get("nic_tx_mbps"), r.get("healthcheck_p95_ms"),
+        r.get("ingest_timeouts_outside_window", 0),
         r.get("verdict", "?") + (": " + why if why else "")))
 PY
 }
@@ -470,6 +499,14 @@ collect() {
     [ -f "$WORK/$s.disk_abort" ] && echo "da dung vi het dia" > "$o/DISK_ABORT"
 }
 
+network_snapshot() {
+    date -R
+    if command -v nstat > /dev/null; then
+        nstat -az TcpRetransSegs TcpExtTCPLossProbes TcpExtListenOverflows
+    fi
+    cat /proc/net/softnet_stat
+}
+
 run_one() {
     local s="$1" hs t0 rc
     hs=$(harness_scenario "$s")
@@ -478,6 +515,7 @@ run_one() {
     mkdir -p "$WORK/$s"
     echo "$s" > "$CURRENT_FILE"
     t0=$(date +%s)
+    network_snapshot > "$OUT/$s.network_before.txt" 2>&1
     (
         export MEDIASERVER_DIR="$BIN_DIR" MEDIA_PROFILE=realistic MEDIA_DIR="$B/media"
         export PHASE_SEC="${PHASE_SEC:-180}" CCU_NIC="$NIC" CCU_SERVER_HOST="$SERVER_HOST"
@@ -487,6 +525,7 @@ run_one() {
         bash "$H/run_stress.sh" "$WORK/$s" "${RUN_PROFILE:-$PROFILE}" "$hs"
     ) > "$OUT/$s.console.log" 2>&1
     rc=$?
+    network_snapshot > "$OUT/$s.network_after.txt" 2>&1
     RAN="$RAN $s"
     RC[$s]=$rc
     DURATION[$s]=$(( ($(date +%s) - t0) / 60 ))

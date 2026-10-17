@@ -555,6 +555,7 @@ EventRecordSession::Ptr MultiMediaSourceMuxer::startEventRecord(Recorder::type t
         tuple.params = StrPrinter << "start_time_ms=" << (first_frame_time * 1000);
     }
     auto recorder = std::static_pointer_cast<MP4Recorder>(Recorder::createRecorder(type, tuple, _option));
+    recorder->disableStartStagger();
     for (auto &track : getTracks()) {
         recorder->addTrack(track);
     }

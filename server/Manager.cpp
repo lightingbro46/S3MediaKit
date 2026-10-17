@@ -1377,20 +1377,24 @@ bool onServerQualified() {
     return true;
 }
 
-void loadServerConfigJson(const Json::Value &data_api) {
-    Json::Value data;
+bool loadServerConfigJson(const Json::Value &data_api) {
+    Json::Value data = data_api;
 #ifdef ENABLE_DEBUG
     string file_name = "api-config.json";
     if (File::fileExist(file_name)) {
         auto file_content = File::loadFile(file_name);
         if (!StrJsonUtils::readJsonString(file_content, data)) {
             WarnL << "Parse server configuration file failed: " << file_name;
-            return;
+            return false;
         }
     }
-#else
-    data = data_api;
 #endif
+    if ((data["devices"].isArray() && !CameraManager::Instance().isReady()) ||
+        (data["speakers"].isArray() && !SpeakerManager::Instance().isReady())) {
+        DebugL << "Device managers not ready, retry server configuration";
+        return false;
+    }
+    bool applied = true;
     TraceL << "Server configuration loaded: " << data.toStyledString();
     Ticker _ticker;
 
@@ -1423,7 +1427,7 @@ void loadServerConfigJson(const Json::Value &data_api) {
             fromJson(stream_map, camera);
 
             // Add or update camera config
-            CameraManager::Instance().addCamera(tuple, option, stream_map);
+            if (!CameraManager::Instance().addCamera(tuple, option, stream_map)) applied = false;
 
             // Remove active camera key from vector
             current_cameras.erase(std::remove(current_cameras.begin(), current_cameras.end(), tuple.shortUrl()), current_cameras.end());
@@ -1449,7 +1453,7 @@ void loadServerConfigJson(const Json::Value &data_api) {
             fromJson(option, speaker);
 
             // Add or update speaker config
-            SpeakerManager::Instance().addSpeaker(tuple, option);
+            if (!SpeakerManager::Instance().addSpeaker(tuple, option)) applied = false;
 
             // Remove active speaker key from vector
             current_speakers.erase(std::remove(current_speakers.begin(), current_speakers.end(), tuple.shortUrl()), current_speakers.end());
@@ -1470,7 +1474,7 @@ void loadServerConfigJson(const Json::Value &data_api) {
             // Add or update audio file config
             AudioFile file;
             fromJson(file, audio_file);
-            AudioFileManager::Instance().addAudioFile(file);
+            if (!AudioFileManager::Instance().addAudioFile(file)) applied = false;
 
             // Remove active audio file id from vector
             current_audio_list.erase(std::remove(current_audio_list.begin(), current_audio_list.end(), file.id), current_audio_list.end());
@@ -1483,6 +1487,7 @@ void loadServerConfigJson(const Json::Value &data_api) {
 
         AudioFileManager::Instance().syncDownload();
     }
+    return applied;
 }
 
 static Json::Value makeMediaSourceJson(MediaSource &media) {

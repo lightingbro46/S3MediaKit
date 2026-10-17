@@ -691,6 +691,10 @@ extern const std::string kReplayMinSwitchSec;
 // listeners write the timefile and SQLite). Segments of one stream always close on the same thread,
 // in order. Read once at the first close.
 extern const std::string kCloseThreads;
+// Dedicated playback pollers, read once on first use; zero selects the legacy work pool for A/B.
+extern const std::string kReplayPollerThreads;
+// Shorten the first live recording segment by stream hash to spread close bursts.
+extern const std::string kSegmentStartStagger;
 } // namespace Record
 
 // //////////HLS related configuration///////////
