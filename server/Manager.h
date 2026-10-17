@@ -19,7 +19,8 @@ void releaseStorageManagers();
 
 void migrateDatabase();
 
-void loadServerConfigJson(const Json::Value &config);
+// Blocking; false means some configuration was not applied/dispatched. Retry on the next load.
+bool loadServerConfigJson(const Json::Value &config);
 
 // The service API answered server_load/server_started with "not qualified": this server was removed
 // from the cluster. After cluster.decommissionAfterSec of such answers the server is decommissioned:

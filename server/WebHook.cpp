@@ -26,6 +26,8 @@
 #include "Util/base64.h"
 #include "Util/SSLUtil.h"
 #include "Common/StrUtil.h"
+#include "Common/BlockingExecutors.h"
+#include "ServerConfigLoader.h"
 
 using namespace std;
 using namespace Json;
@@ -83,6 +85,7 @@ const string kOnVideoExtractionResult = HOOK_FIELD "on_video_extraction_result";
 const string kOnVideoConfigRuleResult = HOOK_FIELD "on_video_config_rule_result";
 const string kAliveInterval = HOOK_FIELD "alive_interval";
 const string kReportInterval = HOOK_FIELD "report_interval";
+const string kConfigReapplySec = HOOK_FIELD "configReapplySec";
 const string kApiUrl = HOOK_FIELD "api_url";
 
 const string kRetry = HOOK_FIELD "retry";
@@ -136,12 +139,24 @@ static onceToken token([]() {
     mINI::Instance()[kOnRtpServerTimeout] = "";
     mINI::Instance()[kAliveInterval] = 5.0;
     mINI::Instance()[kReportInterval] = 60.0;
+    mINI::Instance()[kConfigReapplySec] = 300;
     mINI::Instance()[kRetry] = 0;
     mINI::Instance()[kRetryDelay] = 3.0;
     mINI::Instance()[kStreamChangedSchemas] = "rtsp/rtmp/fmp4/ts/hls/hls.fmp4";
     mINI::Instance()[kApiUrl] = "";
 });
 } // namespace Hook
+
+static atomic<uint64_t> s_config_revision {0};
+static shared_ptr<ServerConfigLoader> serverConfigLoader() {
+    static auto loader = std::make_shared<ServerConfigLoader>(
+        BlockingExecutors::api(), loadServerConfigJson, [](bool qualified) {
+            if (qualified) return onServerQualified();
+            onServerNotQualified();
+            return false;
+        });
+    return loader;
+}
 
 static void parse_http_response(const SockException &ex, const Parser &res, const function<void(const Value &, const string &, bool)> &fun) {
     bool should_retry = true;
@@ -606,7 +621,7 @@ static void reportServerStarted() {
                 TraceL << "hook " << hook_api_url + hook_server_started << " failed:" << err;
                 WarnL << "Report server started failed:" << err;
                 if (isNotQualifiedResponse(obj, err)) {
-                    WorkThreadPool::Instance().getPoller()->async([]() { onServerNotQualified(); });
+                    serverConfigLoader()->submit(Value(), false, ++s_config_revision, 0);
                 }
             }
         });
@@ -782,13 +797,11 @@ static void reportServerStatistic() {
             s_last_load_time = now_time;
             s_config_loaded = true;
             s_report_statistic = false;
-            // Dispatch on WorkThread so that HttpRequester picks the WorkThread's isolated
-            // EventPoller instead of a proxy-player-saturated EventPollerPool poller.
-            // EventPollerPool::getPoller(prefer_current_thread=true) returns the current
-            // thread's poller; running from a WorkThread gives an uncontested poller.
-            WorkThreadPool::Instance().getPoller()->async([]() {
+            const uint64_t revision = ++s_config_revision;
+            // HTTP I/O stays on an event poller; dispatch blocking reconciliation explicitly.
+            BlockingExecutors::api()->async([revision]() {
                 ArgsType body;
-                do_http_hook(hook_api_url + hook_server_load, body, [](const Value &obj, const string &err) {
+                do_http_hook(hook_api_url + hook_server_load, body, [revision](const Value &obj, const string &err) {
                     if (err.empty()) {
                         TraceL << "hook " << hook_api_url + hook_server_load << " success: " << obj.toStyledString();
                         Value config;
@@ -796,17 +809,14 @@ static void reportServerStatistic() {
                             return;
                         }
                         InfoL << "Load server config success: " << config["devices"].size() << " devices, " << config["list_media_server"].size() << " servers";
-                        if (!onServerQualified()) {
-                            return; // back in the cluster, still catching up: applied on a later load
-                        }
-                        // loadServerConfigJson is thread-safe (uses its own mutex), no need to dispatch to a specific poller
-                        loadServerConfigJson(config);
+                        GET_CONFIG(uint32_t, reapply_sec, Hook::kConfigReapplySec);
+                        serverConfigLoader()->submit(std::move(config), true, revision, uint64_t(reapply_sec) * 1000);
                     } else {
                         // Load server config failed
                         TraceL << "hook " << hook_api_url + hook_server_load << " failed:" << err;
                         WarnL << "Load server config failed:" << err;
                         if (isNotQualifiedResponse(obj, err)) {
-                            onServerNotQualified();
+                            serverConfigLoader()->submit(Value(), false, revision, 0);
                         }
                     }
                 });
@@ -816,11 +826,8 @@ static void reportServerStatistic() {
 
         if (!s_report_statistic.load()) {
             s_report_statistic = true;
-            // Dispatch on WorkThread to:
-            // 1. Avoid blocking the EventPoller with synchronous device iteration.
-            // 2. Ensure HttpRequester uses WorkThread's isolated EventPoller so that
-            //    HTTP I/O is not queued behind proxy-player stream events.
-            WorkThreadPool::Instance().getPoller()->async([]() {
+            // Device iteration may block; HTTP completion itself remains on an event poller.
+            BlockingExecutors::api()->async([]() {
                 getServerStatisticJson([](const Value &data) {
                     s_last_report_time = time(nullptr);
                     int online_count = 0, offline_count = 0;
