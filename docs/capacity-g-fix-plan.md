@@ -32,18 +32,25 @@ quan; phase có chạy thật ghi kết quả vào commit message.
 
 1. `server/WebHook.cpp` (`reportServerStatistic`): trong callback của `do_http_hook(server_load)` chỉ
    giải mã JSON rồi đẩy `loadServerConfigJson(config)` sang một `SerialTaskQueue` trên
-   `BlockingExecutors::api()` (mẫu đã dùng ở HealthMonitor H5). Nếu lần trước chưa xong thì bỏ lần này
-   (không xếp chồng). Sửa comment sai về `WorkThreadPool`/`getCurrentPoller`.
+   `BlockingExecutors::api()` (mẫu có ở `GlobalMonitor::_metrics_queue`). Giữ tối đa một lần
+   đang chạy và một cấu hình mới nhất đang chờ; thay thế bản chờ cũ, không xếp chồng vô hạn.
+   `pending()` không đếm task đang chạy nên không dùng nó làm cờ single-flight. Xử lý cả
+   qualified/not-qualified trên cùng queue để không áp lại cấu hình sau khi decommission.
+   Sửa comment sai về `WorkThreadPool`/`getCurrentPoller`.
 2. Rà các chỗ khác dựa trên cùng giả định "chạy từ WorkThread thì HttpRequester dùng work poller"
    (`rg "isolated EventPoller|uncontested poller"`): callback nào làm việc nặng thì xử lý như trên.
-3. Bỏ qua nạp khi không đổi (theo D2): giữ hash (`std::hash` của chuỗi JSON đã chuẩn hoá phần
-   `devices`, `speakers`, `media_server`, `list_media_server`, `watermark_configs`) của lần áp dụng
-   thành công gần nhất; trùng hash và chưa quá `hook.configReapplySec` thì chỉ log Trace. Khoá mới
+3. Bỏ qua nạp khi không đổi (theo D2): so sánh JSON phần `devices`, `speakers`, `media_server`,
+   `list_media_server`, `watermark_configs`, **`list_audio_file`** của lần áp dụng thành công gần
+   nhất (so giá trị, tránh hash collision). Không đổi và chưa quá `hook.configReapplySec` thì
+   chỉ log Trace. `loadServerConfigJson` cần trả kết quả: manager chưa ready hoặc lỗi không được
+   ghi nhận là thành công; retry ở response tiếp theo. Không cần đợi mọi callback owner poller
+   hoàn tất, nhưng phải dispatch thành công toàn bộ cấu hình. Khoá mới
    đăng ký bằng `onceToken` trong config, mô tả trong `conf/config.ini`.
 4. Đo: log `Server configuration for camera loaded completed, took N ms` kèm tên thread (đã có).
 
 Kiểm tra:
-- Unit: không có test sẵn cho đường này; không tách API chỉ để test (theo nguyên tắc diff nhỏ).
+- Regression: task chạy trên worker, poller vẫn đáp ứng khi apply bị chặn; bản mới thay bản chờ
+  cũ; exception/manager chưa ready được retry; audio-only update không bị bỏ qua; reapply định kỳ.
 - Chạy thật trên máy dev bằng `tests/integration/stress_vms` (120 camera, mock API): mọi dòng
   `loadServerConfigJson` chạy trên `api worker`, không còn trên `event poller`; không có
   `receive rtp timeout`; sửa camera qua mock API vẫn được áp trong ≤ 10 s; cấu hình không đổi thì
@@ -54,15 +61,21 @@ Kiểm tra:
 1. Đo trước khi sửa: trong `MP4Recorder::asyncClose` (pool `rec close`) đo thời gian ghi moov/rename
    và thời gian các listener `kBroadcastRecordMP4`; log Warn khi > 1 s; thêm getter tĩnh số việc đang
    chờ của các pool (đếm `atomic` tăng khi post, giảm khi xong).
-2. Đưa số việc chờ vào HealthMonitor (nhóm process, ví dụ `record.close_backlog` cảnh báo khi > số
-   segment của 1 phút), vì lỗi dồn hàng đợi này hiện không ai thấy.
-3. Đổi mặc định `record.closeThreads` theo kết quả đo (dự kiến 8). Thread bị chặn chủ yếu vì
-   I/O/SQLite nên thêm thread không tốn CPU; thứ tự theo stream vẫn giữ vì chọn pool theo hash stream.
+2. Công bố counters qua stats API hiện có: queued/running/completed, thời gian chờ và tuổi task
+   cũ nhất **theo shard**. Đo ở executor để bao gồm cả event recording dùng `closeExecutorFor`.
+   Dùng RAII để counter không kẹt khi return sớm hoặc exception. Checkout này có `GlobalMonitor`,
+   không có `HealthMonitor` hay target `unit_health_monitor`; không tạo subsystem health mới.
+3. Chỉ đổi mặc định `record.closeThreads` sau khi đo trên tải/đĩa đại diện (so 2/4/8). Giữ 2 trong
+   bước instrumentation nếu chưa có bằng chứng. `registerHotSegmentRange` có mutex chung và SQLite
+   chỉ có một writer, nên thêm thread không bảo đảm tăng thông lượng. Với 600 segment/phút cần
+   xử lý bền vững >10 segment/s, queue age bị chặn và backlog không tăng qua nhiều chu kỳ.
+   Thứ tự theo stream vẫn giữ vì chọn pool theo hash stream.
 4. Nếu phần SQLite (`registerHotSegmentRange`, timefile) chiếm phần lớn thời gian: ghi nhận phương án
    gom nhiều range vào một transaction `beginWriteTxn()`; chỉ làm khi số đo cho thấy cần.
 
 Kiểm tra: stress_vms 120 camera trên máy dev, segment 20 s để tăng tần suất: backlog về 0 sau mỗi
-đợt, mọi `Record mp4 file` chạy trên `rec close N`; `unit_storage`, `unit_health_monitor` đạt.
+đợt, mọi `Record mp4 file` chạy trên `rec close N`; `unit_storage`, `unit.replay_all` đạt.
+Thêm regression cho counters khi task đang chạy/chờ/throw và giữ thứ tự cùng stream.
 
 ### P3 — Replay có nhóm poller riêng (K3, sửa D)
 
@@ -83,17 +96,21 @@ Kiểm tra: `unit.replay_all` (lưu ý có lúc abort khi chạy -j2, chạy ri�
    nguyên. Sau khởi động lại 300 camera, các đợt đóng trải đều khoảng nửa phút thay vì dồn vào ~10 s.
 2. Không áp cho recorder `continuous` của replay/gap fill (`StreamSource.cpp:149`), vì thời gian file
    ở đó do nguồn quyết định.
-3. Rà chỗ giả định segment đầu đủ `mp4_max_second` (timeline, retention, kiểm độ phủ của
-   HealthMonitor dùng `2 × mp4_max_second` làm ngưỡng hở — vẫn đúng).
+3. Rà chỗ giả định segment đầu đủ `mp4_max_second` (timeline, retention). Guard `max_second < 2`
+   để tránh modulo 0; giữ điều kiện cắt tại keyframe. Rải nửa chu kỳ giảm peak, không bảo đảm phân
+   bố đều cả phút và không tăng thông lượng ghi bền vững.
 
 Kiểm tra: `unit_storage`, `unit_timeline_query`; stress 120 camera: phân bố giây đóng segment đều
-trong phút (đếm từ log `Record mp4 file`).
+trên ít nhất nửa chu kỳ, có sai số GOP (đếm từ log `Record mp4 file`).
 
 ### P5 — Sửa harness (K6)
 
 `tests/integration/stress_vms`:
-1. `check_ccu.py`: đếm `receive rtp timeout` và khoảng hở ghi hình từ lúc camera đã online (cuối
-   ramp), không chỉ trong cửa sổ chấm; báo riêng cột "rớt ngoài cửa sổ".
+1. `check_ccu.py`: đếm `receive rtp timeout` từ lúc khởi động node, bao gồm cả ramp; timeout RTP
+   của phiên ingest đã PLAY thành công là lỗi ngay cả trước cuối ramp. Báo riêng cột "rớt ngoài
+   cửa sổ" và đưa vào verdict. Kiểm tra khoảng hở từ đầu ramp; dùng duration media từ log segment
+   đã đóng khi có, thay vì chỉ mtime (close chậm có thể che mất hở); giữ kiểm tra stale file.
+   Có regression với log ramp timeout và segment close trễ.
 2. `viewer_load.py`: ghi thời điểm (đồng hồ thực) của từng lần khựng > 1 s vào
    `ccu_replay_sessions.csv`.
 3. `ccu_runner.sh`: chụp `nstat -az TcpRetransSegs TcpExtListenOverflows` và `/proc/net/softnet_stat`
@@ -126,6 +143,9 @@ Không sửa code; ghi vào `recording-server-capacity-test.md`:
    - replay ≥ 99 % phiên đạt;
    - ghi lại `w_await`/util SSD cuối mỗi bậc camera.
 4. Ghi kết quả vào mục 10.5 của báo cáo, so với lượt sơ bộ.
+5. Giữ một lượt baseline ngắn sau P1/P2 và trước P3/P4 để biết hiệu quả từng thay đổi. Ở mức mục
+   tiêu, chạy soak ít nhất một giờ sau khi SSD đã vào vùng ghi bền vững; ghi queue age/backlog,
+   TTFF/stall và rớt ingest. Test dev 120 camera không thay thế nghiệm thu 500–800 camera trên db3.
 
 ## 3. Thứ tự và ước lượng
 
@@ -140,3 +160,25 @@ Không sửa code; ghi vào `recording-server-capacity-test.md`:
 | P7 | P1–P5, D1 | ~6 giờ chạy trên db3 |
 
 P1 và P2 là bắt buộc trước P7; P3, P4 nên có; P5 cần để đọc đúng kết quả lần chạy lại.
+
+## 4. Quyết định triển khai sau review (2026-10-17)
+
+- Bản plan và kết quả G ban đầu được lưu ở commit `6da9f076` (không gồm tarball).
+- Triển khai tiếp trên nhánh hiện có `fix/capacity-service`; source đã có executor `rec close`.
+  Binary và bundle lần chạy tiếp phải dựng từ cùng cây source/commit. Không merge nhánh khác tự động.
+- Thứ tự: P5 → P1 → P2 instrumentation → baseline → quyết định P3/P4 → P7.
+  P3/P4 có thể hoàn thiện và kiểm thử local, nhưng phải đo riêng baseline trước khi chốt hiệu quả.
+- Các file chính: harness `check_ccu.py`, `viewer_load.py`, `ccu_runner.sh`; server `WebHook.cpp`,
+  `Manager.cpp/.h`; core `MP4Recorder`, `MP4Reader`, `MergedMP4Reader`, `Common/config`; stats API
+  hiện có; regression tương ứng trong `tests/unit` và Python unittest của harness.
+- Giữ C++11, owner-poller dispatch và API response envelope. Không đổi schema/REST contract hiện có;
+  stats chỉ thêm trường. Config mới đăng ký bằng `onceToken`, ghi rõ đọc lúc khởi tạo hay reload.
+- Build production: `cmake --build build -j2`. Unit dùng `build-test/` theo `tests/unit/README.md`.
+  Chạy focused test trước, sau đó storage/replay/timeline và smoke 20/50 nếu môi trường hỗ trợ.
+- P6 và P7 cần máy db3, endpoint/thư mục test được xác nhận; không tự chạy fio, đổi sysctl hoặc
+  liên hệ admin từ workspace này. Ghi riêng phần đã kiểm chứng local và phần còn chờ db3.
+- Giới hạn NIC/SSD là ước lượng từ lượt G cũ; không coi sửa thread là tăng trần phần cứng.
+
+## 5. Nhật ký thực hiện
+
+- 2026-10-17: lưu baseline tài liệu và bổ sung review; chưa có số đo performance sau sửa.
