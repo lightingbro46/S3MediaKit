@@ -3,6 +3,7 @@
 
 #include <functional>
 #include <cstdint>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include "Common/SerialTaskQueue.h"
@@ -26,13 +27,22 @@ public:
     void submit(Json::Value config, bool qualified, uint64_t revision, uint64_t reapply_ms) {
         {
             std::lock_guard<std::mutex> lock(_mutex);
-            if (revision <= _revision) return;
+            if (_stopped || revision <= _revision) return;
             _revision = revision;
             _next.reset(new Update {std::move(config), qualified, reapply_ms});
             if (_running) return;
             _running = true;
         }
         schedule();
+    }
+
+    // Blocking, called by the main shutdown thread before managers are released.
+    // Do not call from this loader's worker: wait for the active apply and discard pending work.
+    void stop() {
+        std::unique_lock<std::mutex> lock(_mutex);
+        _stopped = true;
+        _next.reset();
+        while (_running) _idle.wait(lock);
     }
 
 private:
@@ -60,6 +70,11 @@ private:
         std::unique_ptr<Update> update;
         {
             std::lock_guard<std::mutex> lock(_mutex);
+            if (!_next) {
+                _running = false;
+                _idle.notify_all();
+                return;
+            }
             update = std::move(_next);
         }
         try {
@@ -92,6 +107,7 @@ private:
             std::lock_guard<std::mutex> lock(_mutex);
             if (!_next) {
                 _running = false;
+                _idle.notify_all();
                 return;
             }
         }
@@ -104,6 +120,8 @@ private:
     Qualify _qualify;
     Clock _clock;
     std::mutex _mutex; // only submission state; never held across apply/qualification
+    std::condition_variable _idle;
+    bool _stopped = false;
     uint64_t _revision = 0;
     bool _running = false;
     std::unique_ptr<Update> _next;

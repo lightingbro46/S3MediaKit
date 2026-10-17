@@ -162,4 +162,16 @@ TEST(ServerConfigLoaderTest, BlockedApplyDoesNotBlockSubmittingPoller) {
     EXPECT_EQ(beat.wait_for(chrono::seconds(1)), future_status::ready);
     release->set_value();
     EXPECT_EQ(future.wait_for(chrono::seconds(2)), future_status::ready);
+    loader->stop();
+    pool->sync([]() {});
+}
+
+TEST(ServerConfigLoaderTest, DoesNotAcceptResponsesAfterShutdown) {
+    auto pool = make_shared<ManualExecutor>();
+    auto state = make_shared<State>();
+    auto loader = makeLoader(pool, state);
+    loader->stop();
+    loader->submit(Json::Value(), true, 1, 0);
+    pool->drain();
+    EXPECT_EQ(state->calls, 0);
 }

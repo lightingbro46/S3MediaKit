@@ -148,14 +148,26 @@ static onceToken token([]() {
 } // namespace Hook
 
 static atomic<uint64_t> s_config_revision {0};
-static shared_ptr<ServerConfigLoader> serverConfigLoader() {
-    static auto loader = std::make_shared<ServerConfigLoader>(
-        BlockingExecutors::api(), loadServerConfigJson, [](bool qualified) {
-            if (qualified) return onServerQualified();
-            onServerNotQualified();
-            return false;
-        });
-    return loader;
+static mutex s_config_loader_mutex;
+static shared_ptr<ServerConfigLoader> s_config_loader;
+static bool s_config_stopped = false;
+static uint64_t s_config_revision_floor = 0;
+static shared_ptr<ServerConfigLoader> serverConfigLoader(uint64_t revision) {
+    lock_guard<mutex> lock(s_config_loader_mutex);
+    if (s_config_stopped || revision <= s_config_revision_floor) return nullptr;
+    if (!s_config_loader) {
+        s_config_loader = std::make_shared<ServerConfigLoader>(
+            BlockingExecutors::api(), loadServerConfigJson, [](bool qualified) {
+                if (qualified) return onServerQualified();
+                onServerNotQualified();
+                return false;
+            });
+    }
+    return s_config_loader;
+}
+static void submitServerConfig(Value config, bool qualified, uint64_t revision, uint64_t reapply_ms) {
+    auto loader = serverConfigLoader(revision);
+    if (loader) loader->submit(std::move(config), qualified, revision, reapply_ms);
 }
 
 static void parse_http_response(const SockException &ex, const Parser &res, const function<void(const Value &, const string &, bool)> &fun) {
@@ -621,7 +633,7 @@ static void reportServerStarted() {
                 TraceL << "hook " << hook_api_url + hook_server_started << " failed:" << err;
                 WarnL << "Report server started failed:" << err;
                 if (isNotQualifiedResponse(obj, err)) {
-                    serverConfigLoader()->submit(Value(), false, ++s_config_revision, 0);
+                    submitServerConfig(Value(), false, ++s_config_revision, 0);
                 }
             }
         });
@@ -810,13 +822,13 @@ static void reportServerStatistic() {
                         }
                         InfoL << "Load server config success: " << config["devices"].size() << " devices, " << config["list_media_server"].size() << " servers";
                         GET_CONFIG(uint32_t, reapply_sec, Hook::kConfigReapplySec);
-                        serverConfigLoader()->submit(std::move(config), true, revision, uint64_t(reapply_sec) * 1000);
+                        submitServerConfig(std::move(config), true, revision, uint64_t(reapply_sec) * 1000);
                     } else {
                         // Load server config failed
                         TraceL << "hook " << hook_api_url + hook_server_load << " failed:" << err;
                         WarnL << "Load server config failed:" << err;
                         if (isNotQualifiedResponse(obj, err)) {
-                            serverConfigLoader()->submit(Value(), false, revision, 0);
+                            submitServerConfig(Value(), false, revision, 0);
                         }
                     }
                 });
@@ -1158,6 +1170,12 @@ static mINI jsonToMini(const Value &obj) {
 }
 
 void installWebHook() {
+    {
+        lock_guard<mutex> lock(s_config_loader_mutex);
+        s_config_revision_floor = s_config_revision.load();
+        s_config_stopped = false;
+        s_config_loader.reset();
+    }
     GET_CONFIG(bool, hook_enable, Hook::kEnable);
 
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastMediaPublish, [](BroadcastMediaPublishArgs) {
@@ -2599,6 +2617,13 @@ void installWebHook() {
 }
 
 void unInstallWebHook() {
+    shared_ptr<ServerConfigLoader> loader;
+    {
+        lock_guard<mutex> lock(s_config_loader_mutex);
+        s_config_stopped = true;
+        loader = s_config_loader;
+    }
+    if (loader) loader->stop();
     g_started_timer.reset();
     g_report_usage_timer.reset();
     g_keepalive_timer.reset();

@@ -28,12 +28,14 @@ public:
 
     void loadSavedSpeakerInfo();
 
+    // Configuration reconciliation must wait until saved speakers have loaded, even for an empty list.
+    bool isReady();
+
 private:
     SpeakerManager();
 
     void setReady(bool ready);
 
-    bool isReady();
 private:
     std::recursive_mutex _mtx;
     bool _ready = false;
