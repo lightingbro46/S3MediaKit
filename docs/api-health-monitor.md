@@ -138,7 +138,7 @@ trả `{"code":0,"notModified":true}` không kèm `data`.
 | `host.threads` | số thread của tiến trình |
 | `process` | `uptimeSec`, `startedAt` |
 | `process.pollers`, `process.work_pollers` | `count`, `delay_max_ms`, `delay_avg_ms`, `load_max` (%), `sampled_age_ms` |
-| `process.monitor` | `collect_ms` (thời gian thu thập + đánh giá của chu kỳ này trên luồng `monitor poller`), `collect_max_ms` (lớn nhất từ lúc khởi động), `cycle` |
+| `process.monitor` | `collect_ms` (thời gian thu thập + đánh giá của chu kỳ này trên luồng `monitor poller`), `collect_max_ms` (lớn nhất từ lúc khởi động), `cycle`, `lag_ms` (chu kỳ này bắt đầu trễ bao nhiêu so với lịch, tức luồng bận việc khác hoặc chu kỳ trước chạy quá; `null` ở chu kỳ đầu), `queue_delay_ms` (một task thăm dò đặt ở giữa hai chu kỳ phải chờ bao lâu; đang chờ quá hạn thì là thời gian đã quá hạn), `lag_max_ms` / `queue_delay_max_ms` (lớn nhất từ lúc khởi động). Chỉ là số đo, chưa đánh giá ngưỡng |
 | `process.blocking[]` | theo pool: `name`, `threads`, `queued`, `running`, `completed`, `window_tasks`, `wait_avg_ms`, `wait_max_ms`, `busy_pct` (cửa sổ = 1 chu kỳ) |
 | `transcode` | `streams`, `decoders`, `encoders`, `motion`, `mjpeg_ingest` |
 | `gpu` | `backends`, `load`, `decoders`, `encoders`, `fallbacks` (từ lúc khởi động), `last_fallback_at` |

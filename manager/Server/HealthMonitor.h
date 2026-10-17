@@ -265,6 +265,7 @@ private:
         size_t count = 0;
     };
     void requestPollerDelays();
+    void probeQueueDelay();
     void onPollerDelay(bool work_pool, const std::vector<int> &delays, const std::vector<int> &loads);
     // Delay to evaluate: the measured one, or the waiting time when the answer is overdue
     // (a poller stuck in a task never answers).
@@ -321,6 +322,14 @@ private:
     uint64_t _cycle = 0;
     uint64_t _rev = 0;
     double _collect_max_ms = 0;  // longest collect phase since start
+    // Monitor poller load (process.monitor): cycle start later than planned, and the wait of a
+    // probe task halfway between cycles (probeQueueDelay). -1 = no sample yet.
+    int64_t _last_cycle_start_ms = 0;
+    int64_t _lag_ms = -1;
+    int64_t _lag_max_ms = 0;
+    int64_t _probe_due_ms = 0;  // steady ms the pending probe is due; 0 = none pending
+    int64_t _queue_delay_ms = -1;
+    int64_t _queue_delay_max_ms = 0;
     std::string _last_signature;
     struct NetCounters {
         uint64_t errors = 0;

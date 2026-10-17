@@ -640,6 +640,23 @@ void HealthMonitor::onPollerDelay(bool work_pool, const vector<int> &delays, con
     slot = d;
 }
 
+void HealthMonitor::probeQueueDelay() {
+    // Halfway to the next cycle, away from this one: how long a task waits on the monitor poller
+    // while GlobalMonitor and the alert webhooks use it. One probe at a time.
+    if (!_poller || _probe_due_ms > 0) {
+        return;
+    }
+    const int64_t delay_ms = std::max<int64_t>(1, (int64_t)(_interval_sec.load() * 500));
+    _probe_due_ms = steadyNowMs() + delay_ms;
+    _poller->doDelayTask(delay_ms, []() -> uint64_t {
+        auto &self = HealthMonitor::Instance();
+        self._queue_delay_ms = std::max<int64_t>(0, steadyNowMs() - self._probe_due_ms);
+        self._queue_delay_max_ms = std::max(self._queue_delay_max_ms, self._queue_delay_ms);
+        self._probe_due_ms = 0;
+        return 0;
+    });
+}
+
 double HealthMonitor::effectiveDelayMs(const PollerDelay &d, int64_t now_ms) {
     double v = d.valid ? (double)d.delay_max_ms : NAN;
     if (d.requested_ms > d.sampled_ms) {
@@ -658,6 +675,14 @@ int64_t HealthMonitor::staleAfterSec(double interval_sec) {
 }
 
 void HealthMonitor::collectNow() {
+    // The Timer re-arms from the moment it fired, so a start later than previous + interval is
+    // time the monitor poller was busy elsewhere (or this cycle's own overrun).
+    const int64_t cycle_start_ms = steadyNowMs();
+    if (_last_cycle_start_ms > 0) {
+        _lag_ms = std::max<int64_t>(0, cycle_start_ms - _last_cycle_start_ms - (int64_t)(_interval_sec.load() * 1000));
+        _lag_max_ms = std::max(_lag_max_ms, _lag_ms);
+    }
+    _last_cycle_start_ms = cycle_start_ms;
 #ifdef ENABLE_DEBUG
     if (_test_stall_sec > 0 && _cycle + 1 == _test_stall_cycle) {
         WarnL << "TEST HOOK: monitor poller stalls " << _test_stall_sec << " s";
@@ -687,6 +712,7 @@ void HealthMonitor::collectNow() {
     }
     // The answers are evaluated in a later cycle.
     requestPollerDelays();
+    probeQueueDelay();
     startSlowCollect(now);
     startCoverage(now);
 
@@ -740,6 +766,16 @@ void HealthMonitor::collectNow() {
     summary["process"]["monitor"]["collect_ms"] = num(collect_ms);
     summary["process"]["monitor"]["collect_max_ms"] = num(_collect_max_ms);
     summary["process"]["monitor"]["cycle"] = (Json::UInt64)_cycle;
+    Json::Value &mon = summary["process"]["monitor"];
+    mon["lag_ms"] = _last_cycle_start_ms > 0 && _lag_ms >= 0 ? Json::Value((Json::Int64)_lag_ms) : Json::Value(Json::nullValue);
+    mon["lag_max_ms"] = (Json::Int64)_lag_max_ms;
+    int64_t queue_delay = _queue_delay_ms;
+    if (_probe_due_ms > 0) {
+        // Still not run: the time it is overdue is a lower bound of its delay.
+        queue_delay = std::max(queue_delay, steadyNowMs() - _probe_due_ms);
+    }
+    mon["queue_delay_ms"] = queue_delay >= 0 ? Json::Value((Json::Int64)queue_delay) : Json::Value(Json::nullValue);
+    mon["queue_delay_max_ms"] = (Json::Int64)std::max(_queue_delay_max_ms, queue_delay);
     recordHistory(h, summary, now);
     snap->summary = std::move(summary);
     snap->eval = std::move(eval);

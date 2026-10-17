@@ -66,14 +66,24 @@ Kịch bản `run_cluster.sh <dir> stale` (một node, không cần camera), ki�
    - `/summary` cũng `stale=true`.
    - `/media/mserver/healthcheck` vẫn trả lời trong < 1 s, tức API không chạy trên luồng monitor.
 5. Sau khi hết 60 s và thêm một chu kỳ: `stale=false`, `generatedAt` mới, `rev` tăng. Nếu đã làm P2 thì
-   `process.monitor.lag_ms` ≈ 60000 ở chu kỳ đó.
+   `process.monitor.lag_ms` ≈ 50000 ở chu kỳ đó (kẹt trừ một chu kỳ).
 6. Đợi bước 5 xong rồi mới SIGINT (dừng trong lúc kẹt thì phải chờ hết giờ ngủ); thoát sạch, không có
    `## signal:` hay `crash.<pid>`.
 
 Nếu không muốn có hook này trong code thì chỉ làm unit test. Khi đó đường Timer → snapshot cũ → API báo
 `stale` chưa được chạy thật lần nào.
 
-### P2. Đo độ trễ của chính luồng monitor (L1)
+### P2. Đo độ trễ của chính luồng monitor (L1) — ĐÃ LÀM (phần số đo)
+
+`lag_ms`, `queue_delay_ms` và hai giá trị max đã có trong `process.monitor`; `check_ccu.py` thêm cột
+`lag/queue ms max`; `run_cluster.sh <dir> stale` thêm `s1_poller_idle` (lag 0, queue 1 ms) và `s3_lag_seen`
+(kẹt 60 s ⇒ `lag_max_ms` 50070). Khác mô tả:
+- `lag_ms` sau khi kẹt ≈ thời gian kẹt **trừ một chu kỳ**, vì Timer đặt lịch lần sau từ lúc nó chạy.
+- Task thăm dò đặt ở giữa hai chu kỳ (`doDelayTask(interval/2)`) chứ không gửi cùng lúc với
+  `requestPollerDelays()`: gửi từ trong `collectNow()` thì chỉ đo phần còn lại của chính chu kỳ đó.
+  Thăm dò không bắt được lần kẹt nằm trong một chu kỳ (lag bắt được), chỉ bắt luồng bị việc khác chiếm.
+- Metric đánh giá `monitor.collect_ms` + ngưỡng: **chưa làm**, chờ số live500 Release (P5).
+
 
 `HealthMonitor::collectNow()`:
 
