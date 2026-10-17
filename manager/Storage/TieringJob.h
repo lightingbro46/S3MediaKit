@@ -257,6 +257,22 @@ public:
         return 0;
     }
 
+    // FAILED jobs whose last update is at or after `updated_from` (unix seconds), oldest update first.
+    std::vector<TieringJob> findFailedUpdatedSince(int64_t updated_from, int limit) {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<TieringJob>::getColumns())
+                .from(EntityTraits<TieringJob>::tableName())
+                .where("status = ? AND updated_at >= ?",
+                       {jobStatusToString(JobStatus::FAILED), std::to_string(updated_from)})
+                .orderBy("updated_at ASC")
+                .limit(limit));
+        std::vector<TieringJob> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<TieringJob>::fromRow(row));
+        return ret;
+    }
+
     std::vector<TieringJob> findByStatus(const std::string &status, int limit = 0) {
         std::ostringstream where;
         std::vector<std::string> params;

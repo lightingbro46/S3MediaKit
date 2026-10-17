@@ -45,6 +45,11 @@ public:
                  double value, double threshold, const Json::Value &extra = Json::Value(Json::objectValue),
                  int64_t now = 0);
 
+    // A single occurrence (e.g. one failed job): listed in "recent" only, never opens an alert.
+    void addEvent(const std::string &family, const std::string &entity, const std::string &event_code, Level level,
+                  double value, double threshold, const Json::Value &extra = Json::Value(Json::objectValue),
+                  int64_t now = 0);
+
     bool isActive(const std::string &family, const std::string &entity) const;
 
     // {"seq": last seq, "active": [...], "recent": [events with seq > since_seq, oldest first]}.

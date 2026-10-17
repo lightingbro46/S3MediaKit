@@ -281,6 +281,7 @@ camera), `page` (từ 1), `size` (mặc định 50, tối đa 500). Camera xấu
     "total": 3, "page": 1, "size": 50,
     "cameras": [{
       "cameraId": "cam-01", "name": "Cổng chính", "ip": "10.0.0.5", "manufacturer": "Hikvision",
+      "vendor": "HIKVISION", "model": "DS-2CD2143G2-I",
       "health": "warning", "healthSince": 1760499000, "observed": "warning",
       "reasons": ["main.fps_ratio", "main.bitrate_ratio"],
       "online": true,
@@ -315,6 +316,12 @@ camera), `page` (từ 1), `size` (mặc định 50, tối đa 500). Camera xấu
   `controller.disconnected`, `main.offline`, `main.no_video`, `main.last_frame_age_ms`, `main.fps_ratio`,
   `main.bitrate_ratio`, `main.loss_pct`, `main.disconnects_1h`, `main.uptime_pct_24h` (tương tự `sub.`).
 - `viewers`: số người xem live / xem lại của camera lúc chụp snapshot (cùng nguồn với `delivery.viewers`).
+- `vendor`, `model` (tùy chọn): hãng/model thiết bị tự báo qua giao thức điều khiển hoặc plugin; chưa đọc
+  được thì `model` lấy theo cấu hình VMS, không biết thì không có field. `manufacturer` là loại điều khiển
+  VMS cấu hình (`GENERIC-RTSP`, ...), không phải hãng thiết bị tự báo.
+- `lastError` (tùy chọn, chỉ khi camera offline): câu lỗi gần nhất của luồng, luồng chính trước
+  (vd. `401 Unauthorized`, timeout kết nối), như `errMsg` của `device/statisticsList`. Cùng với
+  `streams.*.status` và `controller.status`, đã xoá `user:password@` của mọi URL trong câu và cắt ở 200 byte.
 - Luồng bị tắt trong cấu hình camera hoặc không có URL: `null`.
 - `fps` là fps **đo được** (số frame video nhận / thời gian giữa hai mẫu), không phải fps khai báo trong
   SPS. `bitrate_kbps` lấy từ track, track không báo thì từ tốc độ byte của luồng. Cả hai lấy mẫu cùng
@@ -331,7 +338,7 @@ camera), `page` (từ 1), `size` (mặc định 50, tối đa 500). Camera xấu
 - `last_frame_age_ms`: thời gian từ frame video cuối vào MediaServer.
 - `disconnects_*`, `uptime_pct_24h` tính từ lúc MediaServer bắt đầu theo dõi luồng
   (`window_started_at`), mất khi khởi động lại. `uptime_pct_24h` chỉ được đánh giá sau 1 giờ theo dõi.
-- Không có mật khẩu/URL của camera trong response.
+- Không có mật khẩu của camera trong response (URL trong câu lỗi đã bỏ phần đăng nhập).
 
 ### 3.7 `/media/monitor/alerts`
 
@@ -365,6 +372,15 @@ camera), `page` (từ 1), `size` (mặc định 50, tối đa 500). Camera xấu
   `LiveStreamLimitExceeded/Recovered`, `CameraStreamLimitExceeded/Recovered`; thêm `RecordingStalled` /
   `RecordingRecovered` của monitor, và `DiskRecovered` theo mount (webhook không có sự kiện hồi phục dung
   lượng theo mount; monitor tự đóng khi mount về dưới ngưỡng cảnh báo).
+- `TieringJobFailed` / `RestoreJobFailed` (bật tier, chỉ ở đây, không gửi webhook): một sự kiện cho mỗi
+  job chuyển sang `FAILED` (kể cả lỗi lại sau khi retry), chỉ ở `recent[]`, không mở cảnh báo trong
+  `active[]`; `level` = `warning`, `currentValue`/`threshold` = null. `family` = `TieringJob` / `RestoreJob`,
+  `entity` = job id; field riêng: `jobId`, `cameraId`, `cameraName`, `name` (tên camera, không có thì tên
+  pool hoặc camera id), `poolId`/`poolName` (pool đích, chỉ tiering), `sourceTier`, `targetTier`, `error`
+  (đã bỏ phần đăng nhập trong URL, ≤ 200 byte), `failedAt`; `at` = `failedAt`. Đọc theo chu kỳ kiểm tra
+  database (`monitor.slowIntervalSec`), nên tới trễ tối đa một chu kỳ đó; job lỗi trước lần đọc đầu sau
+  khởi động chỉ được đếm (`jobs.*_failed_*`). Mỗi loại tối đa 20 sự kiện một lần đọc, sự kiện cuối có
+  `moreFailed` = số job lỗi không có sự kiện riêng.
 - Có cả khi webhook tắt (`hook.enable=0`). Danh sách nằm trong RAM, mất khi khởi động lại.
 - Field riêng của từng sự kiện (`mountPoint`, `device`, `path`, `poolId`, `cameraId`, ...) nằm cùng
   cấp với các field chung.

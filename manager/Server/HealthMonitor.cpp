@@ -20,6 +20,7 @@
 #include "Util/onceToken.h"
 #include "Util/File.h"
 #include "GlobalMonitor.h"
+#include "Local/StatisticRecorder.h"
 #include "HealthProbe.h"
 #include "ClusterManager.h"
 #include "Common/EventBus.h"
@@ -1416,6 +1417,34 @@ static Json::Value optNum(double v) {
     return v < 0 ? Json::Value(Json::nullValue) : num(v);
 }
 
+string sanitizeErrorText(const string &text, size_t max_len) {
+    string out = text;
+    size_t pos = 0;
+    while ((pos = out.find("://", pos)) != string::npos) {
+        size_t begin = pos + 3;
+        size_t end = out.find_first_of("/ \t\r\n\"'<>?#", begin);
+        if (end == string::npos) {
+            end = out.size();
+        }
+        size_t at = out.rfind('@', end == 0 ? 0 : end - 1);
+        if (at != string::npos && at >= begin && at < end) {
+            out.erase(begin, at + 1 - begin);
+        }
+        pos = begin;
+    }
+    if (out.size() > max_len) {
+        size_t cut = max_len;
+        while (cut > 0 && ((unsigned char)out[cut] & 0xC0) == 0x80) {
+            --cut;
+        }
+        out.resize(cut);
+    }
+    return out;
+}
+
+// Error texts in /media/monitor/cameras.
+static const size_t kErrorTextMax = 200;
+
 void HealthMonitor::collectIngest(HealthEvaluator &ev, Json::Value &summary, vector<Json::Value> &cameras, int64_t now) {
     using namespace HealthMonitorConfig;
     GET_CONFIG(int, sustain, kSustainSamples);
@@ -1453,6 +1482,15 @@ void HealthMonitor::collectIngest(HealthEvaluator &ev, Json::Value &summary, vec
         cj["name"] = opt.name;
         cj["ip"] = opt.ip;
         cj["manufacturer"] = opt.manufacturer;
+        // What the device reported (control protocol or camera plugin), else what the VMS configured.
+        const auto &dev = params.device_stats.device_caps.onvifProfile.deviceInfo;
+        if (!dev.manufacturer.empty()) {
+            cj["vendor"] = dev.manufacturer;
+        }
+        const string &model = dev.model.empty() ? opt.model : dev.model;
+        if (!model.empty()) {
+            cj["model"] = model;
+        }
         static const char *names[2] = { "main", "sub" };
         for (int type = 0; type < 2; ++type) {
             auto &st = in.streams[type];
@@ -1494,7 +1532,7 @@ void HealthMonitor::collectIngest(HealthEvaluator &ev, Json::Value &summary, vec
             Json::Value sj;
             sj["streamId"] = tuple_it->second.stream_id;
             sj["live"] = st.live;
-            sj["status"] = sinfo ? sinfo->status : "";
+            sj["status"] = sinfo ? sanitizeErrorText(sinfo->status, kErrorTextMax) : "";
             sj["lastChangeAt"] = sinfo ? (Json::Int64)sinfo->last_change_status : 0;
             sj["codec"] = sinfo ? sinfo->vcodec : "";
             sj["width"] = sinfo ? sinfo->width : 0;
@@ -1558,6 +1596,16 @@ void HealthMonitor::collectIngest(HealthEvaluator &ev, Json::Value &summary, vec
             cj["reasons"].append(r);
         }
         cj["online"] = is_online;
+        if (!is_online) {
+            // Why the camera is offline, like device/statisticsList: the main stream first.
+            for (int type = 0; type < 2; ++type) {
+                auto info_it = params.sinfo_map.find(type);
+                if (in.streams[type].present && info_it != params.sinfo_map.end() && !info_it->second.status.empty()) {
+                    cj["lastError"] = sanitizeErrorText(info_it->second.status, kErrorTextMax);
+                    break;
+                }
+            }
+        }
         auto rd = readers.find(camera_id);
         cj["viewers"]["live"] = rd != readers.end() ? rd->second.first : 0;
         cj["viewers"]["playback"] = rd != readers.end() ? rd->second.second : 0;
@@ -1573,7 +1621,7 @@ void HealthMonitor::collectIngest(HealthEvaluator &ev, Json::Value &summary, vec
         }
         if (in.controller_expected) {
             cj["controller"]["connected"] = params.device_stats.connect;
-            cj["controller"]["status"] = params.device_stats.status;
+            cj["controller"]["status"] = sanitizeErrorText(params.device_stats.status, kErrorTextMax);
         } else {
             cj["controller"] = Json::nullValue;
         }
@@ -1869,9 +1917,129 @@ void HealthMonitor::slowCollect() {
     r.restore_failed_24h = tsm.countRestoreJobs("", failed, r.at - 86400);
     r.restore_failed_1h = tsm.countRestoreJobs("", failed, r.at - 3600);
     r.restore_pending = tsm.countRestoreJobs("", jobStatusToString(JobStatus::PENDING));
+    map<string, string> pool_names;
+    for (const auto &p : r.pools) {
+        pool_names[p.id] = p.name;
+    }
+    try {
+        emitFailedJobEvents(r.at, pool_names);
+    } catch (const std::exception &ex) {
+        WarnL << "Health monitor: reading failed jobs failed: " << ex.what();
+    }
 #endif
     lock_guard<mutex> lck(_slow_mtx);
     _slow = std::move(r);
+}
+
+void HealthMonitor::emitFailedJobEvents(int64_t now, const map<string, string> &pool_names) {
+#ifdef ENABLE_TIER_STORAGE
+    // Failures before the first run are only counted (jobs.*_failed_24h), not replayed as events.
+    if (_job_fail_cursor == 0) {
+        _job_fail_cursor = now;
+        return;
+    }
+    static const int kFetch = 200;
+    // Per kind and run: a mass failure gives a few events, the last one says how many more.
+    static const size_t kMaxEvents = 20;
+    struct Failed {
+        string job_id, camera_id, pool_id, source_tier, target_tier, error;
+        int64_t updated_at = 0;
+    };
+    vector<Failed> tiering, restore;
+    for (const auto &j : TieringJobImp().findFailedUpdatedSince(_job_fail_cursor, kFetch)) {
+        Failed f;
+        f.job_id = j.job_id;
+        f.camera_id = j.camera_id;
+        f.pool_id = j.target_pool_id;
+        f.source_tier = j.source_tier;
+        f.target_tier = j.target_tier;
+        f.error = j.error_message.value_or("");
+        f.updated_at = j.updated_at;
+        tiering.push_back(f);
+    }
+    for (const auto &j : RestoreJobImp().findFailedUpdatedSince(_job_fail_cursor, kFetch)) {
+        Failed f;
+        f.job_id = j.job_id;
+        f.camera_id = j.camera_id;
+        f.source_tier = j.source_tier;
+        f.target_tier = j.target_tier;
+        f.error = j.error_message.value_or("");
+        f.updated_at = j.updated_at;
+        restore.push_back(f);
+    }
+
+    int64_t cursor = _job_fail_cursor;
+    for (const auto *list : { &tiering, &restore }) {
+        for (const auto &f : *list) {
+            cursor = std::max(cursor, f.updated_at);
+        }
+        if (list->size() >= (size_t)kFetch && cursor == _job_fail_cursor) {
+            // A whole page in one second: step over it rather than read it again forever.
+            ++cursor;
+        }
+    }
+    map<string, int64_t> reported;
+    for (const auto &kv : _job_fail_reported) {
+        if (kv.second >= cursor) {
+            reported.insert(kv);
+        }
+    }
+    auto emit = [&](const vector<Failed> &list, const string &kind) {
+        vector<pair<int64_t, Json::Value> > events;
+        size_t more = 0;
+        for (const auto &f : list) {
+            const string key = kind + "|" + f.job_id;
+            auto it = _job_fail_reported.find(key);
+            if (it != _job_fail_reported.end() && it->second == f.updated_at) {
+                continue;
+            }
+            if (f.updated_at >= cursor) {
+                reported[key] = f.updated_at;
+            }
+            if (events.size() >= kMaxEvents) {
+                ++more;
+                continue;
+            }
+            string camera_name;
+            if (!f.camera_id.empty()) {
+                if (auto rec = StatisticRecorder::Instance().getRecorder(f.camera_id, false)) {
+                    camera_name = rec->getParams().option.name;
+                }
+            }
+            auto pit = pool_names.find(f.pool_id);
+            const string pool_name = pit != pool_names.end() ? pit->second : string();
+            Json::Value extra;
+            extra["jobId"] = f.job_id;
+            extra["cameraId"] = f.camera_id;
+            extra["cameraName"] = camera_name;
+            extra["name"] = !camera_name.empty() ? camera_name : (!pool_name.empty() ? pool_name : f.camera_id);
+            if (!f.pool_id.empty()) {
+                extra["poolId"] = f.pool_id;
+                extra["poolName"] = pool_name;
+            }
+            extra["sourceTier"] = f.source_tier;
+            extra["targetTier"] = f.target_tier;
+            extra["error"] = sanitizeErrorText(f.error, kErrorTextMax);
+            extra["failedAt"] = (Json::Int64)f.updated_at;
+            events.emplace_back(f.updated_at > 0 ? f.updated_at : now, extra);
+        }
+        if (more > 0) {
+            events.back().second["moreFailed"] = (Json::UInt64)more;
+            WarnL << "Health monitor: " << (events.size() + more) << " " << kind << " jobs failed since the last check";
+        }
+        for (const auto &e : events) {
+            AlertRegistry::Instance().addEvent(kind, e.second["jobId"].asString(), kind + "Failed", AlertRegistry::WARNING,
+                                               NAN, NAN, e.second, e.first);
+        }
+    };
+    emit(tiering, "TieringJob");
+    emit(restore, "RestoreJob");
+    _job_fail_cursor = cursor;
+    _job_fail_reported.swap(reported);
+#else
+    (void)now;
+    (void)pool_names;
+#endif
 }
 
 void HealthMonitor::evaluateSlow(HealthEvaluator &ev, Json::Value &summary, int64_t now) {

@@ -91,6 +91,29 @@ void AlertRegistry::onEvent(const string &family, const string &entity, const st
     }
 }
 
+void AlertRegistry::addEvent(const string &family, const string &entity, const string &event_code, Level level,
+                             double value, double threshold, const Json::Value &extra, int64_t now) {
+    if (now <= 0) {
+        now = (int64_t)time(nullptr);
+    }
+    lock_guard<mutex> lck(_mtx);
+    Alert a;
+    a.seq = ++_seq;
+    a.event_code = event_code;
+    a.family = family;
+    a.entity = entity;
+    a.level = level;
+    a.since = now;
+    a.at = now;
+    a.value = value;
+    a.threshold = threshold;
+    a.extra = extra;
+    _recent.push_back(std::move(a));
+    while (_recent.size() > kRecentCapacity) {
+        _recent.pop_front();
+    }
+}
+
 bool AlertRegistry::isActive(const string &family, const string &entity) const {
     lock_guard<mutex> lck(_mtx);
     return _active.count(family + "|" + entity) > 0;

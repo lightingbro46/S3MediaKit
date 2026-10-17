@@ -143,6 +143,9 @@ double rssGrowthMbPerHour(const std::vector<std::pair<int64_t, int64_t> > &sampl
 // p-th percentile (0..100, nearest rank) of `values`; NaN when empty.
 double percentileOf(std::vector<uint32_t> values, double p);
 
+// `text` without the user:password of any URL in it, cut to `max_len` bytes (on a UTF-8 boundary).
+std::string sanitizeErrorText(const std::string &text, size_t max_len);
+
 /**
  * /media/monitor/history points from health_metrics rows (oldest first). bucket_sec <= 0 returns
  * one point per row. A bucket has the worst `overall`, the average score (and its minimum), averages
@@ -283,6 +286,8 @@ private:
     // Database part (SQLite) on BlockingExecutors::api(); the cycle evaluates its last result.
     void startSlowCollect(int64_t now);
     void slowCollect();
+    // TieringJobFailed / RestoreJobFailed events for the jobs failed since the previous run (API pool).
+    void emitFailedJobEvents(int64_t now, const std::map<std::string, std::string> &pool_names);
     void evaluateSlow(HealthEvaluator &ev, Json::Value &summary, int64_t now);
     // History (H5): one health_metrics row per monitor.historyIntervalSec, hourly cleanup.
     void recordHistory(const Json::Value &health, const Json::Value &summary, int64_t now);
@@ -431,6 +436,10 @@ private:
     mutable std::mutex _slow_mtx;
     SlowResult _slow;
     std::atomic<bool> _slow_running{false};
+    // Failed job events, touched only by slowCollect() (one run at a time): updated_at already
+    // reported up to, and the jobs reported at that second (the next run reads it again).
+    int64_t _job_fail_cursor = 0;
+    std::map<std::string, int64_t> _job_fail_reported; // kind|job_id -> updated_at
 };
 
 } // namespace managerkit

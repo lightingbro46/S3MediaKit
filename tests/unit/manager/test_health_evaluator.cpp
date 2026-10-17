@@ -322,6 +322,37 @@ TEST(HealthAlerts, RetentionManagedDiskUsage) {
     reg.clear();
 }
 
+TEST(HealthAlerts, SingleEventsStayOutOfActive) {
+    auto &reg = AlertRegistry::Instance();
+    reg.clear();
+    Json::Value extra;
+    extra["jobId"] = "job-1";
+    reg.addEvent("TieringJob", "job-1", "TieringJobFailed", AlertRegistry::WARNING, NAN, NAN, extra, 100);
+    EXPECT_EQ(0u, reg.activeCount());
+    EXPECT_FALSE(reg.isActive("TieringJob", "job-1"));
+    auto j = reg.toJson(0);
+    ASSERT_EQ(1u, j["recent"].size());
+    EXPECT_EQ("TieringJobFailed", j["recent"][0]["eventCode"].asString());
+    EXPECT_EQ("job-1", j["recent"][0]["entity"].asString());
+    EXPECT_EQ("job-1", j["recent"][0]["jobId"].asString());
+    EXPECT_EQ(100, j["recent"][0]["at"].asInt64());
+    EXPECT_TRUE(j["recent"][0]["currentValue"].isNull());
+    EXPECT_EQ(0u, reg.toJson(j["seq"].asUInt64())["recent"].size());
+    reg.clear();
+}
+
+TEST(HealthCamera, ErrorTextDropsUrlCredentials) {
+    EXPECT_EQ("play rtsp://10.0.0.5:554/Streaming/101 failed: 401 Unauthorized",
+              sanitizeErrorText("play rtsp://admin:p@ss@10.0.0.5:554/Streaming/101 failed: 401 Unauthorized", 200));
+    EXPECT_EQ("rtsp://10.0.0.5 and http://cam/onvif",
+              sanitizeErrorText("rtsp://u:p@10.0.0.5 and http://x@cam/onvif", 200));
+    EXPECT_EQ("mail a@b, rtsp://10.0.0.5/x?u=a@b", sanitizeErrorText("mail a@b, rtsp://10.0.0.5/x?u=a@b", 200));
+    EXPECT_EQ("connection timeout", sanitizeErrorText("connection timeout", 200));
+    // Cut on a UTF-8 boundary: "lỗi" = l + 3 bytes + i.
+    EXPECT_EQ("l", sanitizeErrorText("l\xe1\xbb\x97i", 3));
+    EXPECT_EQ("abc", sanitizeErrorText("abcdef", 3));
+}
+
 TEST(StreamQuality, UptimeAndDisconnects) {
     const int64_t t0 = 1000000;
     StreamQuality q(t0);
