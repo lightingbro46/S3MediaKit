@@ -800,3 +800,47 @@ SSD/RAID và NIC 2 Gbps.
 - Tiêu chí kiểm thêm khi phân tích: không có `receive rtp timeout` ngoài lúc khởi động; mọi dòng
   `Record mp4 file` chạy trên thread `rec close`; replay ≥ 99 % phiên đạt; `w_await`/util của SSD ở
   cuối mỗi bậc camera.
+
+### 10.5 Kiểm chứng local sau sửa (2026-10-17, chưa phải lượt G-r2)
+
+Source: `fix/capacity-service`, các commit `4209b6c6` (harness), `d04e3b30`/`ec5ce710`
+(config worker/readiness/shutdown), `6f7c6cea` (close metrics/replay poller/stagger) và `88231d20`
+(revision của request khởi động). Không thay schema, không thay auth của endpoint thống kê.
+
+Build Debug trong `build-test/`, C++11, FFmpeg bundled 7.1.5. Build MediaServer đạt; bốn bộ CTest
+`unit.replay_all`, `unit.storage_all`, `unit.timeline_query_all`, `unit.server_config_loader_all`
+đạt: **37 + 92 + 5 + 6 = 140 test C++**. Regression Python của harness **5/5**, `bash -n` đạt.
+Các regression mới kiểm tra apply bị chặn không chặn poller, retry/cache/audio-only/revision,
+shutdown, metrics khi task throw/cancel, poller mặc định/explicit và stagger/continuous/segment 1 s.
+
+Chạy thật bằng `run_stress.sh`, một node, nguồn **light 176x144/5 fps/48 kbps**, hai luồng/camera,
+không viewer; `-t 4 --affinity 0`, ramp 40 s + giữ 40 s (cửa sổ chấm 30 s), segment 20 s,
+`hook.configReapplySec=30`. Nguồn giả lập dùng cổng 28554 vì 18554 đã được sử dụng; không dừng
+tiến trình trên cổng đó. Đây là kiểm chứng chức năng/threading, **không dùng để suy ra capacity**.
+
+| camera | luồng | timeout từ khởi động | khoảng hở / stale | queue cuối cửa sổ | wait max từng shard (ms) | kết quả |
+|---|---|---|---|---|---|---|
+| 20 | 40 | 0 | 0 / 0 | 0 | 83,663 | đạt |
+| 50 | 100 | 0 | 0 / 0 | 0 | 167,466 | đạt |
+| 120 | 240 | 0 | 0 / 0 | 0 | 674,289 | đạt |
+
+Mọi dòng apply camera ở ba lượt nằm trên `api worker`, mọi dòng Record mp4 file trên `rec close`.
+Report lưu được samples của cả hai shard. Ở 120 camera, 240 segment đầu dài **9,8–19,8 s** theo
+media DTS (có lượng tử frame/GOP), đúng mục đích rải đợt đầu; các segment sau giữ ngưỡng 20 s.
+Bảng summary mới được render thử bằng chính ba report: đủ cột timeout ngoài cửa sổ và verdict.
+
+Artifacts local: `/tmp/s3mk-capacity-local.vJvYdT/cam_{20,50,120}` (report JSON/Markdown và log).
+SHA256 binary smoke: `58396a3710a50323fe5f8b0b2169001cb16d783738c5d5c27d0ff35230a186a5`.
+Binary thêm sửa revision startup dùng cho lượt replay:
+`c7555fc4c3282f43cdab1f8d98f0443ec33a684493a0832f2a2e8a0ae8b63139`.
+Metadata Git của các binary kiểm thử này trống do sandbox không đọc được refs; xác định bằng SHA
+và source ở trên. Bản giao cho lượt G phải build lại ngoài sandbox, kiểm Git hash/bundle cùng commit.
+
+Replay local 20 camera / 20 viewer (16 live + 4 replay), lùi 30–50 s, xem 20 s: **đạt 4/4 replay**,
+TTFF tối đa 545 ms, không khựng, không timeout/hở/stale recording. Log xác nhận OwnerPoller chuyển
+sang replay poller. Artifacts ở `/tmp/s3mk-capacity-local.vJvYdT/replay_20`, gồm
+`ccu_replay_report.json/.md` và CSV có trường stall_events. Đây là kiểm tra replay fMP4 nhỏ;
+không thay lượt G-c 80 phiên / 300 s, replay HLS/RTSP, A/B hay soak trên db3.
+
+**Chưa xác nhận:** throughput trên SSD db3 khi đã hết cache, mức closeThreads tối ưu (vẫn giữ 2),
+soak dài, so A/B P3/P4 trên tải bitrate thật và capacity G-r2. Chưa chạy fio, đổi sysctl hoặc chạm db3.

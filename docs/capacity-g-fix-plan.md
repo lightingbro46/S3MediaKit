@@ -16,8 +16,8 @@ replay không khựng khi segment đóng dồn, rồi chạy lại lượt G đ�
 
 ## 1. Quyết định cần chốt trước
 
-- **D1 — binary cho lần chạy lại.** Khuyến nghị: build từ develop + nhánh sửa của plan này
-  (`fix/capacity-g`). Nếu bản production phải là `feature/anhnq48-replay-timeline` thì chủ nhánh đó
+- **D1 — binary cho lần chạy lại.** Triển khai trên nhánh hiện có `fix/capacity-service`, đã có
+  executor `rec close`. Nếu bản production phải là `feature/anhnq48-replay-timeline` thì chủ nhánh đó
   merge develop (để có `489f98e3`) và nhánh sửa này trước khi build. Ghi commit vào Bảng 0.
 - **D2 — bỏ qua nạp cấu hình không đổi (P1.3).** Vòng nạp mỗi 10 s hiện cũng là vòng "đối soát"
   (bật lại `setSyncMode(true)`, áp lại option). Khuyến nghị: bỏ qua khi JSON không đổi nhưng vẫn áp
@@ -25,7 +25,8 @@ replay không khựng khi segment đóng dồn, rồi chạy lại lượt G đ�
 
 ## 2. Các phase
 
-Làm trên nhánh `fix/capacity-g` tách từ develop. Mỗi phase một commit, build `build/` + unit liên
+Làm trên nhánh `fix/capacity-service`. Tách commit theo phase khi có thể; P2–P4 dùng chung
+MP4Recorder/config/regression có thể commit cùng nhau sau validation. Build `build/` + unit liên
 quan; phase có chạy thật ghi kết quả vào commit message.
 
 ### P1 — Nạp cấu hình không chạy trên poller (K2, sửa A)
@@ -142,7 +143,7 @@ Không sửa code; ghi vào `recording-server-capacity-test.md`:
    - backlog `rec close` về 0 sau mỗi phút;
    - replay ≥ 99 % phiên đạt;
    - ghi lại `w_await`/util SSD cuối mỗi bậc camera.
-4. Ghi kết quả vào mục 10.5 của báo cáo, so với lượt sơ bộ.
+4. Ghi kết quả G-r2 vào mục 10.6 của báo cáo, so với lượt sơ bộ; mục 10.5 dành cho kiểm chứng local.
 5. Giữ một lượt baseline ngắn sau P1/P2 và trước P3/P4 để biết hiệu quả từng thay đổi. Ở mức mục
    tiêu, chạy soak ít nhất một giờ sau khi SSD đã vào vùng ghi bền vững; ghi queue age/backlog,
    TTFF/stall và rớt ingest. Test dev 120 camera không thay thế nghiệm thu 500–800 camera trên db3.
@@ -168,6 +169,8 @@ P1 và P2 là bắt buộc trước P7; P3, P4 nên có; P5 cần để đọc �
   Binary và bundle lần chạy tiếp phải dựng từ cùng cây source/commit. Không merge nhánh khác tự động.
 - Thứ tự: P5 → P1 → P2 instrumentation → baseline → quyết định P3/P4 → P7.
   P3/P4 có thể hoàn thiện và kiểm thử local, nhưng phải đo riêng baseline trước khi chốt hiệu quả.
+  Baseline cùng binary đặt record.replayPollerThreads=0;record.segmentStartStagger=0;
+  bật từng cờ ở lượt tiếp theo. Replay mặc định 8, stagger mặc định 1; không tự pin thêm CPU.
 - Các file chính: harness `check_ccu.py`, `viewer_load.py`, `ccu_runner.sh`; server `WebHook.cpp`,
   `Manager.cpp/.h`; core `MP4Recorder`, `MP4Reader`, `MergedMP4Reader`, `Common/config`; stats API
   hiện có; regression tương ứng trong `tests/unit` và Python unittest của harness.
@@ -182,3 +185,21 @@ P1 và P2 là bắt buộc trước P7; P3, P4 nên có; P5 cần để đọc �
 ## 5. Nhật ký thực hiện
 
 - 2026-10-17: lưu baseline tài liệu và bổ sung review; chưa có số đo performance sau sửa.
+- P5: commit 4209b6c6, 5 regression Python đạt và bash -n đạt. Đã bổ sung lấy mẫu close shards.
+- P1: d04e3b30, ec5ce710 và 88231d20; apply/catch-up/decommission tuần tự trên worker, retry khi
+  chưa ready/thất bại, cache có audio, drain khi shutdown và loại response cũ kể cả startup.
+- P2–P4: 6f7c6cea, có counters theo shard, poller replay riêng và stagger segment đầu (cờ A/B).
+  record.closeThreads giữ 2; batching SQLite/prefetch chưa có bằng chứng cần thực hiện.
+- Validation: MediaServer Debug build đạt; 140 test C++ trong bốn bộ replay/storage/timeline/config
+  loader và 5 regression Python đạt. Smoke 20/50/120 camera light đạt, không timeout/hở/stale;
+  queue cuối cửa sổ về 0 và thread đúng. Chi tiết ở báo cáo mục 10.5.
+- Replay fMP4 local: 20 camera, 16 live + 4 replay, 4/4 replay đạt (xem 20 s, lùi 30–50 s),
+  TTFF max 545 ms, không khựng/timeout/hở; OwnerPoller chuyển sang replay poller.
+- Binary/bundle cho lượt đo phải có metadata Git khớp. Khi configure trong sandbox không đọc
+  được refs, build vẫn thành công nhưng metadata trống: phải configure/build lại có quyền đọc Git.
+  Các binary smoke cũ được nhận dạng bằng SHA256 ở báo cáo, không dùng để chốt G-r2.
+- Lệnh validation đã dùng: cmake --build build-test --target unit_server_config_loader unit_replay
+  unit_storage unit_timeline_query MediaServer -j2; CTest chạy tuần tự bốn test _all tương ứng.
+  Bundle dựng bằng bash tests/integration/stress_vms/make_ccu_bundle.sh release/ccu_test.sh sau
+  commit validation để phần BUNDLE_INFO chỉ đúng source được giao.
+- P6/P7 và so A/B/soak trên tải bitrate thật cần db3; chưa kết luận tăng capacity.
