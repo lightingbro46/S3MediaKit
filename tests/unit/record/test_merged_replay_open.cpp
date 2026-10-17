@@ -17,6 +17,7 @@
 #include "Record/MergedMP4Reader.h"
 #include "Record/MP4Reader.h"
 #include "Record/MP4Recorder.h"
+#include "Record/ReplayPoller.h"
 #include "Util/File.h"
 #include "Util/util.h"
 #include "Util/NoticeCenter.h"
@@ -725,6 +726,83 @@ TEST(MP4MuxerParameterSetsTest, FirstKeyframeSampleCarriesSpsAndPps) {
 // Closing a segment (moov write, rename, kBroadcastRecordMP4 listeners that write the timefile and
 // SQLite) used to run on a WorkThreadPool poller. It now runs on "rec close N" threads, and the
 // segments of one stream close one after another in order.
+TEST(MP4RecorderStaggerTest, ShortensOnlyFirstLiveSegmentAndPreservesContinuous) {
+    for (const unsigned max_second : {1u, 6u}) {
+      // 0 = live, 1 = continuous gap fill, 2 = event clip (stagger disabled by the caller)
+      for (const int mode : {0, 1, 2}) {
+        const bool continuous = mode == 1;
+        const string root = "/tmp/s3-stagger-" + to_string(getCurrentMicrosecond(true)) + "/";
+        const MediaTuple tuple(DEFAULT_VHOST, "stagger-test", mode == 1 ? "continuous" : mode == 2 ? "event" : "live",
+                               continuous ? "continuous=1&start_time_ms=100000" : "");
+        auto lengths = make_shared<vector<double>>();
+        auto listener = make_shared<char>(0);
+        NoticeCenter::Instance().addListener(listener.get(), Broadcast::kBroadcastRecordMP4,
+            [lengths, tuple](BroadcastRecordMP4Args) {
+                if (info.app == tuple.app && info.stream == tuple.stream) lengths->push_back(info.time_len);
+            });
+        auto audio = Factory::getTrackByCodecId(CodecAAC, 8000, 1, 16);
+        audio->setExtraData(kAacConfig, sizeof(kAacConfig));
+        {
+            MP4Recorder recorder(tuple, root, max_second);
+            if (mode == 2) recorder.disableStartStagger();
+            ASSERT_TRUE(recorder.addTrack(audio));
+            for (uint64_t dts = 0; dts < 24000; dts += 128) {
+                recorder.inputFrame(nalFrame(CodecAAC, vector<uint8_t>(256, 0x21), dts, audio->getIndex()));
+            }
+        }
+        auto done = make_shared<promise<void>>();
+        auto future = done->get_future();
+        MP4Recorder::closeExecutorFor(tuple.shortUrl())->async([done]() { done->set_value(); }, false);
+        ASSERT_EQ(future.wait_for(chrono::seconds(3)), future_status::ready);
+        NoticeCenter::Instance().delListener(listener.get());
+        ASSERT_GE(lengths->size(), 3u);
+        const bool staggered = mode == 0 && max_second >= 2;
+        // RecordInfo reports first-to-last DTS, excluding the final AAC sample's 128 ms.
+        const double sample_sec = 0.1281;
+        EXPECT_GE(lengths->front(), (staggered ? max_second / 2.0 : max_second) - sample_sec);
+        EXPECT_LT(lengths->front(), staggered ? max_second : max_second + sample_sec);
+        EXPECT_GE((*lengths)[1], max_second - sample_sec);
+        EXPECT_LT((*lengths)[1], max_second + sample_sec);
+        File::delete_file(root);
+      }
+    }
+}
+
+TEST(ReplayPollerTest, ReadersUseDedicatedPoolAndHonorExplicitPoller) {
+    MediaTuple tuple(DEFAULT_VHOST, "record", "pool-test", "");
+    ProtocolOption option;
+    auto reader = make_shared<MergedMP4Reader>(tuple, option);
+    shared_ptr<MediaSourceEvent> event = reader;
+    auto owner = event->getOwnerPoller(MediaSource::NullMediaSource());
+    auto name = make_shared<promise<string>>();
+    auto future = name->get_future();
+    owner->async([name]() { name->set_value(getThreadName()); }, false);
+    ASSERT_EQ(future.wait_for(chrono::seconds(2)), future_status::ready);
+    EXPECT_EQ(future.get().find("replay poller "), 0u);
+
+    auto supplied = EventPollerPool::Instance().getFirstPoller();
+    reader = make_shared<MergedMP4Reader>(tuple, option, supplied);
+    event = reader;
+    EXPECT_EQ(event->getOwnerPoller(MediaSource::NullMediaSource()).get(), supplied.get());
+
+    const string path = "/tmp/s3-replay-pool-" + to_string(getCurrentMicrosecond(true)) + ".mp4";
+    writeRecording(path, 3000, 1000);
+    auto file_reader = make_shared<MP4Reader>(tuple, path);
+    event = file_reader;
+    auto file_owner = event->getOwnerPoller(MediaSource::NullMediaSource());
+    auto file_name = make_shared<promise<string>>();
+    auto file_future = file_name->get_future();
+    file_owner->async([file_name]() { file_name->set_value(getThreadName()); }, false);
+    ASSERT_EQ(file_future.wait_for(chrono::seconds(2)), future_status::ready);
+    EXPECT_EQ(file_future.get().find("replay poller "), 0u);
+    file_reader = make_shared<MP4Reader>(tuple, path, supplied);
+    event = file_reader;
+    EXPECT_EQ(event->getOwnerPoller(MediaSource::NullMediaSource()).get(), supplied.get());
+    event.reset();
+    file_reader.reset();
+    File::delete_file(path);
+}
+
 TEST(MP4RecorderCloseTest, SegmentsOfAStreamCloseInOrderOffPollers) {
     const string key = "__defaultVhost__/record/cam-close/main";
     auto executor = MP4Recorder::closeExecutorFor(key);
@@ -754,4 +832,51 @@ TEST(MP4RecorderCloseTest, SegmentsOfAStreamCloseInOrderOffPollers) {
     ASSERT_EQ(1u, threads.size());
     EXPECT_EQ(0u, threads.begin()->find("rec close ")) << *threads.begin();
     EXPECT_FALSE(on_poller);
+}
+
+TEST(MP4RecorderCloseTest, MeasuresQueuedRunningCompletedAndCancelledWork) {
+    const string key = "__defaultVhost__/record/close-metrics/main";
+    auto executor = MP4Recorder::closeExecutorFor(key);
+    auto started = make_shared<promise<string>>();
+    auto start_future = started->get_future();
+    auto release = make_shared<promise<void>>();
+    auto gate = release->get_future().share();
+    executor->async([started, gate]() {
+        started->set_value(getThreadName());
+        gate.wait_for(chrono::seconds(4));
+    }, false);
+    ASSERT_EQ(start_future.wait_for(chrono::seconds(2)), future_status::ready);
+    const auto name = start_future.get();
+    auto before = MP4Recorder::closePoolStats();
+    auto cancelled = executor->async([]() { ADD_FAILURE() << "cancelled task ran"; }, false);
+    executor->async([]() { throw runtime_error("injected close failure"); }, false);
+    auto queued = MP4Recorder::closePoolStats();
+    for (const auto &st : queued) {
+        if (st.name == name) {
+            EXPECT_EQ(st.running, 1u);
+            EXPECT_EQ(st.queued, 2u);
+        }
+    }
+    cancelled->cancel();
+    release->set_value();
+    // This sentinel starts after the exception; preceding counters must already be settled.
+    auto done = make_shared<promise<MP4Recorder::ClosePoolStats>>();
+    auto finished = done->get_future();
+    executor->async([done, name]() {
+        for (const auto &st : MP4Recorder::closePoolStats()) {
+            if (st.name == name) done->set_value(st);
+        }
+    }, false);
+    ASSERT_EQ(finished.wait_for(chrono::seconds(3)), future_status::ready);
+    auto after = finished.get();
+    for (const auto &st : before) {
+        if (st.name == name) {
+            EXPECT_EQ(after.completed, st.completed + 2);
+            EXPECT_EQ(after.cancelled, st.cancelled + 1);
+        }
+    }
+    EXPECT_EQ(after.queued, 0u);
+    EXPECT_EQ(after.running, 1u); // the sentinel itself
+    EXPECT_GT(after.wait_max_ms, 0);
+    EXPECT_GT(after.run_max_ms, 0);
 }

@@ -3,8 +3,8 @@
 #include "MP4Reader.h"
 #include "Common/config.h"
 #include "Common/Parser.h"
-#include "Thread/WorkThreadPool.h"
 #include "Util/File.h"
+#include "ReplayPoller.h"
 
 using namespace std;
 using namespace toolkit;
@@ -29,7 +29,7 @@ MP4Reader::MP4Reader(const MediaTuple &tuple, const string &file_path, const Pro
 
 void MP4Reader::setup(const MediaTuple &tuple, const std::string &file_path, const ProtocolOption &option, toolkit::EventPoller::Ptr poller) {
     // It is recommended to read and write files in the background thread
-    _poller = poller ? std::move(poller) : WorkThreadPool::Instance().getPoller();
+    _poller = poller ? std::move(poller) : ReplayPollerPool::Instance().getPoller();
     _file_path = file_path;
     if (_file_path.empty()) {
         GET_CONFIG(string, recordPath, Protocol::kMP4SavePath);

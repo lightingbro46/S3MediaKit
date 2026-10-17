@@ -194,6 +194,8 @@ class Player(object):
         self.stall_began = 0.0   # thời điểm (đồng hồ thực) bộ đệm cạn
         self.stall_count = 0     # số lần khựng đã kết thúc
         self.stall_max = 0.0     # lần khựng dài nhất (giây)
+        self.stall_events = []
+        self.wall_offset = time.time() - now()
         self.media0 = None       # mốc media của frame đầu -> tổng media đã nhận
 
     def stall_now(self, t):
@@ -233,6 +235,9 @@ class Player(object):
                     self.long_stalls += 1
                 self.stall_count += 1
                 self.stall_max = max(self.stall_max, dur)
+                if dur > 1.0:
+                    self.stall_events.append({"at": round(self.wall_offset + self.stall_began, 3),
+                                              "duration_sec": round(dur, 3)})
                 self.stalled = False
             self.buffered = end
 
@@ -520,6 +525,7 @@ class Viewer(object):
         self.reasons = []           # lý do đóng/từ chối theo thứ tự, tối đa 8
         self.t_end = None
         self.acc = {"stall_sec": 0.0, "stall_count": 0, "stall_max": 0.0, "long_stalls": 0, "media": 0.0}
+        self.stall_events = []
 
     # ---- đo
     def _first_media(self, t, t_start):
@@ -565,7 +571,11 @@ class Viewer(object):
                 "stall_max_sec": round(a["stall_max"], 2), "long_stalls": a["long_stalls"],
                 "reconnects": self.reconnects, "join_fails": self.join_fails,
                 "kbps": round(self.bytes * 8 / 1000.0 / watched, 1) if watched > 1 else None,
-                "state": state, "last_reason": self.last_reason, "reasons": " ".join(self.reasons)}
+                "state": state, "last_reason": self.last_reason, "reasons": " ".join(self.reasons),
+                "stall_events": self.stall_events + self.player.stall_events + (
+                    [{"at": round(self.player.wall_offset + self.player.stall_began, 3),
+                      "duration_sec": round(self.player.stall_now(t), 3)}]
+                    if self.player.stall_now(t) > 1.0 else [])}
 
     def media(self, start, end):
         t = now()
@@ -646,6 +656,11 @@ class Viewer(object):
                 self.reasons.append("%s@%.0fs" % (reason.split(":<", 1)[0], now() - self.t_open))
             # Player thật thử lại; giữ nguyên slot để mức CCU không bị hụt.
             self._fold_player(now())
+            self.stall_events.extend(self.player.stall_events)
+            cur = self.player.stall_now(now())
+            if cur > 1.0:
+                self.stall_events.append({"at": round(self.player.wall_offset + self.player.stall_began, 3),
+                                          "duration_sec": round(cur, 3)})
             self.playing = False
             self.t_first = None
             self.window = None

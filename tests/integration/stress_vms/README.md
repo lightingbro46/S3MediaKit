@@ -9,6 +9,20 @@ Trọng tâm: **hồ sơ lập lịch lưu trữ**, **điều khiển ONVIF**, *
 
 ## Yêu cầu
 
+Regression của harness (không cần server):
+
+    python3 -m unittest discover -s tests/integration/stress_vms -p 'test_capacity.py' -v
+
+CCU chấm RTP timeout từ khi node khởi động, bao gồm ramp, và báo riêng số ngoài cửa sổ đo.
+Khoảng hở dùng duration trong log Record mp4 file khi có, fallback mtime khi chưa có log.
+ccu_replay_sessions.csv thêm stall_events (JSON: epoch giây at, duration_sec, các lần >1 s).
+ccu_report.json lưu thread record/config, delta counter TCP/softnet và mẫu record_close mỗi 5 s.
+Counter mạng là của network namespace, cần tính cả tải nền khác khi phân tích.
+
+Đo A/B cùng binary: baseline đặt record.replayPollerThreads=0;record.segmentStartStagger=0;
+sau đó bật từng cờ và restart. record.closeThreads đọc một lần, nên thử 2/4/8 ở các lần chạy riêng.
+Giữ cùng bitrate, số camera/viewer và trạng thái đĩa; test dev không thay nghiệm thu db3.
+
 - `MediaServer` bản **Debug** — chỉ bản Debug mới đọc `./api-config.json`
   (`ENABLE_DEBUG`, xem `server/Manager.cpp::loadServerConfigJson`).
 - `ENABLE_SYNC_CHANGES=ON` nếu chạy kịch bản đồng bộ DB / failover.

@@ -46,6 +46,7 @@
 #include "User/UserAuthorManager.h"
 #include "User/UserAuditLog.h"
 #include "Record/MP4Reader.h"
+#include "Record/MP4Recorder.h"
 
 #if defined(ENABLE_RTPPROXY)
 #include "Rtp/RtpServer.h"
@@ -861,6 +862,23 @@ void installWebApi() {
             obj["window_busy_pct"] = st.window_busy_pct;
             val["data"].append(obj);
         }
+#ifdef ENABLE_MP4
+        val["record_close"] = Value(arrayValue);
+        for (const auto &st : MP4Recorder::closePoolStats()) {
+            Value obj(objectValue);
+            obj["name"] = st.name;
+            obj["queued"] = static_cast<Json::UInt64>(st.queued);
+            obj["running"] = static_cast<Json::UInt64>(st.running);
+            obj["completed"] = static_cast<Json::UInt64>(st.completed);
+            obj["cancelled"] = static_cast<Json::UInt64>(st.cancelled);
+            obj["oldest_queued_ms"] = st.oldest_queued_ms;
+            obj["wait_avg_ms"] = st.wait_avg_ms;
+            obj["wait_max_ms"] = st.wait_max_ms;
+            obj["run_avg_ms"] = st.run_avg_ms;
+            obj["run_max_ms"] = st.run_max_ms;
+            val["record_close"].append(obj);
+        }
+#endif
     });
 
     // Get server configuration

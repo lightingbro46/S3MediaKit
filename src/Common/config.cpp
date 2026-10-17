@@ -413,6 +413,8 @@ const string kArchiveName = RECORD_FIELD "archiveName";
 const string kReplayMaxGapSec = RECORD_FIELD "replayMaxGapSec";
 const string kReplayMinSwitchSec = RECORD_FIELD "replayMinSwitchSec";
 const string kCloseThreads = RECORD_FIELD "closeThreads";
+const string kReplayPollerThreads = RECORD_FIELD "replayPollerThreads";
+const string kSegmentStartStagger = RECORD_FIELD "segmentStartStagger";
 
 static onceToken token([]() {
     mINI::Instance()[kAppName] = "record";
@@ -425,6 +427,8 @@ static onceToken token([]() {
     mINI::Instance()[kReplayMaxGapSec] = 2;
     mINI::Instance()[kReplayMinSwitchSec] = 5;
     mINI::Instance()[kCloseThreads] = 2;
+    mINI::Instance()[kReplayPollerThreads] = 8;
+    mINI::Instance()[kSegmentStartStagger] = true;
 });
 } // namespace Record
 
