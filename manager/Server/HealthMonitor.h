@@ -233,6 +233,11 @@ public:
     // Process start, unix seconds.
     int64_t startedAt() const { return _started_at; }
 
+    // Cycle period in force (monitor.intervalSec at start). Any thread.
+    double intervalSec() const { return _interval_sec.load(); }
+    // A snapshot older than this (seconds) means the monitor poller is stuck: max(3 cycles, 30 s).
+    static int64_t staleAfterSec(double interval_sec);
+
     // A segment of `camera_id` closed on disk (kBroadcastRecordMP4). Any thread.
     void onRecordWritten(const std::string &camera_id, uint64_t bytes);
     // Result of a play authorization (kBroadcastMediaPlayed): empty = allowed. Any thread.
@@ -295,6 +300,11 @@ private:
 private:
     std::atomic<bool> _running{false};
     int64_t _started_at = 0;
+    std::atomic<double> _interval_sec{10};
+    // Debug builds only (ENABLE_DEBUG): S3MK_TEST_MONITOR_STALL_SEC / _AT_CYCLE make one cycle
+    // sleep on the monitor poller, for the stale-snapshot test (run_cluster.sh <dir> stale).
+    int _test_stall_sec = 0;
+    uint64_t _test_stall_cycle = 0;
     toolkit::EventPoller::Ptr _poller;
     toolkit::Timer::Ptr _timer;
 

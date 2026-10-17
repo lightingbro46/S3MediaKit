@@ -77,8 +77,8 @@ snapshot.
 
 ### 3.1 `/media/monitor/health`
 
-Tham số tuỳ chọn `rev`: nếu bằng `rev` hiện tại (mức và lý do không đổi) server trả
-`{"code":0,"notModified":true}` không kèm `data`.
+Tham số tuỳ chọn `rev`: nếu bằng `rev` hiện tại (mức và lý do không đổi) và snapshot chưa cũ, server
+trả `{"code":0,"notModified":true}` không kèm `data`.
 
 ```json
 {
@@ -89,6 +89,8 @@ Tham số tuỳ chọn `rev`: nếu bằng `rev` hiện tại (mức và lý do 
     "mediaServerId": "ms-01",
     "generatedAt": 1760500000,
     "rev": 12,
+    "snapshotAgeSec": 3,
+    "stale": false,
     "overall": "warning",
     "score": 90,
     "uptimeSec": 86400,
@@ -114,6 +116,12 @@ Tham số tuỳ chọn `rev`: nếu bằng `rev` hiện tại (mức và lý do 
   Mỗi lần khởi động `rev` bắt đầu từ thời điểm khởi động (unix mili-giây) nên luôn tăng qua các lần
   khởi động lại: `rev` của lần chạy trước không bao giờ trả nhầm `notModified`. App chỉ so bằng, không
   suy ra số lần đổi từ hiệu hai `rev`.
+- `snapshotAgeSec`: tuổi snapshot (giây) lúc server trả lời; `stale`: `true` khi tuổi vượt
+  max(3 × `monitor.intervalSec`, 30) giây, tức luồng `monitor poller` không chạy được chu kỳ nào.
+  Khi đó `overall` = `unknown`, `reasons[]` có thêm ở đầu `process/monitor.snapshot_age_sec` mức
+  `critical` (`value` = tuổi, `threshold` = ngưỡng, `since` = `generatedAt` của snapshot cuối), và
+  `?rev=` không trả `notModified`. Các mức còn lại là của snapshot cuối, không còn đáng tin. `/summary`
+  có cùng hai field và cùng cách báo.
 - Monitor tắt (`monitor.enable=0`): `data = {"schemaVersion":1,"enabled":false,"overall":"unknown",...}`.
 
 ### 3.2 `/media/monitor/summary`

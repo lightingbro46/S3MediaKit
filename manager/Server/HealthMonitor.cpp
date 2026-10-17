@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <set>
+#include <thread>
 #include "Common/config.h"
 #include "Codec/TranscodeStats.h"
 #include "Camera/GenericRtspCameraImp.h"
@@ -484,6 +485,17 @@ void HealthMonitor::start() {
     if (interval_sec < 1) {
         interval_sec = 10;
     }
+    _interval_sec = interval_sec;
+#ifdef ENABLE_DEBUG
+    if (const char *stall = getenv("S3MK_TEST_MONITOR_STALL_SEC")) {
+        _test_stall_sec = atoi(stall);
+        const char *at = getenv("S3MK_TEST_MONITOR_STALL_AT_CYCLE");
+        _test_stall_cycle = at ? (uint64_t)std::max(1, atoi(at)) : 3;
+        if (_test_stall_sec > 0) {
+            WarnL << "TEST HOOK: monitor poller will stall " << _test_stall_sec << " s at cycle " << _test_stall_cycle;
+        }
+    }
+#endif
     AlertRegistry::Instance().start();
     // History, restarts and baselines: SQLite, one task at a time on the API pool.
     _db_queue = std::make_shared<SerialTaskQueue>(BlockingExecutors::api(), "health history");
@@ -641,7 +653,17 @@ double HealthMonitor::effectiveDelayMs(const PollerDelay &d, int64_t now_ms) {
     return v;
 }
 
+int64_t HealthMonitor::staleAfterSec(double interval_sec) {
+    return std::max<int64_t>(30, (int64_t)std::ceil(3 * interval_sec));
+}
+
 void HealthMonitor::collectNow() {
+#ifdef ENABLE_DEBUG
+    if (_test_stall_sec > 0 && _cycle + 1 == _test_stall_cycle) {
+        WarnL << "TEST HOOK: monitor poller stalls " << _test_stall_sec << " s";
+        std::this_thread::sleep_for(std::chrono::seconds(_test_stall_sec));
+    }
+#endif
     int64_t now = (int64_t)time(nullptr);
     const auto collect_start = std::chrono::steady_clock::now();
     ++_cycle;

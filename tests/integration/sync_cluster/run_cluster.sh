@@ -15,6 +15,8 @@
 #   run_cluster.sh [work_dir] monitor    # /media/monitor cluster component: node-b down, back, hook API down
 #   run_cluster.sh [work_dir] history    # node-a + recording camera: /media/monitor/history, open latency,
 #                                        # baseline across restarts, coverage/gaps, restarts, RSS growth
+#   run_cluster.sh [work_dir] stale      # node-a (Debug build): monitor poller stalls once, /media/monitor/*
+#                                        # reports stale=true, then recovers (S3MK_TEST_MONITOR_STALL_SEC)
 #   run_cluster.sh [work_dir] removal    # node-b removed from the cluster (HTTP 412), cleanup of
 #                                        # its ESC data on node-a, node-b added back
 #
@@ -244,6 +246,25 @@ if [ "${2:-}" = "monitor" ]; then
     kill "$(cat "$WORK/fake_s3.pid")"; rm -f "$WORK/fake_s3.pid"; check m6_pool_down 240
     report monitor
     echo "monitor scenario: $fail check(s) failed"
+    exit "$fail"
+fi
+
+if [ "${2:-}" = "stale" ]; then
+    STALL_SEC="${STALL_SEC:-60}"
+    # Only node-a: the hook reads these once at start (ENABLE_DEBUG builds; Release ignores them).
+    export S3MK_TEST_MONITOR_STALL_SEC="$STALL_SEC" S3MK_TEST_MONITOR_STALL_AT_CYCLE=3
+    start_node node-a init
+    unset S3MK_TEST_MONITOR_STALL_SEC S3MK_TEST_MONITOR_STALL_AT_CYCLE
+    wait_healthy 18081
+    python3 "$HERE/check_stale.py" "$WORK" "$STALL_SEC"
+    fail=$?
+    # Stop after the recovery check: a SIGINT during the stall waits for the sleep to end.
+    pid="$(cat "$WORK/node-a/server.pid" 2>/dev/null)"
+    stop_nodes node-a
+    if grep -q "## signal:" "$WORK/node-a/stdout.log" || [ -f "$BIN_DIR/crash.$pid" ]; then
+        echo "CRASH: node-a (see $WORK/node-a/stdout.log)"; fail=$((fail + 1))
+    fi
+    echo "stale scenario: $fail check(s) failed"
     exit "$fail"
 fi
 

@@ -656,3 +656,10 @@ TEST(HealthMonitorConfig, BaselineWindowHoldsThreeSamples) {
     EXPECT_NE("", validateChanges({ { "monitor.historyRetentionDays", "0" } }, none));
     EXPECT_EQ("", validateChanges({ { "monitor.historyRetentionDays", "31" } }, none));
 }
+
+TEST(HealthMonitor, SnapshotStaleAfterThreeCyclesOrThirtySeconds) {
+    EXPECT_EQ(30, HealthMonitor::staleAfterSec(10));
+    EXPECT_EQ(30, HealthMonitor::staleAfterSec(1));
+    EXPECT_EQ(60, HealthMonitor::staleAfterSec(20));
+    EXPECT_EQ(38, HealthMonitor::staleAfterSec(12.5));
+}

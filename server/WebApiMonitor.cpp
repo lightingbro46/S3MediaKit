@@ -81,7 +81,12 @@ static void monitorSnapshotResponse(const ArgsMap &allArgs, Json::Value &val, bo
         val["data"]["apiSecretIsDefault"] = apiSecretIsDefault();
         return;
     }
-    if (!summary) {
+    // Computed here, on the API thread: a stuck monitor poller stops publishing snapshots, and the
+    // last one must not keep answering as current.
+    const int64_t age = std::max<int64_t>(0, (int64_t)time(nullptr) - snap->generated_at);
+    const int64_t stale_after = HealthMonitor::staleAfterSec(HealthMonitor::Instance().intervalSec());
+    const bool stale = age > stale_after;
+    if (!summary && !stale) {
         string rev = allArgs["rev"];
         if (!rev.empty() && rev == to_string(snap->rev)) {
             val["notModified"] = true;
@@ -89,6 +94,25 @@ static void monitorSnapshotResponse(const ArgsMap &allArgs, Json::Value &val, bo
         }
     }
     val["data"] = summary ? snap->summary : snap->health;
+    Json::Value &data = val["data"];
+    data["snapshotAgeSec"] = (Json::Int64)age;
+    data["stale"] = stale;
+    if (stale) {
+        HealthReason r;
+        r.component = "process";
+        r.metric = "monitor.snapshot_age_sec";
+        r.level = HealthLevel::CRITICAL;
+        r.value = (double)age;
+        r.threshold = (double)stale_after;
+        r.since = snap->generated_at;
+        Json::Value reasons(Json::arrayValue);
+        reasons.append(r.toJson());
+        for (const auto &old_reason : data["reasons"]) {
+            reasons.append(old_reason);
+        }
+        data["reasons"] = reasons;
+        data["overall"] = "unknown";
+    }
     val["data"]["enabled"] = true;
     val["data"]["version"] = versionJson();
     val["data"]["apiSecretIsDefault"] = apiSecretIsDefault();
