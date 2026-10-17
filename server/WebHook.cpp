@@ -616,7 +616,8 @@ static void reportServerStarted() {
         body["enableTierStorage"] = false;
 #endif // ENABLE_TIER_STORAGE
         // Execute hook
-        do_http_hook(hook_api_url + hook_server_started, body, [](const Value &obj, const string &err) {
+        const uint64_t revision = ++s_config_revision;
+        do_http_hook(hook_api_url + hook_server_started, body, [revision](const Value &obj, const string &err) {
             if (err.empty()) {
                 TraceL << "hook " << hook_api_url + hook_server_started << " success:" << obj.toStyledString();
                 InfoL << "Report server started success";
@@ -633,7 +634,7 @@ static void reportServerStarted() {
                 TraceL << "hook " << hook_api_url + hook_server_started << " failed:" << err;
                 WarnL << "Report server started failed:" << err;
                 if (isNotQualifiedResponse(obj, err)) {
-                    submitServerConfig(Value(), false, ++s_config_revision, 0);
+                    submitServerConfig(Value(), false, revision, 0);
                 }
             }
         });
