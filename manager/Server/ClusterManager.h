@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <mutex>
+#include <cstdint>
 #include <unordered_map>
 #include "Util/logger.h"
 #include "Poller/Timer.h"
@@ -154,9 +155,14 @@ public:
     void loadSavedMediaServerInfo();
 
 private:
+    friend class ClusterManagerTestPeer;
+
     ClusterManager();
 
-    void healthCheck(const std::string &id, const std::string &origin_urls);
+    void healthCheck(const std::string &id, const std::string &origin_urls, uint64_t revision);
+
+    void onHealthCheckResult(const std::string &id, const std::string &origin_urls, uint64_t revision,
+                             const std::string &err, int idx);
 
     void onManager();
 
@@ -169,6 +175,10 @@ private:
     // Map of peer id to its base URL (e.g. "http://ip:port"), only for healthy peers that passed health check, used for sync and broadcast. 
     // Updated by healthCheck() and cleared when peer is removed.
     std::unordered_map<std::string /*id*/, std::string /*base_url*/> _map_peer_url;
+    // Revision of each peer configuration. Health-check results are applied only when their revision
+    // still matches, so an in-flight request cannot restore a removed peer or an obsolete URL.
+    std::unordered_map<std::string /*id*/, uint64_t /*revision*/> _map_peer_revision;
+    uint64_t _next_peer_revision = 0;
 };
 
 } // namespace managerkit

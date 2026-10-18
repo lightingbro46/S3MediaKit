@@ -5,6 +5,7 @@
 #include "Storage/VmsResourceStatus.h"
 #include "Storage/VmsResourceType.h"
 #include "Storage/VmsKvPair.h"
+#include <tuple>
 #ifdef ENABLE_SYNC_CHANGES
 #include "Extension/SyncManager.h"
 #endif
@@ -66,6 +67,7 @@ ClusterManager::~ClusterManager() {
     _timer.reset();
     _map_server_info.clear();
     _map_peer_url.clear();
+    _map_peer_revision.clear();
 }
 
 std::vector<std::string> ClusterManager::getMediaServerIds(){
@@ -149,6 +151,8 @@ std::unordered_map<std::string, std::string> ClusterManager::getPeerUrls() {
 
 void ClusterManager::addMediaServer(const std::string &id, const MediaServerInfo &info, bool skip_save) {
     bool new_peer = false;
+    bool changed_peer = false;
+    uint64_t revision = 0;
     {
         std::lock_guard<std::mutex> lck(_mtx);
         auto it = _map_server_info.find(id);
@@ -161,7 +165,11 @@ void ClusterManager::addMediaServer(const std::string &id, const MediaServerInfo
                 return;
             }
             it->second = info;
+            changed_peer = true;
         }
+        revision = ++_next_peer_revision;
+        _map_peer_revision[id] = revision;
+        _map_peer_url.erase(id);
         DebugL << "Added media server: " << id << ", name: " << info.name;
         if (!skip_save) {
             savePeerList(_map_server_info);
@@ -172,16 +180,24 @@ void ClusterManager::addMediaServer(const std::string &id, const MediaServerInfo
 #ifdef ENABLE_SYNC_CHANGES
         SyncManager::Instance().onPeerAddedToCluster(id);
 #endif
-        auto origin_urls = buildOrginUrls(info);
-        std::weak_ptr<ClusterManager> weak_self = shared_from_this();
-        WorkThreadPool::Instance().getPoller()->async([weak_self, id, origin_urls]() {
-            auto self = weak_self.lock();
-            if (!self) {
-                return;
-            }
-            self->healthCheck(id, origin_urls);
-        });
     }
+    if (changed_peer) {
+#ifdef ENABLE_SYNC_CHANGES
+        // The endpoint or server group may have changed. Do not use the old peer until the new
+        // configuration has passed a health check.
+        SyncManager::Instance().removePeer(id);
+#endif
+    }
+
+    auto origin_urls = buildOrginUrls(info);
+    std::weak_ptr<ClusterManager> weak_self = shared_from_this();
+    WorkThreadPool::Instance().getPoller()->async([weak_self, id, origin_urls, revision]() {
+        auto self = weak_self.lock();
+        if (!self) {
+            return;
+        }
+        self->healthCheck(id, origin_urls, revision);
+    });
 }
     
 void ClusterManager::removeMediaServer(const std::string &id) {
@@ -195,6 +211,7 @@ void ClusterManager::removeMediaServer(const std::string &id) {
             _map_server_info.erase(it);
         }
         _map_peer_url.erase(id);
+        _map_peer_revision.erase(id);
         savePeerList(_map_server_info);
         DebugL << "Removed media server: " << id;
     }
@@ -207,66 +224,77 @@ void ClusterManager::removeMediaServer(const std::string &id) {
 #endif
 }
 
-void ClusterManager::healthCheck(const std::string &id, const std::string &origin_urls) {
+void ClusterManager::healthCheck(const std::string &id, const std::string &origin_urls, uint64_t revision) {
     GET_CONFIG(string, kMediaServerId, General::kMediaServerId);
     if (id == kMediaServerId) {
         TraceL << "Skip health check for self node " << id;
         return;
     }
     weak_ptr<ClusterManager> weak_self = shared_from_this();
-    Broadcast::HealthInvoker invoker = [weak_self, origin_urls, id](const std::string& err, const int& idx) {
+    Broadcast::HealthInvoker invoker = [weak_self, origin_urls, id, revision](const std::string& err, const int& idx) {
         auto self = weak_self.lock();
         if (!self) return;
-        if (!err.empty()) {
-            WarnL << "Health check failed for " << origin_urls << ": " << err;
-            // If this peer was previously healthy, mark it as disconnected
-            bool was_healthy = false;
-            {
-                std::lock_guard<std::mutex> lck(self->_mtx);
-                auto it = self->_map_peer_url.find(id);
-                if (it != self->_map_peer_url.end()) {
-                    was_healthy = true;
-                    self->_map_peer_url.erase(it);
-                    WarnL << "Peer " << id << " is unreachable, removing from active peer list";
-                }
-            }
-            if (was_healthy) {
-#ifdef ENABLE_SYNC_CHANGES
-                SyncManager::Instance().removePeer(id);
-#endif
-            }
-            return;
-        }
-
-        std::vector<std::string> urls = split(origin_urls, ",");
-        if (!urls.empty() && static_cast<size_t>(idx) < urls.size()) {
-            auto url = urls[idx];
-            DebugL << "Health check succeeded for " << url;
-            int server_group_id = 0;
-            bool known = false;
-            {
-                std::lock_guard<std::mutex> lck(self->_mtx);
-                auto it = self->_map_server_info.find(id);
-                if (it != self->_map_server_info.end()) {
-                    known = true;
-                    self->_map_peer_url[id] = urls[idx];
-                    server_group_id = it->second.serverGroupId;
-                }
-            }
-            GET_CONFIG(int, self_server_group_id, Cluster::kServerLocationId);
-            // A health check still in flight when the peer was removed must not add it back.
-            if (known && server_group_id == self_server_group_id) {
-                // If the server group ID matches, add the peer to SyncManager for syncing data
-#ifdef ENABLE_SYNC_CHANGES
-                SyncManager::Instance().addPeer(id, url);
-#endif
-            }
-        } else {
-            WarnL << "Health check index out of range for " << origin_urls << ": " << idx;
-        }
+        self->onHealthCheckResult(id, origin_urls, revision, err, idx);
     };
 
     NOTICE_EMIT(BroadcastHealthCheckMediaServiceArgs, Broadcast::kBroadcastHealthCheckMediaService, origin_urls, invoker);
+}
+
+void ClusterManager::onHealthCheckResult(const std::string &id, const std::string &origin_urls, uint64_t revision,
+                                         const std::string &err, int idx) {
+    if (!err.empty()) {
+        bool was_healthy = false;
+        {
+            std::lock_guard<std::mutex> lck(_mtx);
+            auto rev_it = _map_peer_revision.find(id);
+            if (rev_it == _map_peer_revision.end() || rev_it->second != revision) {
+                TraceL << "Ignore stale health check failure for peer " << id;
+                return;
+            }
+            WarnL << "Health check failed for " << origin_urls << ": " << err;
+            was_healthy = _map_peer_url.erase(id) > 0;
+            if (was_healthy) {
+                WarnL << "Peer " << id << " is unreachable, removing from active peer list";
+#ifdef ENABLE_SYNC_CHANGES
+                // Keep the cluster state and SyncManager transition ordered against a concurrent
+                // peer update. SyncManager::removePeer only mutates its own peer map.
+                SyncManager::Instance().removePeer(id);
+#endif
+            }
+        }
+        return;
+    }
+
+    std::vector<std::string> urls = split(origin_urls, ",");
+    if (idx < 0 || static_cast<size_t>(idx) >= urls.size()) {
+        WarnL << "Health check index out of range for " << origin_urls << ": " << idx;
+        return;
+    }
+
+    auto url = urls[idx];
+#ifdef ENABLE_SYNC_CHANGES
+    GET_CONFIG(int, self_server_group_id, Cluster::kServerLocationId);
+#endif
+    {
+        std::lock_guard<std::mutex> lck(_mtx);
+        auto rev_it = _map_peer_revision.find(id);
+        auto info_it = _map_server_info.find(id);
+        if (rev_it == _map_peer_revision.end() || rev_it->second != revision || info_it == _map_server_info.end()) {
+            TraceL << "Ignore stale health check success for peer " << id;
+            return;
+        }
+        _map_peer_url[id] = url;
+#ifdef ENABLE_SYNC_CHANGES
+        // Apply the SyncManager transition before releasing _mtx so a configuration update cannot
+        // invalidate this revision between the check above and the peer-map update.
+        if (info_it->second.serverGroupId == self_server_group_id) {
+            SyncManager::Instance().addPeer(id, url);
+        } else {
+            SyncManager::Instance().removePeer(id);
+        }
+#endif
+    }
+    DebugL << "Health check succeeded for " << url;
 }
 
 void ClusterManager::loadSavedMediaServerInfo() {
@@ -299,7 +327,7 @@ void ClusterManager::loadSavedMediaServerInfo() {
 }
 
 void ClusterManager::onManager() {
-    std::unordered_map<std::string, std::string> peer_url_copy;
+    std::vector<std::tuple<std::string, std::string, uint64_t> > peers;
     {
         std::lock_guard<std::mutex> lck(_mtx);
         for (const auto &pr : _map_server_info) {
@@ -308,22 +336,26 @@ void ClusterManager::onManager() {
                 continue;
             }
             // Check all peers (both healthy and unhealthy) to detect connection changes
-            peer_url_copy.emplace(pr.first, buildOrginUrls(pr.second));
+            auto rev_it = _map_peer_revision.find(pr.first);
+            if (rev_it != _map_peer_revision.end()) {
+                peers.emplace_back(pr.first, buildOrginUrls(pr.second), rev_it->second);
+            }
         }
     }
-    for (const auto &item : peer_url_copy) {
-        string id = item.first;
-        string origin_urls = item.second;
+    for (const auto &item : peers) {
+        string id = std::get<0>(item);
+        string origin_urls = std::get<1>(item);
+        uint64_t revision = std::get<2>(item);
         std::weak_ptr<ClusterManager> weak_self = shared_from_this();
-        WorkThreadPool::Instance().getPoller()->async([weak_self, id, origin_urls]() {
+        WorkThreadPool::Instance().getPoller()->async([weak_self, id, origin_urls, revision]() {
             auto self = weak_self.lock();
             if (!self) {
                 return;
             }
-            self->healthCheck(id, origin_urls);
+            self->healthCheck(id, origin_urls, revision);
         });
     }
 }
 
-} // namespace managerkit               
-                
+} // namespace managerkit
+

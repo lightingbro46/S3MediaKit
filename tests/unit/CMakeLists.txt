@@ -93,6 +93,7 @@ add_test(NAME unit.storage_all COMMAND unit_storage)
 # GlobalMonitor pulls in the camera code, so server/ symbols come from the tier-storage stubs.
 add_s3_unit_test(unit_health_monitor
   manager/test_health_evaluator.cpp
+  manager/test_cluster_manager.cpp
   "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
 target_link_libraries(unit_health_monitor PRIVATE
   -Wl,--start-group
