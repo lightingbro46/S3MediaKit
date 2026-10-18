@@ -224,10 +224,10 @@ Từng route được xác nhận riêng trước khi gỡ. Trước đây có 3
 | `/media/api/getStatistic`, `getThreadsLoad`, `getWorkThreadsLoad` | **Đã gỡ** | `/index/api/getStatistic`, `getThreadsLoad`, `getWorkThreadsLoad` (CHECK_SECRET, cùng hàm) |
 | `/media/api/systemStatistic`, `systemStatisticHistory` | **Đã gỡ** | `/media/monitor/summary`, `/history`; VMS: `/media/mserver/systemStatistic*` (JWT) |
 | `/media/api/cluster/access` + `CHECK_CLUSTER_AUTHOR_ASYNC` | **Giữ** (theo xác nhận) | — |
-| `/media/api/getSyncStatus` | **Giữ**, guard không đổi (`CHECK_CLUSTER_AUTHOR_ASYNC`) | — |
+| `/media/api/getSyncStatus` | **Đã gỡ** (sau, 2026-10-18): không còn bên nào gọi | `/summary.cluster.sync.*` |
 | `/media/api/listFiles`, `serveFile` | **Đã gỡ** (sau, cùng ngày): chỉ đọc được file dưới `api.downloadRoot` (`./www`), không lấy được log | — |
 
-Sau khi gỡ, `/media/api/*` còn 2 route: `getSyncStatus`, `cluster/access`.
+Sau khi gỡ, `/media/api/*` chỉ còn `cluster/access`.
 
 Đã làm cùng commit:
 

@@ -330,9 +330,8 @@ step4_call("protected/delete(unknown)", S + "/protected/delete", {"protected_id"
 step4_call("restoreJob/create(unknown camera)", S + "/restoreJob/create",
            {"camera_id": "no-such-camera", "start_time": 1, "end_time": 5}, 404, 905001, as_json=False)
 
-# 11. What is left of the /media/api/* family (CHECK_SECRET / CHECK_CLUSTER_AUTHOR_ASYNC trust
-#     boundary) after www/console was removed, and the /media/monitor/* reads that replaced the
-#     removed routes. Route, status and code must be unchanged.
+# 11. The /media/monitor/* reads that replaced the /media/api/* routes removed with www/console.
+#     Route, status and code must be unchanged.
 API_SECRET = os.environ.get("API_SECRET", "")
 
 
@@ -341,7 +340,6 @@ def api_call(path, params=None, timeout=30):
 
 
 api_reads = [
-    ("getSyncStatus", "/media/api/getSyncStatus", None, 200, 0),
     ("monitor/summary", "/media/monitor/summary", None, 200, 0),
     ("monitor/history", "/media/monitor/history", {"fields": "score,system"}, 200, 0),
 ]
@@ -354,7 +352,7 @@ for name, path, params, want_status, want_code in api_reads:
 for path in ("/media/api/storage/pool/list", "/media/api/storage/dashboard/summary", "/media/api/systemStatistic",
              "/media/api/systemStatisticHistory", "/media/api/getStatistic", "/media/api/getThreadsLoad",
              "/media/api/getWorkThreadsLoad", "/media/api/device/statisticsList", "/media/api/listFiles",
-             "/media/api/serveFile"):
+             "/media/api/serveFile", "/media/api/getSyncStatus"):
     status, data, _ = api_call(path)
     check("step6 removed %s" % path, status == 404, "status=%s code=%s" % (status, data.get("code")))
 

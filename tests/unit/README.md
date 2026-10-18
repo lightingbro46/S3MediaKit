@@ -70,8 +70,6 @@ Lưu ý:
 - `unit_psia_control`: nhóm `PsiaMockTest` chỉ chạy khi đặt
   `PSIA_MOCK_ADDR=ip:port` (trỏ tới `tests/integration/stress_vms/psia_mock.py`), nếu không
   sẽ skip.
-- `console/test_player_restore.js` là test JS cho player, không qua CTest:
-  `node tests/unit/console/test_player_restore.js`.
 
 ## 3. Xuất báo cáo kết quả (JUnit XML)
 
