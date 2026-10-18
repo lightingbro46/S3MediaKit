@@ -82,6 +82,22 @@ Mock API trả HTTP 412 (`code 689501`) cho các node có id trong `<work_dir>/n
 | rm2 | Service chuyển `cam-rm-moved` sang node-a, bỏ node-b (node-a không còn liệt kê, node-b nhận 412) | RM-10..12: node-b vào decommissioned, tắt 2 camera + bỏ loa, không ghi log ESC; RM-13..17: node-a nhận camera, sau 30 s dọn camera bị xoá + loa, đóng assignment của node-b, xoá bản ghi `REMOVED_PEER` |
 | rm3 | Thêm node-b lại | RM-20..23: node-b thoát decommissioned, đuổi kịp bản dọn; RM-22: không entry nào node-b ghi lúc decommissioned tới node-a |
 
+## Kịch bản đổi thông tin peer
+```bash
+bash tests/integration/sync_cluster/run_cluster.sh /tmp/s3mk_peerinfo peerinfo
+```
+Hai node ở server group 5 (`SERVER_GROUP_ID`), để danh sách peer đã lưu mà mất nhóm (đọc lại ra 0) lộ ra
+ở pi5. Kiểm tra nằm trong `check_peerinfo.py`: đọc `/media/monitor/summary` của node-a (`cluster.peers`,
+`cluster.sync.peers`) và log `node-a/stdout.log`. Mã thoát là số bước lỗi.
+
+| Bước | Diễn biến | Kiểm tra |
+|---|---|---|
+| pi1 | 2 node chạy, chờ một vòng health check định kỳ (60 s) | node-b reachable, nằm trong peer sync của node-a |
+| pi2 | Danh sách server đổi `name` + `hasFailover` của node-b, endpoint giữ nguyên | Tên mới hiện trên summary; trong 20 s node-b luôn reachable và là peer sync; không có `Peer node-b is unreachable`; không có health check node-b nào ngoài lịch 60 s ngay sau khi áp dụng |
+| pi3 | Cổng HTTP của node-b đổi sang 18099 (không có gì nghe) | node-a check ngay endpoint mới (thất bại), node-b không còn reachable, rời peer sync |
+| pi4 | Trả lại cổng 18082 | node-a check ngay, node-b vào lại peer sync |
+| pi5 | Dừng node-a, xoá `api-config.json` của nó (service không trả danh sách server), khởi động lại | `peer.peer_list` lưu `serverGroupId=5`; node-a pull thành công từ node-b sau khi khởi động; không có lần nạp danh sách server nào |
+
 ## Kịch bản
 | Phase | Nội dung |
 |---|---|
@@ -102,9 +118,10 @@ Nếu có dòng `CRASH: <node>`, log của node đó có stack trace (`## signal
 `log_count` khác nhau giữa hai node là bình thường: node nhận dữ liệu qua snapshot thì không có bản sao `transaction_log`.
 
 ## File
-- `setup_nodes.py` — tạo thư mục, `config.ini` và `api-config.json` cho từng node; tham số `phase2`..`phase4`, `fo1`..`fo3`, `sp1`..`sp6` đổi cấu hình camera/loa, `syncoff:<node>`/`syncon:<node>` đặt `*.sync_config_to_db` của node đang dừng.
+- `setup_nodes.py` — tạo thư mục, `config.ini` và `api-config.json` cho từng node; tham số `phase2`..`phase4`, `fo1`..`fo3`, `sp1`..`sp6` đổi cấu hình camera/loa, `pi2`..`pi5` đổi mục node-b trong danh sách server, `syncoff:<node>`/`syncon:<node>` đặt `*.sync_config_to_db` của node đang dừng.
 - `check_failover.py` — các check của kịch bản failover.
 - `check_speaker.py` — các check của kịch bản đồng bộ cấu hình loa.
+- `check_peerinfo.py` — các check của kịch bản đổi thông tin peer.
 - `mock_api.py` — trả HTTP 200 cho mọi hook.
 - `compare_db.py` — so sánh các bảng đồng bộ giữa hai node.
 - `run_cluster.sh` — chạy trọn kịch bản.

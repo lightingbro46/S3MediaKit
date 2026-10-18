@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Create two isolated MediaServer node directories (node-a, node-b) for a local sync test.
 
-Usage: setup_nodes.py <repo_root> <cluster_dir> [phase2..phase4 | fo1..fo3 | fo2off | sp1..sp6 | rm1..rm3 | syncoff:<node> | syncon:<node>]
+Usage: setup_nodes.py <repo_root> <cluster_dir> [phase2..phase4 | fo1..fo3 | fo2off | sp1..sp6 | rm1..rm3 | pi2..pi5 |
+                                                  syncoff:<node> | syncon:<node>]
+Env: SERVER_GROUP_ID = server group of both nodes (default 0).
 """
 import json
 import os
@@ -10,6 +12,7 @@ import sys
 
 REPO, CLUSTER = sys.argv[1], sys.argv[2]
 API_PORT = 18090
+GROUP = int(os.environ.get("SERVER_GROUP_ID", "0"))
 
 NODES = {
     "node-a": {"http": 18081, "rtsp": 18551, "rtmp": 18351},
@@ -51,14 +54,16 @@ def patch_ini(src, dst, overrides):
     open(dst, "w", encoding="utf-8").write("\n".join(out) + "\n")
 
 
-def server_entry(node_id, ports):
-    return {
+def server_entry(node_id, ports, **changes):
+    entry = {
         "id": node_id, "name": node_id, "domain": "", "ip": "127.0.0.1",
         "httpPort": ports["http"], "httpsPort": 0, "rtspPort": ports["rtsp"], "rtmpPort": ports["rtmp"],
         "isHttpPortAuto": True, "isHttpsPortAuto": True, "isRtspPortAuto": True, "isRtmpPortAuto": True,
         "httpPortNat": ports["http"], "httpsPortNat": 0, "rtspPortNat": ports["rtsp"], "rtmpPortNat": ports["rtmp"],
-        "clientUseSsl": False, "hasFailover": True, "serverGroupId": 0,
+        "clientUseSsl": False, "hasFailover": True, "serverGroupId": GROUP,
     }
+    entry.update(changes)
+    return entry
 
 
 def camera(enabled, keep_max_hours=24):
@@ -114,22 +119,23 @@ def speaker(speaker_id, media_server, name=None):
     }
 
 
-def api_config(devices, speakers=(), members=None, failover=True):
+def api_config(devices, speakers=(), members=None, failover=True, peer_changes=None):
     # failover = media_server.failover (cluster.enableFailover): the node runs backup cameras.
     return {
-        "media_server": {"serverGroupId": 0, "maxConfigCameras": 16, "maxStream": 64,
+        "media_server": {"serverGroupId": GROUP, "maxConfigCameras": 16, "maxStream": 64,
                          "maxStreamPerCamera": 8, "projectId": "sync-test", "failover": failover,
                          "unlimitedStream": True, "unlimitedStreamPerCamera": True},
-        "list_media_server": [server_entry(n, p) for n, p in NODES.items() if members is None or n in members],
+        "list_media_server": [server_entry(n, p, **(peer_changes or {}).get(n, {}))
+                              for n, p in NODES.items() if members is None or n in members],
         "devices": devices,
         "speakers": list(speakers),
     }
 
 
-def write_api_config(node_id, devices, speakers=(), members=None, failover=True):
+def write_api_config(node_id, devices, speakers=(), members=None, failover=True, peer_changes=None):
     path = os.path.join(CLUSTER, node_id, "api-config.json")
     tmp = path + ".tmp"
-    json.dump(api_config(devices, speakers, members, failover), open(tmp, "w"), indent=2)
+    json.dump(api_config(devices, speakers, members, failover, peer_changes), open(tmp, "w"), indent=2)
     os.replace(tmp, path)
 
 
@@ -243,7 +249,7 @@ def main():
             # The failover scenario keeps the production default: a node that just dropped a camera
             # must still hold it when the primary node takes it back one config reload later.
             "manager": {"apiSecret": "", "certSavePath": d + "/www/certs"},
-            "cluster": {"serverLocationId": 0,
+            "cluster": {"serverLocationId": GROUP,
                         "failoverActiveDelaySec": int(os.environ.get("FAILOVER_ACTIVE_DELAY_SEC", "5")),
                         # removal scenario: short decommission/cleanup delays (production: 300 s / 3600 s)
                         "decommissionAfterSec": int(os.environ.get("DECOMMISSION_AFTER_SEC", "300")),
@@ -287,6 +293,25 @@ def failover_phase(name):
         write_api_config("node-b", [])
 
 
+def peerinfo_phase(name):
+    """node-b's entry in the server list changes (run_cluster.sh <dir> peerinfo), checked by check_peerinfo.py."""
+    renamed = {"name": "node-b-renamed", "hasFailover": False}
+    if name == "pi2":
+        # Same endpoint: name and failover flag only.
+        changes = {"node-b": renamed}
+    elif name == "pi3":
+        # Endpoint change: nothing listens on this port.
+        changes = {"node-b": dict(renamed, httpPort=18099, httpPortNat=18099)}
+    elif name == "pi4":
+        changes = {"node-b": renamed}
+    elif name == "pi5":
+        # node-a (stopped) gets no server list from the service API: only its saved peer list is left.
+        os.remove(os.path.join(CLUSTER, "node-a", "api-config.json"))
+        return
+    for node_id in NODES:
+        write_api_config(node_id, [camera(True)] if node_id == "node-a" else [], peer_changes=changes)
+
+
 def phase(n):
     if n == 2:
         # Move camera: node-a drops it (delCamera → release), node-b takes it over (FAILOVER).
@@ -309,6 +334,8 @@ if __name__ == "__main__":
         removal_phase(sys.argv[3])
     elif len(sys.argv) > 3 and sys.argv[3].startswith("sp"):
         speaker_phase(sys.argv[3])
+    elif len(sys.argv) > 3 and sys.argv[3].startswith("pi"):
+        peerinfo_phase(sys.argv[3])
     elif len(sys.argv) > 3 and sys.argv[3].startswith("fo"):
         failover_phase(sys.argv[3])
     elif len(sys.argv) > 3 and sys.argv[3].startswith("phase"):

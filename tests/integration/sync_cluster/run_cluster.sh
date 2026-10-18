@@ -21,6 +21,9 @@
 #                                        # reports stale=true, then recovers (S3MK_TEST_MONITOR_STALL_SEC)
 #   run_cluster.sh [work_dir] removal    # node-b removed from the cluster (HTTP 412), cleanup of
 #                                        # its ESC data on node-a, node-b added back
+#   run_cluster.sh [work_dir] peerinfo   # node-b's server list entry changes as seen by node-a: name and
+#                                        # failover flag (sync kept), HTTP port (dropped, back), node-a
+#                                        # restarted without a server list (saved peer list, server group 5)
 #
 # Env: MEDIASERVER_DIR (default: <repo>/release/linux/Debug), WAIT_SEC (default: 60)
 #      failover: FO_WAIT_SEC (default: 90), FO_KEEP_HOURS (default: 1),
@@ -120,6 +123,8 @@ stop_all
 mkdir -p "$WORK"
 # failover: production default of cluster.failoverActiveDelaySec (phase4 needs a short one).
 [ "${2:-}" = "failover" ] && export FAILOVER_ACTIVE_DELAY_SEC=1800
+# peerinfo: a non-default server group, so a saved peer list that lost it (read back as 0) shows.
+[ "${2:-}" = "peerinfo" ] && export SERVER_GROUP_ID="${SERVER_GROUP_ID:-5}"
 # removal: short decommission/cleanup delays instead of the production 300 s / 3600 s.
 if [ "${2:-}" = "removal" ]; then
     export DECOMMISSION_AFTER_SEC="${DECOMMISSION_AFTER_SEC:-15}"
@@ -301,6 +306,28 @@ if [ "${2:-}" = "removal" ]; then
     echo "rm3: node-b added back"
     python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" rm3; check rm3; report rm3
     echo "removal scenario: $fail check(s) failed"
+    exit "$fail"
+fi
+
+if [ "${2:-}" = "peerinfo" ]; then
+    fail=0
+    check() { python3 "$HERE/check_peerinfo.py" "$WORK" "$@" || fail=$((fail + 1)); }
+    for n in $NODES; do start_node "$n" init; done
+    echo "pi1: both nodes in group $SERVER_GROUP_ID, sync running"; check pi1_synced 180
+    echo "pi2: node-b renamed, failover flag off (same endpoint)"
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" pi2; check pi2_same_endpoint
+    echo "pi3: node-b listed with a wrong HTTP port"
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" pi3; check pi3_endpoint
+    echo "pi4: node-b HTTP port restored"
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" pi4; check pi4_endpoint_back
+    echo "pi5: node-a restarted, the service API lists no server"
+    stop_nodes node-a
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" pi5
+    python3 "$HERE/check_peerinfo.py" "$WORK" pi5_mark
+    start_node node-a before_pi5
+    check pi5_persisted 180
+    report peerinfo
+    echo "peerinfo scenario: $fail step(s) failed"
     exit "$fail"
 fi
 
