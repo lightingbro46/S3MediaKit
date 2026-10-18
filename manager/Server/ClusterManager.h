@@ -38,9 +38,9 @@ struct MediaServerInfo {
     bool isAutoHttpPort = true;
     bool isAutoHttpsPort = true;
     bool clientUseSsl = false;
-    bool useWebDomain; // use web domain to access media server, if false, use domain or ip to access media server
-    bool useDomain; // whether to use domain to access media server, if false, use ip
-    bool useCustomPath;
+    bool useWebDomain = false; // use web domain to access media server, if false, use domain or ip to access media server
+    bool useDomain = false; // whether to use domain to access media server, if false, use ip
+    bool useCustomPath = false;
     std::string customPath; // if useCustomPath is true, use this custom path to access media server, e.g. "http://domain/customPath"
     bool hasFailover = false;
     int serverGroupId = 0;
@@ -95,6 +95,7 @@ struct MediaServerInfo {
         v["useCustomPath"] = useCustomPath;
         v["customPath"] = customPath;
         v["hasFailover"] = hasFailover;
+        v["serverGroupId"] = serverGroupId;
         return v;
     }
 
@@ -122,6 +123,8 @@ struct MediaServerInfo {
         info.useCustomPath = v["useCustomPath"].asBool();
         info.customPath = v["customPath"].asString();
         info.hasFailover = v["hasFailover"].asBool();
+        // Peer lists saved by older builds have no group: 0 until the service API lists the server again.
+        info.serverGroupId = v.get("serverGroupId", 0).asInt();
         return info;
     }
 };
@@ -147,6 +150,12 @@ public:
      * Returns a snapshot of known peer id → base_url mappings (health-checked peers only).
      */
     std::unordered_map<std::string, std::string> getPeerUrls();
+
+    /**
+     * Returns peer id → base_url of the health-checked peers in this server group (excluding this
+     * node): the peers the ESC database is synced with.
+     */
+    std::unordered_map<std::string, std::string> getSyncPeerUrls();
 
     void addMediaServer(const std::string &id, const MediaServerInfo &info, bool skip_save = false);
     

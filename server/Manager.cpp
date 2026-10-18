@@ -1349,15 +1349,6 @@ bool onServerQualified() {
         // Resumes from the stored cursors; a gap (log pruned meanwhile) triggers a full resync.
         sync.start();
         s_rejoin_sync_started_ms = toolkit::getCurrentMillisecond(true);
-        // start() forgets the peers: hand back the healthy ones of this server group instead of waiting
-        // for the next health check round.
-        GET_CONFIG(int, self_group_id, Cluster::kServerLocationId);
-        auto &cluster = ClusterManager::Instance();
-        for (const auto &peer : cluster.getPeerUrls()) {
-            if (cluster.getMediaServer(peer.first).serverGroupId == self_group_id) {
-                sync.addPeer(peer.first, peer.second);
-            }
-        }
     }
     // Sync disabled by config (start() did not run it): nothing to wait for.
     if (sync.isRunning() && !sync.isCaughtUpSince(s_rejoin_sync_started_ms)) {
