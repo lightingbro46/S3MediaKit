@@ -1415,6 +1415,8 @@ bool loadServerConfigJson(const Json::Value &data_api) {
     if (data.isMember("devices") && data["devices"].isArray()) {
         // get vector of current camera key 
         auto current_cameras = CameraManager::Instance().getCameraKeys();
+        // Applied above with media_server: a node with failover off runs only its own cameras.
+        GET_CONFIG(bool, enable_failover, Cluster::kEnableFailover);
 
         for (const auto &camera : data["devices"]) {
             // Get camera config from json data
@@ -1422,6 +1424,12 @@ bool loadServerConfigJson(const Json::Value &data_api) {
             fromJson(tuple, camera);
             CameraOption option;
             fromJson(option, camera);
+            if (!enable_failover && option.enableFailover) {
+                // Backup camera (priMediaServerId of another node): left out of the list, so one running
+                // here is released by delCamera() below.
+                DebugL << "Failover is off, skip backup camera " << tuple.shortUrl();
+                continue;
+            }
             loadWatermarkTemplateFromMap(option, watermark_template_map);
             unordered_map<int, StreamTuple> stream_map;
             fromJson(stream_map, camera);

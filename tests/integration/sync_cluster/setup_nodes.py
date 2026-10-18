@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Create two isolated MediaServer node directories (node-a, node-b) for a local sync test.
 
-Usage: setup_nodes.py <repo_root> <cluster_dir> [phase2..phase4 | fo1..fo3 | sp1..sp6 | rm1..rm3 | syncoff:<node> | syncon:<node>]
+Usage: setup_nodes.py <repo_root> <cluster_dir> [phase2..phase4 | fo1..fo3 | fo2off | sp1..sp6 | rm1..rm3 | syncoff:<node> | syncon:<node>]
 """
 import json
 import os
@@ -114,10 +114,11 @@ def speaker(speaker_id, media_server, name=None):
     }
 
 
-def api_config(devices, speakers=(), members=None):
+def api_config(devices, speakers=(), members=None, failover=True):
+    # failover = media_server.failover (cluster.enableFailover): the node runs backup cameras.
     return {
         "media_server": {"serverGroupId": 0, "maxConfigCameras": 16, "maxStream": 64,
-                         "maxStreamPerCamera": 8, "projectId": "sync-test",
+                         "maxStreamPerCamera": 8, "projectId": "sync-test", "failover": failover,
                          "unlimitedStream": True, "unlimitedStreamPerCamera": True},
         "list_media_server": [server_entry(n, p) for n, p in NODES.items() if members is None or n in members],
         "devices": devices,
@@ -125,10 +126,10 @@ def api_config(devices, speakers=(), members=None):
     }
 
 
-def write_api_config(node_id, devices, speakers=(), members=None):
+def write_api_config(node_id, devices, speakers=(), members=None, failover=True):
     path = os.path.join(CLUSTER, node_id, "api-config.json")
     tmp = path + ".tmp"
-    json.dump(api_config(devices, speakers, members), open(tmp, "w"), indent=2)
+    json.dump(api_config(devices, speakers, members, failover), open(tmp, "w"), indent=2)
     os.replace(tmp, path)
 
 
@@ -231,7 +232,9 @@ def main():
             "ssdp": {"port": 0},
             "protocol": {"mp4_save_path": d + "/www", "hls_save_path": d + "/www/live"},
             "hook": {"enable": 1, "api_url": "http://127.0.0.1:%d" % API_PORT,
-                     "report_interval": 10.0, "alive_interval": 5.0, "timeoutSec": 3, "retry": 0},
+                     "report_interval": 10.0, "alive_interval": 5.0, "timeoutSec": 3, "retry": 0,
+                     # The mock answer never changes, the decisions are in ./api-config.json: apply every answer.
+                     "configReapplySec": 0},
             "database": {"db_save_path": d + "/db", "updates_save_path": d + "/updates",
                          "mserver_updates_save_path": d + "/mserver_updates",
                          "keep_migration_sql_files": 1, "enable_sync_db": 1,
@@ -275,6 +278,9 @@ def failover_phase(name):
     elif name == "fo2":
         # node-a is offline: the service hands the camera to node-b (FAILOVER assignment).
         write_api_config("node-b", [failover_camera(keep)])
+    elif name == "fo2off":
+        # Same decision, but node-b has failover off: it must not run (or must release) the backup camera.
+        write_api_config("node-b", [failover_camera(keep)], failover=False)
     elif name == "fo3":
         # node-a is back: the camera returns to it and node-b is told to drop it.
         write_api_config("node-a", [failover_camera(keep)])

@@ -9,7 +9,8 @@
 #   run_cluster.sh [work_dir] stop       # stop nodes and mock API started from work_dir
 #   run_cluster.sh [work_dir] workerapis # one node: check APIs that run on the API worker pool
 #   run_cluster.sh [work_dir] failover   # recording camera: failover to node-b while node-a is
-#                                        # offline, move back, cross-node timeline, retention
+#                                        # offline (refused while node-b has failover off), move back,
+#                                        # cross-node timeline, retention, release when failover is turned off
 #   run_cluster.sh [work_dir] speaker    # speaker config sync: add, change, move, restart,
 #                                        # sync_config_to_db=0, delete
 #   run_cluster.sh [work_dir] monitor    # /media/monitor cluster component: node-b down, back, hook API down
@@ -163,8 +164,12 @@ if [ "${2:-}" = "failover" ]; then
     check mark:t_a_start
     sleep "$FO_WAIT_SEC"; report fo1_a_live; check a_live
 
-    echo "fo2: node-a goes offline, the service hands the camera to node-b"
+    echo "fo2off: node-a goes offline, the service hands the camera to node-b, which has failover off"
     stop_nodes node-a
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" fo2off
+    sleep "$FO_WAIT_SEC"; check b_no_failover
+
+    echo "fo2: failover turned on for node-b, it takes the camera"
     python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" fo2
     check mark:t_b_start
     sleep "$FO_WAIT_SEC"; check b_failover
@@ -179,6 +184,13 @@ if [ "${2:-}" = "failover" ]; then
     echo "fo4: node-b keeps the failover recordings until the camera retention expires"
     check retention
     report fo4_retention
+
+    echo "fo5: node-a offline again, node-b takes the camera, then failover is turned off on node-b"
+    stop_nodes node-a
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" fo2
+    sleep "$FO_WAIT_SEC"; check b_live
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" fo2off
+    sleep "$FO_WAIT_SEC"; check b_released
     echo "failover scenario: $fail check(s) failed"
     exit "$fail"
 fi

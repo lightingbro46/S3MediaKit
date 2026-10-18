@@ -83,6 +83,13 @@ bool CameraManager::addCamera(CameraStatisticImp::Ptr &stats) {
 #ifdef ENABLE_TIER_STORAGE
     option.recordRootPath = TierStorageManager::Instance().resolveCameraRecordRoot(tuple.device_id);
 #endif
+    GET_CONFIG(bool, enable_failover, Cluster::kEnableFailover);
+    if (!enable_failover && option.enableFailover && option.enableActive) {
+        // A backup camera running here before the restart: failover is off now, keep it (its records)
+        // but do not connect it until the VMS config decides.
+        InfoL << "Failover is off, load backup camera " << tuple.shortUrl() << " inactive";
+        option.enableActive = false;
+    }
     auto it = _gcImp.find(tuple.shortUrl());
     if  (it != _gcImp.end()) {
         WarnL << "Camera " << tuple.shortUrl() << " already exist. Ignore add camera from statistics";

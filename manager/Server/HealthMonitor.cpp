@@ -1719,7 +1719,8 @@ void HealthMonitor::collectCluster(HealthEvaluator &ev, Json::Value &summary, in
     // Peers answer ClusterManager's health check (every 60 s); only reachable ones have a URL.
     auto &cm = ClusterManager::Instance();
     auto reachable = cm.getPeerUrls();
-    int known = 0, unreachable = 0;
+    GET_CONFIG(int, self_group_id, Cluster::kServerLocationId);
+    int known = 0, unreachable = 0, group_peers = 0, failover_peers = 0, failover_reachable = 0;
     Json::Value peers(Json::arrayValue);
     for (const auto &id : cm.getMediaServerIds()) {
         if (id == self_id) {
@@ -1728,10 +1729,21 @@ void HealthMonitor::collectCluster(HealthEvaluator &ev, Json::Value &summary, in
         ++known;
         bool ok = reachable.count(id) > 0;
         unreachable += ok ? 0 : 1;
+        auto info = cm.getMediaServer(id);
+        // Values of the VMS server list; hasFailover = that node takes backup cameras.
+        if (info.serverGroupId == self_group_id) {
+            ++group_peers;
+            if (info.hasFailover) {
+                ++failover_peers;
+                failover_reachable += ok ? 1 : 0;
+            }
+        }
         Json::Value pj;
         pj["id"] = id;
-        pj["name"] = cm.getMediaServer(id).name;
+        pj["name"] = info.name;
         pj["reachable"] = ok;
+        pj["serverLocationId"] = info.serverGroupId;
+        pj["hasFailover"] = info.hasFailover;
         peers.append(pj);
     }
     // A peer down does not stop this node from serving its own cameras: warning only.
@@ -1740,6 +1752,11 @@ void HealthMonitor::collectCluster(HealthEvaluator &ev, Json::Value &summary, in
     cl["peers"] = peers;
     cl["peers_known"] = known;
     cl["peers_unreachable"] = unreachable;
+    // Who can take this node's cameras if it fails: peers of the same server group with failover on.
+    // Shown only: a multi-node group without failover is a valid setup.
+    cl["group_peers"] = group_peers;
+    cl["failover_capable_peers"] = failover_peers;
+    cl["failover_capable_reachable"] = failover_reachable;
 
     Json::Value &sync = cl["sync"];
 #ifdef ENABLE_SYNC_CHANGES

@@ -128,8 +128,11 @@ trả `{"code":0,"notModified":true}` không kèm `data`.
 
 `data` gồm các field của `health` (trừ `uptimeSec`, `version` nằm trong `process`/top-level) và:
 
-Nhận diện cluster cho app: các server có cùng `serverLocationId` **chỉ là một cluster khi
-`enableFailover = true`**; `enableFailover = false` thì server đứng riêng dù trùng `serverLocationId`.
+Nhận diện cluster cho app: các server có cùng `serverLocationId` là một cluster (cùng nhóm đồng bộ
+database ESC). `enableFailover` (của node này) / `cluster.peers[].hasFailover` (của node khác, theo danh
+sách server VMS) chỉ cho biết node đó có **nhận camera dự phòng** (camera có `priMediaServerId` là node
+khác) hay không; không ảnh hưởng đồng bộ. Node `enableFailover = false` chỉ chạy camera của chính nó; cờ
+đổi khi đang chạy thì camera dự phòng đang chạy được thả ở lần VMS đẩy cấu hình đó.
 `serverLocationId = 0` là giá trị hợp lệ (VMS gửi 0 hoặc không gửi `serverGroupId`), không có nghĩa là
 "chưa đặt". `/media/mserver/healthcheck` (không khoá) không trả các field này.
 
@@ -160,7 +163,7 @@ Nhận diện cluster cho app: các server có cùng `serverLocationId` **chỉ 
 | `storage.database` | `checked_at`, `stale`, `write_ms` (thời gian lấy khoá ghi `BEGIN IMMEDIATE` DB MediaServer, null khi lỗi), `error` |
 | `storage.tier` | `enabled` (false khi build tắt tier storage); khi bật: `pools[]` (`id`, `name`, `tier`, `type`, `enabled`, `usage_pct`, `health_check`, `health_status` `OK`/`WARNING`/`HIGH`/`CRITICAL`/`OFFLINE`/`UNKNOWN`, `health_stale`, `message`, `throughput_low`, `write_mbps`, `backlog_bytes`, `backlog_eta_sec`), `jobs` (`tiering_failed_24h`, `tiering_pending`, `tiering_running`, `restore_failed_24h`, `restore_failed_1h`, `restore_pending`) |
 | `delivery.restore` | `failed_1h`, `failed_24h` (khi bật tier storage) |
-| `cluster` | `peers_known`, `peers_unreachable`, `peers[]` (`id`, `name`, `reachable`) |
+| `cluster` | `peers_known`, `peers_unreachable`, `peers[]` (`id`, `name`, `reachable`, `serverLocationId`, `hasFailover`: theo danh sách server VMS), `group_peers` (peer cùng `serverLocationId`), `failover_capable_peers` (trong đó có `hasFailover = true`, tức nhận được camera của node này khi nó hỏng), `failover_capable_reachable` (trong đó đang liên lạc được). Chỉ hiển thị, không đánh giá mức: nhóm nhiều node không bật failover là cấu hình hợp lệ |
 | `cluster.sync` | `enabled` (false khi build tắt sync hoặc `database.enable_sync_db=0`), `bootstrapped`, `single_node`, `decommissioned`, `peers[]` (`id`, `last_ok_at`, `last_ok_age_sec`) |
 | `cluster.webhook` | `window_sec`, `requests`, `failures`, `failure_pct`: các lần gọi tới `hook.api_url` (VMS/ESC), kết quả cuối sau khi đã retry; lời gọi giữa các node không tính (đã có `peers_unreachable`) |
 | `host.ram` (thêm) | `proc_rss_growth_mb_per_h` (độ dốc RSS, null khi chưa đủ 2 h số liệu), `proc_rss_growth_span_sec` |

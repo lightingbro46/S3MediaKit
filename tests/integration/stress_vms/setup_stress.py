@@ -236,7 +236,7 @@ def server_entry(node_id, ports):
 def api_config(node_ids, devices, args):
     return {
         "media_server": {
-            "serverGroupId": 0,
+            "serverGroupId": 0, "failover": True,
             "maxConfigCameras": max(1024, args.cameras * 2),
             "maxStream": max(2048, args.cameras * 4),
             "maxStreamPerCamera": 8,
