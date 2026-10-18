@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a Debug MediaServer of another git ref for the monitor app fixture (run_fixture.sh).
+# Build a Debug MediaServer of another git ref for the monitor app fixture (fixture.py).
 #
 # Usage: build_target.sh <ref> [name]       e.g. build_target.sh develop
 #   Worktree: <repo>/../S3MediaKit.worktrees/it-<name> (detached at <ref>, reset on every run).
