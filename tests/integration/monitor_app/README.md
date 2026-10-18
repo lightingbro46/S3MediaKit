@@ -14,7 +14,7 @@ server thật. Mỗi node đóng một kịch bản. Phía app đọc `fixture.j
   copy thư viện. `JOBS` mặc định là 4, vì WSL 8 GB thiếu RAM khi build Debug với `nproc` luồng.
   Đổi bằng `DEVELOP_BIN_DIR`.
 - Python 3 (chỉ thư viện chuẩn) và `ffmpeg` để dựng clip test.
-- Các cổng trống: HTTP 18181–18186, RTSP 18581+, RTMP 18381+, service API 18190, nguồn RTSP 18194.
+- Các cổng trống: HTTP 18181–18188, RTSP 18581+, RTMP 18381+, service API 18190, nguồn RTSP 18194.
 
 ## Chạy
 
@@ -36,6 +36,7 @@ python3 tests/integration/monitor_app/fixture.py down
 | `it-mon-default` | monitor | `default_secret` | Cluster 0, `api.secret` mặc định đặt lại qua `setServerConfig` sau khi khởi động (`main.cpp` đổi secret mặc định lúc khởi động) |
 | `it-mon-off` | monitor | `disabled` | Cluster 0, `monitor.enable=0` |
 | `it-dev` | develop | `old_build` | Cluster 103, 1 camera ghi |
+| `it-mix-mon`, `it-mix-dev` | monitor + develop | `mixed` | Cluster 104 gồm một node mỗi bản (nâng cấp dở dang) |
 
 Thiết lập chung cho mọi node:
 

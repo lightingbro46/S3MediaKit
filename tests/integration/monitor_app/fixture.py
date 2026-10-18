@@ -18,7 +18,7 @@ Node directories use the conf/ and migration/ of the source tree their binary wa
 The app calls the nodes through the WSL address (`url`): MediaServer lets loopback clients through
 without the secret, so wrong/missing secret checks need a non-loopback client, and Windows does
 not reach these ports on its own 127.0.0.1 anyway.
-Ports: HTTP 18181-18186, RTSP 18581+, RTMP 18381+, service API 18190, RTSP source 18194.
+Ports: HTTP 18181-18188, RTSP 18581+, RTMP 18381+, service API 18190, RTSP source 18194.
 Python 3, standard library only; ffmpeg for the test clip.
 """
 import argparse
@@ -57,26 +57,33 @@ BIN_DIRS = {
 NODES = [
     {"id": "it-mon-ok", "build": "monitor", "scenario": "ok", "http": 18181, "group": 101,
      "failover": True, "cameras": ["rec"],
-     "expect": {"overall": "ok", "ingest.online": 1, "recording.active": 1,
+     "expect": {"overall": "ok", "ingest.online": 1, "recording.active": 1, "cluster.sync.bootstrapped": True,
                 # first coverage pass done (coverageIntervalSec): /cameras has gaps_24h, longest_gap_sec
                 "recording.coverage.computed_at": 1}},
     {"id": "it-mon-peer", "build": "monitor", "scenario": "peer", "http": 18182, "group": 101,
      "failover": False, "cameras": [],
-     "expect": {"cluster.peers_known": 1, "cluster.sync.peers[].id": "it-mon-ok"}},
+     "expect": {"cluster.peers_known": 1, "cluster.sync.peers[].id": "it-mon-ok", "cluster.sync.bootstrapped": True}},
     {"id": "it-mon-warn", "build": "monitor", "scenario": "warning", "http": 18183, "group": 102,
      "failover": True, "cameras": ["dead"],
      "ini": {"globalmonitor": {"memory_warning_threshold": 1}},
-     "expect": {"reasons[].metric": "ram.usage_pct", "components.ingest": "critical"}},
+     "expect": {"reasons[].metric": "ram.usage_pct", "components.ingest": "critical",
+                "cluster.sync.single_node": True}},
     # MediaServer replaces the default api.secret at start (main.cpp), so the node starts with a
     # random one and gets the default back through setServerConfig, as an operator could do.
     {"id": "it-mon-default", "build": "monitor", "scenario": "default_secret", "http": 18184,
      "group": 0, "failover": True, "cameras": [], "runtimeSecret": DEFAULT_SECRET,
-     "expect": {"apiSecretIsDefault": True, "components.host": "ok", "components.cluster": "ok"}},
+     "expect": {"apiSecretIsDefault": True, "components.host": "ok", "components.cluster": "ok",
+                "cluster.sync.bootstrapped": True}},
     {"id": "it-mon-off", "build": "monitor", "scenario": "disabled", "http": 18185, "group": 0,
      "failover": False, "cameras": [], "ini": {"monitor": {"enable": 0}},
      "expect": {"enabled": False}},
     {"id": "it-dev", "build": "develop", "scenario": "old_build", "http": 18186, "group": 103,
      "failover": True, "cameras": ["rec"], "expect": {}},
+    # One cluster, two builds: an upgrade half done. The app notes the build mismatch.
+    {"id": "it-mix-mon", "build": "monitor", "scenario": "mixed", "http": 18187, "group": 104,
+     "failover": True, "cameras": [], "expect": {"cluster.peers_known": 1, "cluster.sync.bootstrapped": True}},
+    {"id": "it-mix-dev", "build": "develop", "scenario": "mixed", "http": 18188, "group": 104,
+     "failover": True, "cameras": [], "expect": {}},
 ]
 
 # Every node shares the WSL host: swap and CPU depend on what else runs there (a build, the other
@@ -167,10 +174,11 @@ def camera(node, kind):
     }
 
 
-def server_entry(node):
+def server_entry(node, host):
+    """A node as VMS lists it, at the address clients reach it on (the app's peer_list hints)."""
     p = ports(node)
     return {
-        "id": node["id"], "name": node["id"], "domain": "", "ip": "127.0.0.1",
+        "id": node["id"], "name": node["id"], "domain": "", "ip": host,
         "httpPort": p["http"], "httpsPort": 0, "rtspPort": p["rtsp"], "rtmpPort": p["rtmp"],
         "isHttpPortAuto": True, "isHttpsPortAuto": True, "isRtspPortAuto": True, "isRtmpPortAuto": True,
         "httpPortNat": p["http"], "httpsPortNat": 0, "rtspPortNat": p["rtsp"], "rtmpPortNat": p["rtmp"],
@@ -178,20 +186,20 @@ def server_entry(node):
     }
 
 
-def api_config(node, nodes):
+def api_config(node, nodes, host):
     """What the service API (VMS) tells the node: its group's members and its cameras."""
     members = [n for n in nodes if n["group"] == node["group"]]
     return {
         "media_server": {"serverGroupId": node["group"], "maxConfigCameras": 16, "maxStream": 64,
                          "maxStreamPerCamera": 8, "projectId": "monitor-app-it", "failover": node["failover"],
                          "unlimitedStream": True, "unlimitedStreamPerCamera": True},
-        "list_media_server": [server_entry(n) for n in members],
+        "list_media_server": [server_entry(n, host) for n in members],
         "devices": [camera(node, k) for k in node["cameras"]],
         "speakers": [],
     }
 
 
-def setup(work, nodes):
+def setup(work, nodes, host):
     for node in nodes:
         d = os.path.join(work, node["id"])
         tree = source_tree(node["build"])
@@ -231,7 +239,7 @@ def setup(work, nodes):
             for sec, kv in extra.items():
                 overrides.setdefault(sec, {}).update(kv)
         patch_ini(os.path.join(tree, "conf/config.ini"), os.path.join(d, "config.ini"), overrides)
-        json.dump(api_config(node, nodes), open(os.path.join(d, "api-config.json"), "w"), indent=2)
+        json.dump(api_config(node, nodes, host), open(os.path.join(d, "api-config.json"), "w"), indent=2)
 
 
 def alive(pid):
@@ -328,7 +336,8 @@ def up(work, only):
     busy = [p for p in busy if port_busy(p)]
     if busy:
         sys.exit("ports already in use: %s" % ", ".join(map(str, busy)))
-    setup(work, nodes)
+    host = wsl_address()
+    setup(work, nodes, host)
 
     spawn([sys.executable, os.path.join(SYNC, "mock_api.py"), str(API_PORT), os.path.join(work, "not_qualified.txt")],
           work, os.path.join(work, "mock_api.log"), os.path.join(work, "mock_api.pid"))
@@ -366,8 +375,7 @@ def up(work, only):
         if n.get("runtimeSecret") and n not in pending:
             set_secret(n, n["runtimeSecret"])
 
-    host = wsl_address()
-    builds = {b: build_ref(b) for b in sorted({n["build"] for n in nodes})}
+    builds ={b: build_ref(b) for b in sorted({n["build"] for n in nodes})}
     fixture = {
         "schema": 1,
         "createdAt": int(time.time()),
