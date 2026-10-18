@@ -100,6 +100,11 @@ Cột "Báo giả ở tải định mức" là nhận định trước khi đo, 
 | `webhook.failure_pct` | > 0 / 20 | Backend VMS/ESC (`hook.api_url`) không trả lời/lỗi 5xx | Kiểm backend; dưới 10 lần gọi thì chỉ warning | Có thể khi backend bận (một lần timeout đã là warning) |
 | `kafka.spool`, `kafka.dropped` | warning | Mất kết nối broker, spool đầy | Kiểm broker Kafka | Không |
 
+Webhook cảnh báo hệ thống (`system-event`: `Cpu*`, `Ram*`, `Disk*`…) được gửi từ luồng `monitor poller`
+(GlobalMonitor phát sự kiện, `do_http_hook` chạy ngay trên luồng đó). Hook API không trả lời thì sự kiện
+lúc đó mất (theo `hook.retry`), cảnh báo vẫn mở trong `/media/monitor/alerts`; hook API sống lại thì các
+sự kiện sau gửi bình thường. Kiểm bằng `run_cluster.sh <dir> monitor` (m7–m10).
+
 ## 3. Hiệu chỉnh ngưỡng mặc định trên máy đích
 
 Mục tiêu: ở tải định mức (300 camera ghi 24/7 cả hai luồng + 500 người xem) monitor không báo gì,

@@ -13,7 +13,8 @@
 #                                        # cross-node timeline, retention, release when failover is turned off
 #   run_cluster.sh [work_dir] speaker    # speaker config sync: add, change, move, restart,
 #                                        # sync_config_to_db=0, delete
-#   run_cluster.sh [work_dir] monitor    # /media/monitor cluster component: node-b down, back, hook API down
+#   run_cluster.sh [work_dir] monitor    # /media/monitor cluster component: node-b down, back, hook API down,
+#                                        # system alert webhooks (also with the hook API down), object storage
 #   run_cluster.sh [work_dir] history    # node-a + recording camera: /media/monitor/history, open latency,
 #                                        # baseline across restarts, coverage/gaps, restarts, RSS growth
 #   run_cluster.sh [work_dir] stale      # node-a (Debug build): monitor poller stalls once, /media/monitor/*
@@ -256,6 +257,14 @@ if [ "${2:-}" = "monitor" ]; then
     check m5_pool_ok 180
     echo "m6: object storage stopped"
     kill "$(cat "$WORK/fake_s3.pid")"; rm -f "$WORK/fake_s3.pid"; check m6_pool_down 240
+    # System alert webhooks go out from the monitor poller thread (do_http_hook, retry 0 here).
+    echo "m7: RAM warning threshold 1 %: RamWarning reaches the hook API"; check m7_alert_sent 120
+    echo "m8: RAM warning threshold back: RamRecovered reaches the hook API"; check m8_recovered_sent 120
+    echo "m9: hook API stopped, RAM warning raised: alert open, hook failed"
+    kill "$(cat "$WORK/mock_api.pid")"; check m9_alert_hook_down 120
+    nohup python3 "$HERE/mock_api.py" 18090 "$WORK/not_qualified.txt" >> "$WORK/mock_api.log" 2>&1 &
+    echo $! > "$WORK/mock_api.pid"
+    echo "m10: hook API back: RamRecovered reaches it"; check m10_recovered_after_back 120
     report monitor
     echo "monitor scenario: $fail check(s) failed"
     exit "$fail"

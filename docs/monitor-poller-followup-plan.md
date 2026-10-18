@@ -116,7 +116,13 @@ Mô tả ban đầu:
 
 Test: chạy thật 1 node, `total_ms_prev ≥ collect_ms`.
 
-### P4. Xác nhận webhook cảnh báo trên luồng monitor (L2)
+### P4. Xác nhận webhook cảnh báo trên luồng monitor (L2) — ĐÃ LÀM
+
+Kết quả 2026-10-18: `run_cluster.sh <dir> monitor` thêm m7–m10 (hạ `globalmonitor.memory_warning_threshold`
+xuống 1 qua `config/set`): `RamWarning`, `RamRecovered` tới mock API; tắt hook API thì cảnh báo vẫn mở trong
+`/alerts`, sự kiện lúc đó mất (`hook.retry=0`), bật lại thì `RamRecovered` tới. Không cần `register_thread=false`.
+`mock_api.py` ghi body `system-event` thành dòng `SYSTEM_EVENT`.
+
 
 - Không đổi code. Chạy `run_cluster.sh <dir> monitor` (đã có bước dừng/bật hook API) và thêm kiểm
   `kBroadcastSystemAlert`: hạ ngưỡng CPU/RAM qua `config/set` để có cảnh báo, xác nhận mock API nhận
