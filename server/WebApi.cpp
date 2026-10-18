@@ -2503,6 +2503,130 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
+    api_regist("/media/api/getThreadsLoad", [](API_ARGS_MAP_ASYNC) {
+        CHECK_SECRET();
+        getThreadsLoad(EventPollerPool::Instance(), API_ARGS_VALUE, invoker);
+    });
+
+    api_regist("/media/api/getWorkThreadsLoad", [](API_ARGS_MAP_ASYNC) {
+        CHECK_SECRET();
+        getThreadsLoad(WorkThreadPool::Instance(), API_ARGS_VALUE, invoker);
+    });
+
+    api_regist("/media/api/getServerConfig", [](API_ARGS_MAP) {
+        CHECK_SECRET();
+        Value obj;
+        for (auto &pr : mINI::Instance()) {
+            obj[pr.first] = (string &)pr.second;
+        }
+        val["data"].append(obj);
+    });
+
+    api_regist("/media/api/setServerConfig", [](API_ARGS_MAP) {
+        CHECK_SECRET();
+        auto &ini = mINI::Instance();
+        int changed = API::Success;
+        for (auto &pr : allArgs.args) {
+            if (ini.find(pr.first) == ini.end()) {
+#if 1
+                // This key does not exist
+                continue;
+#else
+                // Add configuration options to dynamically add multiple ffmpeg cmd templates
+                ini[pr.first] = pr.second;
+                // Prevent changed changes
+                continue;
+#endif
+            }
+            if (pr.first == FFmpeg::kBin) {
+                WarnL << "Configuration named " << FFmpeg::kBin << " is not allowed to be set by setServerConfig api.";
+                continue;
+            }
+            if (ini[pr.first] == pr.second) {
+                continue;
+            }
+            ini[pr.first] = pr.second;
+            // Replacement successful
+            ++changed;
+        }
+        if (changed > 0) {
+            NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+            ini.dumpFile(g_ini_file);
+        }
+        val["changed"] = changed;
+    });
+
+#if !defined(_WIN32)
+    api_regist("/media/api/restartServer", [](API_ARGS_MAP) {
+        CHECK_SECRET();
+        EventPollerPool::Instance().getPoller()->doDelayTask(1000, []() {
+            // Try to exit normally
+            ::kill(getpid(), SIGINT);
+
+            // Force exit after 3 seconds
+            EventPollerPool::Instance().getPoller()->doDelayTask(3000, []() {
+                exit(0);
+                return 0;
+            });
+
+            return 0;
+        });
+        val["msg"] = "MediaServer will reboot in on 1 second";
+    });
+#else
+    api_regist("/media/api/restartServer", [](API_ARGS_MAP) {
+        CHECK_SECRET();
+        // Create a restart batch script file
+        FILE *pf;
+        errno_t err = ::_wfopen_s(&pf, L"RestartServer.cmd", L"w"); //"w" If the file exists, its contents will be overwritten
+        if (err == 0) {
+            char szExeName[1024];
+            char drive[_MAX_DRIVE] = { 0 };
+            char dir[_MAX_DIR] = { 0 };
+            char fname[_MAX_FNAME] = { 0 };
+            char ext[_MAX_EXT] = { 0 };
+            char exeName[_MAX_FNAME] = { 0 };
+            GetModuleFileNameA(NULL, szExeName, 1024); // Get the full path of the process
+            _splitpath(szExeName, drive, dir, fname, ext);
+            strcpy(exeName, fname);
+            strcat(exeName, ext);
+            fprintf(pf, "@echo off\ntaskkill /f /im %s\nstart \"\" \"%s\"\ndel %%0", exeName, szExeName);
+            fclose(pf);
+            // Execute the created batch script after 1 second
+            EventPollerPool::Instance().getPoller()->doDelayTask(1000, []() {
+                STARTUPINFO si;
+                PROCESS_INFORMATION pi;
+                ZeroMemory(&si, sizeof si);
+                ZeroMemory(&pi, sizeof pi);
+                si.cb = sizeof si;
+                si.dwFlags = STARTF_USESHOWWINDOW;
+                si.wShowWindow = SW_HIDE;
+                TCHAR winSysDir[1024];
+                ZeroMemory(winSysDir, sizeof winSysDir);
+                GetSystemDirectory(winSysDir, 1024);
+                TCHAR appName[1024];
+                ZeroMemory(appName, sizeof appName);
+
+                _stprintf(appName, "%s\\cmd.exe", winSysDir);
+                BOOL bRet = CreateProcess(appName, " /c RestartServer.cmd", NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+
+                if (bRet == FALSE) {
+                    int err = GetLastError();
+                    cout << endl << "Unable to perform restart operation, error code：" << err << endl;
+                }
+                WaitForSingleObject(pi.hProcess, INFINITE);
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+                return 0;
+            });
+            val["msg"] = "The server will automatically restart after one second";
+        } else {
+            val["msg"] = "Failed to create a restart script file";
+            val["code"] = API::OtherFailed;
+        }
+    });
+#endif
+
     // Configuration APIs
     managerkit::registerConfigurationApis();
     // Playback APIs
