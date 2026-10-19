@@ -4,6 +4,7 @@
 #include "Extension/Resource.h"
 #ifdef ENABLE_SYNC_CHANGES
 #include "Extension/SyncManager.h"
+#include "Server/ClusterManager.h"
 #endif
 #include <mutex>
 
@@ -12,6 +13,13 @@ using namespace toolkit;
 using namespace mediakit; 
 
 namespace managerkit {
+
+#ifdef ENABLE_SYNC_CHANGES
+// Serializes all appends (across every TransactionLogImp instance) to prevent a read-modify-write race
+// where two concurrent calls both read the same current_seq, compute the same next sequence, and then
+// one INSERT succeeds while the other hits the UNIQUE constraint on (peer_guid, db_guid, sequence).
+static std::mutex s_append_mtx;
+#endif
 
 void TransactionLogImp::appendLocalDataMutation(const std::string &table, const std::string &op, const Json::Value &payload) {
 #ifndef ENABLE_SYNC_CHANGES
@@ -24,13 +32,41 @@ void TransactionLogImp::appendLocalDataMutation(const std::string &table, const 
         // Removed from the cluster: nothing written now may reach the other nodes later.
         return;
     }
-    // Serialize all callers (across every TransactionLogImp instance) to prevent
-    // a read-modify-write race where two concurrent calls both read the same
-    // current_seq, compute the same next sequence, and then one INSERT succeeds
-    // while the other hits the UNIQUE constraint on (peer_guid, db_guid, sequence).
-    static std::mutex s_append_mtx;
     std::lock_guard<std::mutex> lk(s_append_mtx);
 
+    auto self_node_id = ResourceManager::Instance().getSelfNodeId();
+    int64_t timestamp = static_cast<int64_t>(toolkit::getCurrentMillisecond(true));
+    try {
+        // Records the LWW versions of the touched rows; may move the timestamp forward so this
+        // write is newer than any version this node already accepted for those rows.
+        timestamp = SyncManager::Instance().stampLocalMutation(table, op, payload, timestamp, self_node_id);
+    } catch (const std::exception &ex) {
+        WarnL << "Failed to record row versions for local " << op << " on " << table << ": " << ex.what();
+    }
+    if (!ClusterManager::inSyncGroup()) {
+        // Standalone server: no peer reads this log and nothing prunes it. The change is kept per row
+        // and replayed to the log when the server joins a server group.
+        SyncManager::Instance().recordStandaloneChange(table, op, payload, timestamp);
+        return;
+    }
+    appendLog(table, op, payload, timestamp);
+#endif // ENABLE_SYNC_CHANGES
+}
+
+void TransactionLogImp::appendReplayedMutation(const std::string &table, const std::string &op, const Json::Value &payload,
+                                               int64_t timestamp) {
+#ifndef ENABLE_SYNC_CHANGES
+    (void)table;
+    (void)op;
+    (void)payload;
+    (void)timestamp;
+#else
+    std::lock_guard<std::mutex> lk(s_append_mtx);
+    appendLog(table, op, payload, timestamp);
+#endif
+}
+
+void TransactionLogImp::appendLog(const std::string &table, const std::string &op, const Json::Value &payload, int64_t timestamp) {
     auto self_node_id = ResourceManager::Instance().getSelfNodeId();
     auto self_db_guid = ResourceManager::Instance().getSelfDbGuid();
 
@@ -40,14 +76,7 @@ void TransactionLogImp::appendLocalDataMutation(const std::string &table, const 
     log.peer_guid = self_node_id;
     log.db_guid = self_db_guid;
     log.sequence = current_seq + 1;
-    log.timestamp = static_cast<int64_t>(toolkit::getCurrentMillisecond(true));
-    try {
-        // Records the LWW versions of the touched rows; may move the timestamp forward so this
-        // write is newer than any version this node already accepted for those rows.
-        log.timestamp = SyncManager::Instance().stampLocalMutation(table, op, payload, log.timestamp, self_node_id);
-    } catch (const std::exception &ex) {
-        WarnL << "Failed to record row versions for local " << op << " on " << table << ": " << ex.what();
-    }
+    log.timestamp = timestamp;
     log.timestamp_hi = 0; // audit flag, only set for remote entries (1 = conflict winner, 2 = stale)
     log.tran_guid = toolkit::makeUuidStr();
     log.tran_type = static_cast<int>(TranType::DataMutation);
@@ -59,7 +88,6 @@ void TransactionLogImp::appendLocalDataMutation(const std::string &table, const 
     log.tran_data = StrJsonUtils::writeJsonString(tran_data_json);
 
     add(log);
-#endif // ENABLE_SYNC_CHANGES
 }
 
 } // namespace managerkit

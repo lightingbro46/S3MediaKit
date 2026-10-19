@@ -109,8 +109,6 @@ public:
 
     void recordRelayAck(const Json::Value &ack_cursors_json);
 
-    void setSingleNodeMode(bool single_node);
-
     bool isRunning();
 
     // State for the health monitor, copied under the lock (no database access).
@@ -119,6 +117,8 @@ public:
         bool bootstrapped = false;
         bool single_node = false;
         bool decommissioned = false;
+        // Changes made while standalone are still waiting to be replayed to the log.
+        bool standalone_changes_pending = false;
         // peer -> wall clock ms of the last pull answered with everything (0 = none yet).
         std::unordered_map<std::string, uint64_t> last_complete_pull_ms;
     };
@@ -133,6 +133,19 @@ public:
     // reaches the other nodes if it is added back later.
     void setDecommissioned(bool decommissioned);
     bool isDecommissioned() const { return _decommissioned.load(); }
+
+    // Standalone server (cluster.serverLocationId 0): local mutations are not logged (no peer pulls the
+    // log and nothing prunes it). The last change of each row is kept in misc_data instead, with the
+    // timestamp of its row version, so the server's data reaches the group it joins later.
+    void recordStandaloneChange(const std::string &table, const std::string &op, const Json::Value &payload,
+                                int64_t timestamp);
+    bool hasStandaloneChanges();
+    // Appends the recorded changes to transaction_log, oldest first, and removes them. Call once the
+    // server is in a sync group and has caught up with it. Returns the number of changes appended; a
+    // change that fails stays recorded for the next call.
+    size_t replayStandaloneChanges();
+    // Wall clock ms of the last start() that ran the sync (0 = not running).
+    uint64_t startedMs();
 
     // Cluster membership from the service API (ClusterManager). The ESC data a removed peer leaves
     // behind is cleaned up after cluster.removedPeerCleanupSec, unless the peer is added back first.
@@ -262,8 +275,14 @@ private:
 
     // Plugin registry: table_name → sync handler.
     std::unordered_map<std::string, TableSyncHandler> _table_handlers;
+    // No other server in this server group (set by onTick).
     bool _single_node = false;
+    // Since when (unix seconds) onTick has seen no other server in the group; 0 = not alone (sync worker).
+    uint64_t _alone_since = 0;
+    uint64_t _started_ms = 0;
     std::atomic<bool> _decommissioned { false };
+    // -1 = not read from misc_data yet, 0 = none, 1 = standalone changes recorded.
+    std::atomic<int> _standalone_pending { -1 };
     // peer → send time of the last pull that returned all its pending entries (guarded by _mtx).
     // Kept while the peer is unreachable; dropped once it leaves this server group.
     std::unordered_map<std::string, uint64_t> _last_complete_pull_ms;

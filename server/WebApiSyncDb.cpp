@@ -27,8 +27,8 @@ static bool isSyncMember(const string &peer_id) {
     if (std::find(ids.begin(), ids.end(), peer_id) == ids.end()) {
         return false;
     }
-    GET_CONFIG(int, self_group_id, Cluster::kServerLocationId);
-    return cluster.getMediaServer(peer_id).serverGroupId == self_group_id;
+    // A standalone server (serverLocationId 0) has no sync group: every peer is refused.
+    return ClusterManager::isSyncGroup(cluster.getMediaServer(peer_id).serverGroupId);
 }
 
 // All sync endpoints do blocking SQLite work (log scan, snapshot build, ack upsert): validation stays on

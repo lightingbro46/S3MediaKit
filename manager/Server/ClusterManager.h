@@ -157,6 +157,11 @@ public:
      */
     std::unordered_map<std::string, std::string> getSyncPeerUrls();
 
+    // cluster.serverLocationId 0 = standalone server: no ESC sync group, the ESC database stays local.
+    static bool inSyncGroup();
+    // A server of `peer_group` shares this node's ESC data: same server group, and not standalone.
+    static bool isSyncGroup(int peer_group);
+
     void addMediaServer(const std::string &id, const MediaServerInfo &info, bool skip_save = false);
     
     void removeMediaServer(const std::string &id);

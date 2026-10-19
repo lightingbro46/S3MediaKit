@@ -240,6 +240,10 @@ void SyncManager::start() {
         WarnL << "Sync database opration disabled by config";
         return;
     }
+    if (!ClusterManager::inSyncGroup()) {
+        InfoL << "Server location 0 (standalone server), ESC sync not started";
+        return;
+    }
 
     auto worker = getWorker();
     {
@@ -247,6 +251,8 @@ void SyncManager::start() {
         _self_node_id = ResourceManager::Instance().getSelfNodeId();
         _self_db_id   = ResourceManager::Instance().getSelfDbGuid();
         _running      = true;
+        _started_ms   = toolkit::getCurrentMillisecond(true);
+        _alone_since  = 0;
         _bootstrapping.clear();
         // Peers come from ClusterManager::getSyncPeerUrls() on every tick.
     }
@@ -332,10 +338,9 @@ void SyncManager::onTick() {
     auto peers_copy = ClusterManager::Instance().getSyncPeerUrls();
     unordered_set<string> members;
     {
-        GET_CONFIG(int, self_group_id, Cluster::kServerLocationId);
         auto &cluster = ClusterManager::Instance();
         for (const auto &id : cluster.getMediaServerIds()) {
-            if (cluster.getMediaServer(id).serverGroupId == self_group_id) {
+            if (ClusterManager::isSyncGroup(cluster.getMediaServer(id).serverGroupId)) {
                 members.insert(id);
             }
         }
@@ -363,6 +368,46 @@ void SyncManager::onTick() {
         // Also when no peer is left: the last node of a cluster cleans up after the removed ones.
         // Not while decommissioned: its writes would not be logged.
         maybeCleanupRemovedPeers(peers_copy, toolkit::getCurrentMillisecond(true));
+    }
+
+    // Alone in the server group: no peer will ever ack this node's log, so keep the last entries only.
+    // After a full prune cycle alone it is also the seed: a server joining later bootstraps from it
+    // (the snapshot carries the log sequences) instead of electing a seed that may have an empty database.
+    string self_id;
+    {
+        lock_guard<mutex> lock(_mtx);
+        self_id = _self_node_id;
+    }
+    bool alone = true;
+    for (const auto &id : members) {
+        if (id != self_id) {
+            alone = false;
+            break;
+        }
+    }
+    {
+        lock_guard<mutex> lock(_mtx);
+        _single_node = alone;
+    }
+    const uint64_t now_sec = time(nullptr);
+    if (!alone || isDecommissioned()) {
+        _alone_since = 0;
+    } else if (_alone_since == 0) {
+        _alone_since = now_sec;
+    } else if (now_sec - _alone_since >= 3600) {
+        if (!bootstrapped) {
+            InfoL << "Alone in the server group since " << getTimeStr("%Y-%m-%d %H:%M:%S", _alone_since)
+                  << ", seeding the cluster database from this node (" << self_id << ")";
+            markBootstrapSeeded(self_id);
+            lock_guard<mutex> lock(_mtx);
+            _bootstrapped = true;
+            _last_bootstrap_peer.clear();
+            _bootstrap_probes.clear();
+        }
+        if (_last_prune_time == 0 || now_sec - _last_prune_time >= 3600) {
+            maybePruneLog();
+            _last_prune_time = now_sec;
+        }
     }
 
     if (!peers_copy.size()) {
@@ -1237,11 +1282,10 @@ void SyncManager::maybePruneLog() {
         lock_guard<mutex> lock(_mtx);
         self_id = _self_node_id;
     }
-    GET_CONFIG(int, self_group_id, Cluster::kServerLocationId);
     GET_CONFIG(int, offline_ttl_days, Database::kPeerOfflineTtlDays);
     vector<string> known;
     for (const auto &id : ClusterManager::Instance().getMediaServerIds()) {
-        if (id != self_id && ClusterManager::Instance().getMediaServer(id).serverGroupId == self_group_id) {
+        if (id != self_id && ClusterManager::isSyncGroup(ClusterManager::Instance().getMediaServer(id).serverGroupId)) {
             known.push_back(id);
         }
     }
@@ -1263,11 +1307,6 @@ void SyncManager::maybePruneLog() {
     }
 }
 
-void SyncManager::setSingleNodeMode(bool single_node) {
-    _single_node = single_node;
-    InfoL << "SyncManager single node mode set to " << single_node;
-}
-
 bool SyncManager::isRunning() {
     lock_guard<mutex> lock(_mtx);
     return _running;
@@ -1281,6 +1320,7 @@ SyncManager::HealthView SyncManager::healthView() {
     v.bootstrapped = _bootstrapped;
     v.single_node = _single_node;
     v.decommissioned = _decommissioned.load();
+    v.standalone_changes_pending = _standalone_pending.load() == 1;
     for (const auto &peer : peers) {
         auto it = _last_complete_pull_ms.find(peer.first);
         v.last_complete_pull_ms[peer.first] = it == _last_complete_pull_ms.end() ? 0 : it->second;
@@ -1432,12 +1472,135 @@ void SyncManager::maybeCleanupRemovedPeers(const unordered_map<string, string> &
     }
 }
 
+// ─── Standalone server ───────────────────────────────────────────────────────
+
+void SyncManager::recordStandaloneChange(const string &table, const string &op, const Json::Value &payload,
+                                         int64_t timestamp) {
+    auto hit = _table_handlers.find(table);
+    const TableSyncHandler *h = hit != _table_handlers.end() ? &hit->second : nullptr;
+    // One key per row, so only the last change of a row is kept. A DELETE of a group (all kv of a
+    // resource) or one without a row key gets its own key; the replay applies them in timestamp order.
+    vector<pair<string, Json::Value>> changes;
+    if (op == TRAN_DATA_OP_UPSERT_BATCH && h && h->rowKey) {
+        for (const auto &item : payload["items"]) {
+            changes.emplace_back(h->rowKey(item), item);
+        }
+    } else {
+        string key;
+        if (op == TRAN_DATA_OP_DELETE && h && h->groupKey) {
+            key = SyncRowVersionImp::groupRowKey(h->groupKey(payload));
+        } else if (h && h->rowKey) {
+            key = h->rowKey(payload);
+        }
+        changes.emplace_back(key, payload);
+    }
+    const string row_op = op == TRAN_DATA_OP_UPSERT_BATCH ? string(TRAN_DATA_OP_UPSERT) : op;
+    auto imp = make_shared<MiscDataImp>();
+    for (auto &change : changes) {
+        if (change.first.empty()) {
+            change.first = row_op + ":" + StrJsonUtils::writeJsonString(change.second);
+        }
+        Json::Value v;
+        v["table"] = table;
+        v["op"] = row_op;
+        v["payload"] = change.second;
+        v["timestamp"] = static_cast<Json::Int64>(timestamp);
+        MiscData data;
+        data.key = MISC_DATA_STANDALONE_CHANGE_PREFIX + table + "|" + change.first;
+        data.value = StrJsonUtils::writeJsonString(v);
+        imp->add(data);
+    }
+    _standalone_pending = 1;
+}
+
+bool SyncManager::hasStandaloneChanges() {
+    int pending = _standalone_pending.load();
+    if (pending < 0) {
+        pending = 0;
+        try {
+            for (const auto &data : make_shared<MiscDataImp>()->findAll()) {
+                if (data.key.compare(0, strlen(MISC_DATA_STANDALONE_CHANGE_PREFIX), MISC_DATA_STANDALONE_CHANGE_PREFIX) == 0) {
+                    pending = 1;
+                    break;
+                }
+            }
+        } catch (const std::exception &ex) {
+            WarnL << "Failed to read standalone changes: " << ex.what();
+            return false;
+        }
+        int expected = -1;
+        _standalone_pending.compare_exchange_strong(expected, pending);
+    }
+    return _standalone_pending.load() == 1;
+}
+
+size_t SyncManager::replayStandaloneChanges() {
+    struct Change {
+        string key;
+        string table;
+        string op;
+        Json::Value payload;
+        int64_t timestamp;
+    };
+    vector<Change> changes;
+    auto imp = make_shared<MiscDataImp>();
+    // Cleared first: a change recorded while this runs (config switched back to standalone) sets it again.
+    _standalone_pending = 0;
+    try {
+        for (const auto &data : imp->findAll()) {
+            if (data.key.compare(0, strlen(MISC_DATA_STANDALONE_CHANGE_PREFIX), MISC_DATA_STANDALONE_CHANGE_PREFIX) != 0) {
+                continue;
+            }
+            Json::Value v;
+            if (!StrJsonUtils::readJsonString(data.value, v) || !v.isObject()) {
+                WarnL << "Dropping unreadable standalone change " << data.key;
+                imp->removeByKey(data.key);
+                continue;
+            }
+            Change c;
+            c.key = data.key;
+            c.table = v["table"].asString();
+            c.op = v["op"].asString();
+            c.payload = v["payload"];
+            c.timestamp = v["timestamp"].asInt64();
+            changes.push_back(std::move(c));
+        }
+    } catch (const std::exception &ex) {
+        WarnL << "Failed to read standalone changes: " << ex.what();
+        _standalone_pending = 1;
+        return 0;
+    }
+    std::stable_sort(changes.begin(), changes.end(),
+                     [](const Change &a, const Change &b) { return a.timestamp < b.timestamp; });
+    TransactionLogImp log_imp;
+    size_t appended = 0;
+    for (const auto &c : changes) {
+        try {
+            log_imp.appendReplayedMutation(c.table, c.op, c.payload, c.timestamp);
+            imp->removeByKey(c.key);
+            ++appended;
+        } catch (const std::exception &ex) {
+            WarnL << "Failed to replay standalone change " << c.key << ": " << ex.what();
+            _standalone_pending = 1;
+            break; // keep the order: the rest waits for the next call
+        }
+    }
+    InfoL << "Replayed " << appended << " of " << changes.size() << " changes made while standalone";
+    return appended;
+}
+
+uint64_t SyncManager::startedMs() {
+    lock_guard<mutex> lock(_mtx);
+    return _running ? _started_ms : 0;
+}
+
 Json::Value SyncManager::getMiscData() {
     auto imp = std::make_shared<MiscDataImp>();
     auto ret = imp->findAll();
     Json::Value misc_json;
     for (const auto &r : ret) {
-        if (r.key.empty() || r.value.empty()) {
+        if (r.key.empty() || r.value.empty() ||
+            r.key.compare(0, strlen(MISC_DATA_STANDALONE_CHANGE_PREFIX), MISC_DATA_STANDALONE_CHANGE_PREFIX) == 0) {
             continue;
         }
         misc_json[r.key] = r.value;

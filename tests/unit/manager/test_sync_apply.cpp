@@ -25,6 +25,7 @@
 #include "Storage/VmsResourceAssignment.h"
 #include "Storage/VmsResourceStatus.h"
 #include "Util/mini.h"
+#include "Util/NoticeCenter.h"
 #include "Util/util.h"
 
 using namespace managerkit;
@@ -95,6 +96,30 @@ public:
 
     static void cleanupRemovedPeers(SyncManager &m, const std::unordered_map<std::string, std::string> &peers, uint64_t now_ms) {
         m.maybeCleanupRemovedPeers(peers, now_ms);
+    }
+
+    // Runs one sync tick as a started node that has been alone in its group since `alone_since`.
+    static void tickAlone(SyncManager &m, uint64_t alone_since) {
+        {
+            std::lock_guard<std::mutex> lock(m._mtx);
+            m._running = true;
+        }
+        m._alone_since = alone_since;
+        m._last_prune_time = 0;
+        m.onTick();
+        std::lock_guard<std::mutex> lock(m._mtx);
+        m._running = false;
+    }
+
+    static void resetBootstrap(SyncManager &m) {
+        std::make_shared<MiscDataImp>()->removeByKey(MISC_DATA_DB_BOOTSTRAP_DONE);
+        std::lock_guard<std::mutex> lock(m._mtx);
+        m._bootstrapped = false;
+    }
+
+    static bool singleNode(SyncManager &m) {
+        std::lock_guard<std::mutex> lock(m._mtx);
+        return m._single_node;
     }
 
     static SyncManager::BootstrapResult bootstrapResponse(SyncManager &m, const Json::Value &data) {
@@ -1023,4 +1048,127 @@ TEST_F(SyncApplyTest, DecommissionedNodeAppendsNoLog) {
 
     std::make_shared<BookmarkIndexImp>()->add(bm);
     EXPECT_EQ(before + 1, seq());
+}
+
+namespace {
+
+// Sets an int config key and reloads the cached GET_CONFIG values; restores the old value.
+class IntConfigGuard {
+public:
+    IntConfigGuard(const std::string &key, int value) : _key(key), _old(mINI::Instance()[key]) { set(value); }
+    ~IntConfigGuard() { set(_old); }
+
+private:
+    void set(int value) {
+        using namespace mediakit;
+        mINI::Instance()[_key] = value;
+        NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+    }
+
+    std::string _key;
+    int _old;
+};
+
+int ownSeq() {
+    auto &rm = ResourceManager::Instance();
+    return std::make_shared<TransactionSequenceImp>()->findSeqByPeerIdAndDbGuid(rm.getSelfNodeId(), rm.getSelfDbGuid());
+}
+
+} // namespace
+
+// serverLocationId 0: local changes are not logged; the last change of each row is kept and appended
+// to the log, oldest first and with its original timestamp, once the server is in a group.
+TEST_F(SyncApplyTest, StandaloneChangesAreReplayedWhenJoiningAGroup) {
+    auto &m = SyncManager::Instance();
+    auto &rm = ResourceManager::Instance();
+    auto bookmarks = std::make_shared<BookmarkIndexImp>();
+    auto statuses = std::make_shared<VmsResourceStatusImp>();
+    const int before = ownSeq();
+    {
+        IntConfigGuard standalone(mediakit::Cluster::kServerLocationId, 0);
+        BookmarkIndex kept;
+        kept.bookmark_guid = "bm-standalone-kept";
+        kept.owner_peer_id = rm.getSelfNodeId();
+        bookmarks->add(kept);
+        BookmarkIndex gone = kept;
+        gone.bookmark_guid = "bm-standalone-gone";
+        bookmarks->add(gone);
+        bookmarks->remove("bm-standalone-gone");
+        VmsResourceStatus st;
+        st.guid = "st-standalone";
+        st.status = 1;
+        statuses->add(st);
+        st.status = 2;
+        statuses->add(st);
+
+        EXPECT_EQ(before, ownSeq());
+        EXPECT_TRUE(m.hasStandaloneChanges());
+        EXPECT_EQ(1u, bookmarks->findByBookmarkGuid("bm-standalone-kept").size());
+        // Peers do not see the recorded changes in the misc data they read.
+        for (const auto &name : m.getMiscData().getMemberNames()) {
+            EXPECT_NE(0u, name.find(MISC_DATA_STANDALONE_CHANGE_PREFIX)) << name;
+        }
+    }
+
+    // One entry per row: the kept bookmark, the delete of the other one, the last status.
+    EXPECT_EQ(3u, m.replayStandaloneChanges());
+    EXPECT_FALSE(m.hasStandaloneChanges());
+    EXPECT_EQ(before + 3, ownSeq());
+    auto logs = std::make_shared<TransactionLogImp>()->findSinceSeq(rm.getSelfNodeId(), rm.getSelfDbGuid(), before, 10);
+    ASSERT_EQ(3u, logs.size());
+    std::vector<std::string> ops;
+    for (size_t i = 0; i < logs.size(); ++i) {
+        Json::Value data;
+        ASSERT_TRUE(StrJsonUtils::readJsonString(logs[i].tran_data, data));
+        ops.push_back(data["table"].asString() + " " + data["op"].asString());
+        if (i > 0) {
+            EXPECT_LE(logs[i - 1].timestamp, logs[i].timestamp);
+        }
+        if (data["table"].asString() == kStatusTable) {
+            EXPECT_EQ(2, data["payload"]["status"].asInt());
+        }
+    }
+    EXPECT_EQ("bookmark_index UPSERT", ops[0]);
+    EXPECT_EQ("bookmark_index DELETE", ops[1]);
+    EXPECT_EQ(kStatusTable + " UPSERT", ops[2]);
+    EXPECT_EQ(0u, m.replayStandaloneChanges());
+
+    // In a group, changes are logged at once again.
+    VmsResourceStatus st;
+    st.guid = "st-standalone";
+    st.status = 3;
+    statuses->add(st);
+    EXPECT_EQ(before + 4, ownSeq());
+    EXPECT_FALSE(m.hasStandaloneChanges());
+}
+
+// Alone in its server group for a full prune cycle, a node keeps only the last log entries and seeds
+// the group: a server added later bootstraps from it.
+TEST_F(SyncApplyTest, NodeAloneInItsGroupPrunesItsLogAndSeeds) {
+    auto &m = SyncManager::Instance();
+    IntConfigGuard keep(Database::kTransactionLogKeepLast, 2);
+    auto statuses = std::make_shared<VmsResourceStatusImp>();
+    for (int i = 0; i < 5; ++i) {
+        VmsResourceStatus st;
+        st.guid = "st-alone";
+        st.status = i;
+        statuses->add(st);
+    }
+    auto &rm = ResourceManager::Instance();
+    auto own_logs = [&rm]() {
+        return std::make_shared<TransactionLogImp>()->findSinceSeq(rm.getSelfNodeId(), rm.getSelfDbGuid(), 0, 100000).size();
+    };
+    ASSERT_GT(own_logs(), 2u);
+    SyncManagerTestPeer::resetBootstrap(m);
+
+    // Alone for less than a prune cycle: nothing changes yet.
+    SyncManagerTestPeer::tickAlone(m, time(nullptr) - 60);
+    EXPECT_TRUE(SyncManagerTestPeer::singleNode(m));
+    EXPECT_FALSE(SyncManagerTestPeer::isBootstrapped(m));
+    EXPECT_GT(own_logs(), 2u);
+
+    SyncManagerTestPeer::tickAlone(m, time(nullptr) - 3700);
+    EXPECT_TRUE(SyncManagerTestPeer::isBootstrapped(m));
+    EXPECT_FALSE(SyncManagerTestPeer::needsBootstrap(m));
+    EXPECT_EQ(2u, own_logs());
 }

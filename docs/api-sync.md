@@ -88,8 +88,33 @@ nhóm, khi đã pull hết từ mọi peer sau mốc đó, dọn dữ liệu ESC
 
 `transaction_sequence` và `peer_ack_log` của X được giữ (ack của X không chặn prune log).
 
+### Server độc lập (`serverLocationId = 0`)
+
+`cluster.serverLocationId = 0` (VMS gửi `serverGroupId` 0 hoặc không gửi) là server độc lập: không thuộc
+nhóm nào, SyncManager không chạy, `/media/esc/sync/*` từ chối mọi node (HTTP 403), các server 0 khác không
+phải peer của nó. DB ESC local vẫn được đọc/ghi như thường.
+
+- Thay đổi local không ghi `transaction_log` (không ai pull, không ai prune). Row version vẫn được ghi, và
+  thay đổi cuối của mỗi row được giữ trong `misc_data` `STANDALONE_CHANGE:<bảng>|<khoá row>` (op, payload,
+  timestamp). `/media/esc/sync/misc` không trả các key này.
+- 0 → N (lúc chạy, khi VMS đẩy cấu hình): SyncManager chạy; cấu hình thiết bị chỉ được áp khi đã pull hết
+  từ mọi peer cùng nhóm (một mình trong nhóm thì không chờ; tối đa 10 phút). Ngay trước đó các thay đổi
+  đã giữ được ghi vào log theo thứ tự timestamp, giữ timestamp gốc, nên LWW ở peer chọn đúng. Peer không
+  cần đổi gì.
+- N → 0: SyncManager dừng ngay.
+- Giới hạn: lệnh xoá cũ hơn `database.row_version_tombstone_ttl_days` vẫn được phát lại nhưng peer có thể
+  đã quên tombstone; chuyển A → 0 → B (nhóm mới) mà log thời ở A đã bị prune thì peer của B gặp gap và
+  resync từ snapshot.
+
+### Node một mình trong nhóm
+
+Không còn server nào khác cùng nhóm (`single_node`): SyncManager prune log của chính nó mỗi giờ, giữ
+`database.transaction_log_keep_last` dòng cuối. Một mình liên tục ≥ 1 giờ mà chưa bootstrap thì nó tự làm
+seed (`DB_BOOTSTRAP_DONE` `seeded`), để node vào sau bootstrap từ nó (snapshot mang `sequences`, không gặp
+gap với phần log đã prune).
+
 `/media/esc/sync/changes` và `/media/esc/sync/snapshot` chỉ phục vụ media server có trong `list_media_server`
-của node được gọi và cùng `serverLocationId`. Người gọi là `peer` (changes) hoặc `mediaServerId` (snapshot);
+của node được gọi và cùng `serverLocationId` khác 0. Người gọi là `peer` (changes) hoặc `mediaServerId` (snapshot);
 không phải thành viên thì trả HTTP 403 (`CODE_PERMISSION_DENIED`) và không ghi ack. Vì vậy X bị bỏ mà vẫn
 chạy không đọc được dữ liệu cluster nữa, kể cả trước khi nó vào trạng thái decommissioned.
 

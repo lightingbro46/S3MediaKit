@@ -24,6 +24,8 @@
 #   run_cluster.sh [work_dir] peerinfo   # node-b's server list entry changes as seen by node-a: name and
 #                                        # failover flag (sync kept), HTTP port (dropped, back), node-a
 #                                        # restarted without a server list (saved peer list, server group 5)
+#   run_cluster.sh [work_dir] standalone # both nodes standalone (serverLocationId 0, no ESC sync), then put in
+#                                        # server group 1 (changes made while standalone replayed), back to 0
 #
 # Env: MEDIASERVER_DIR (default: <repo>/release/linux/Debug), WAIT_SEC (default: 60)
 #      failover: FO_WAIT_SEC (default: 90), FO_KEEP_HOURS (default: 1),
@@ -125,6 +127,8 @@ mkdir -p "$WORK"
 [ "${2:-}" = "failover" ] && export FAILOVER_ACTIVE_DELAY_SEC=1800
 # peerinfo: a non-default server group, so a saved peer list that lost it (read back as 0) shows.
 [ "${2:-}" = "peerinfo" ] && export SERVER_GROUP_ID="${SERVER_GROUP_ID:-5}"
+# standalone: the nodes start as standalone servers (server group 0).
+[ "${2:-}" = "standalone" ] && export SERVER_GROUP_ID=0
 # removal: short decommission/cleanup delays instead of the production 300 s / 3600 s.
 if [ "${2:-}" = "removal" ]; then
     export DECOMMISSION_AFTER_SEC="${DECOMMISSION_AFTER_SEC:-15}"
@@ -328,6 +332,21 @@ if [ "${2:-}" = "peerinfo" ]; then
     check pi5_persisted 180
     report peerinfo
     echo "peerinfo scenario: $fail step(s) failed"
+    exit "$fail"
+fi
+
+if [ "${2:-}" = "standalone" ]; then
+    fail=0
+    check() { python3 "$HERE/check_standalone.py" "$WORK" "$@" || fail=$((fail + $?)); }
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" sa1
+    for n in $NODES; do start_node "$n" init; done
+    wait_healthy 18081; wait_healthy 18082
+    echo "sa1: both nodes standalone, each runs its own camera"; check sa1
+    echo "sa2: both nodes put in server group 1"
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" sa2; check sa2; report sa2
+    echo "sa3: back to server group 0"
+    python3 "$HERE/setup_nodes.py" "$REPO" "$WORK" sa3; check sa3
+    echo "standalone scenario: $fail check(s) failed"
     exit "$fail"
 fi
 

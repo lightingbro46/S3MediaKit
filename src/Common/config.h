@@ -1148,7 +1148,8 @@ extern const std::string kOriginUrl;
 extern const std::string kTimeoutSec;
 // Retry count of a stream pulled from an origin
 extern const std::string kRetryCount;
-// Server location id, servers with the same one are considered to be in the same cluster
+// Server location id (VMS serverGroupId), servers with the same one are in the same cluster and sync
+// their ESC database. 0 = standalone server: no cluster, no ESC sync
 extern const std::string kServerLocationId;
 // Enable failover mode to receive cameras from other server in same cluster
 extern const std::string kEnableFailover;

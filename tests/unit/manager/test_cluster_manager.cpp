@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Common/config.h"
+#include "Util/NoticeCenter.h"
 #include "Server/ClusterManager.h"
 #ifdef ENABLE_SYNC_CHANGES
 #include "Extension/SyncManager.h"
@@ -203,6 +204,36 @@ TEST_F(ClusterManagerRevisionTest, GroupChangeAppliesToSyncPeersWithoutNewHealth
 
     EXPECT_EQ(5u, ClusterManagerTestPeer::revision(manager, "peer-a"));
     EXPECT_EQ("http://10.0.0.1:8080", manager.getSyncPeerUrls()["peer-a"]);
+}
+
+// serverLocationId 0 = standalone server: it has no sync group, servers with group 0 are not its peers.
+TEST_F(ClusterManagerRevisionTest, StandaloneServerHasNoSyncPeers) {
+    auto &manager = ClusterManager::Instance();
+    const int self_group = mINI::Instance()[Cluster::kServerLocationId];
+    auto set_group = [](int group) {
+        mINI::Instance()[Cluster::kServerLocationId] = group;
+        NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+    };
+
+    auto zero_group = peerInfo("peer-a", "10.0.0.1");
+    zero_group.serverGroupId = 0;
+    ClusterManagerTestPeer::seed(manager, "peer-a", zero_group, "http://10.0.0.1:8080", 1);
+    auto group_one = peerInfo("peer-b", "10.0.0.2");
+    group_one.serverGroupId = 1;
+    ClusterManagerTestPeer::seed(manager, "peer-b", group_one, "http://10.0.0.2:8080", 2);
+
+    set_group(0);
+    EXPECT_FALSE(ClusterManager::inSyncGroup());
+    EXPECT_FALSE(ClusterManager::isSyncGroup(0));
+    EXPECT_TRUE(manager.getSyncPeerUrls().empty());
+
+    set_group(1);
+    EXPECT_TRUE(ClusterManager::inSyncGroup());
+    EXPECT_TRUE(ClusterManager::isSyncGroup(1));
+    auto peers = manager.getSyncPeerUrls();
+    ASSERT_EQ(1u, peers.size());
+    EXPECT_EQ("http://10.0.0.2:8080", peers["peer-b"]);
+    set_group(self_group);
 }
 
 TEST(MediaServerInfoJson, ServerGroupSurvivesSaveAndLoad) {

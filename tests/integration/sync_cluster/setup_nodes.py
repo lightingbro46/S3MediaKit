@@ -2,8 +2,8 @@
 """Create two isolated MediaServer node directories (node-a, node-b) for a local sync test.
 
 Usage: setup_nodes.py <repo_root> <cluster_dir> [phase2..phase4 | fo1..fo3 | fo2off | sp1..sp6 | rm1..rm3 | pi2..pi5 |
-                                                  syncoff:<node> | syncon:<node>]
-Env: SERVER_GROUP_ID = server group of both nodes (default 0).
+                                                  sa1..sa3 | syncoff:<node> | syncon:<node>]
+Env: SERVER_GROUP_ID = server group of both nodes (default 1; 0 = standalone servers, no ESC sync).
 """
 import json
 import os
@@ -12,7 +12,7 @@ import sys
 
 REPO, CLUSTER = sys.argv[1], sys.argv[2]
 API_PORT = 18090
-GROUP = int(os.environ.get("SERVER_GROUP_ID", "0"))
+GROUP = int(os.environ.get("SERVER_GROUP_ID", "1"))
 
 NODES = {
     "node-a": {"http": 18081, "rtsp": 18551, "rtmp": 18351},
@@ -312,6 +312,21 @@ def peerinfo_phase(name):
         write_api_config(node_id, [camera(True)] if node_id == "node-a" else [], peer_changes=changes)
 
 
+SA_CAMERA = {"node-a": "cam-sa-a", "node-b": "cam-sa-b"}
+
+
+def standalone_phase(name):
+    """Standalone servers joining a server group (run_cluster.sh <dir> standalone), checked by check_standalone.py.
+
+    sa1: both nodes standalone (server group 0), each runs its own camera. sa2: the service puts both
+    in server group 1. sa3: back to 0.
+    """
+    global GROUP
+    GROUP = {"sa1": 0, "sa2": 1, "sa3": 0}[name]
+    for node_id, cam in SA_CAMERA.items():
+        write_api_config(node_id, [rm_camera(cam, node_id)])
+
+
 def phase(n):
     if n == 2:
         # Move camera: node-a drops it (delCamera → release), node-b takes it over (FAILOVER).
@@ -334,6 +349,8 @@ if __name__ == "__main__":
         removal_phase(sys.argv[3])
     elif len(sys.argv) > 3 and sys.argv[3].startswith("sp"):
         speaker_phase(sys.argv[3])
+    elif len(sys.argv) > 3 and sys.argv[3].startswith("sa"):
+        standalone_phase(sys.argv[3])
     elif len(sys.argv) > 3 and sys.argv[3].startswith("pi"):
         peerinfo_phase(sys.argv[3])
     elif len(sys.argv) > 3 and sys.argv[3].startswith("fo"):

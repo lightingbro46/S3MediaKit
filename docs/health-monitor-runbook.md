@@ -96,6 +96,7 @@ Cột "Báo giả ở tải định mức" là nhận định trước khi đo, 
 | `cluster.peers_unreachable` | warning | Node khác tắt hoặc mất mạng giữa các node | Kiểm node đó từ app (mất liên lạc?) | Không |
 | `cluster.decommissioned` | critical | Node đã bị bỏ khỏi cụm trên ESC | Thêm lại trên ESC hoặc tắt node | Không |
 | `sync.bootstrapped` | warning | Node mới chưa đồng bộ xong dữ liệu ESC | Chờ; kéo dài thì xem log `SyncManager` | Không |
+| (`cluster.sync.state = standalone`) | không đánh giá | `serverLocationId = 0`: server độc lập, không đồng bộ ESC | Cấu hình hợp lệ. Cần đồng bộ thì đặt `serverGroupId` khác 0 trên VMS | Không |
 | `sync.last_ok_age_sec` (theo peer) | 120 / 600 | Đồng bộ với peer bị kẹt/lỗi | Log `SyncManager`, mạng giữa các node | Không |
 | `webhook.failure_pct` | > 0 / 20 | Backend VMS/ESC (`hook.api_url`) không trả lời/lỗi 5xx | Kiểm backend; dưới 10 lần gọi thì chỉ warning | Có thể khi backend bận (một lần timeout đã là warning) |
 | `kafka.spool`, `kafka.dropped` | warning | Mất kết nối broker, spool đầy | Kiểm broker Kafka | Không |

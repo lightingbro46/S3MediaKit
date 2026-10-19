@@ -89,7 +89,8 @@ static void loadSavedMediaServerInfo() {
 #ifdef ENABLE_SYNC_CHANGES
         if (isDecommissioned()) {
             WarnL << "Media server was removed from the cluster, sync manager is not started";
-        } else {
+        } else if (!SyncManager::Instance().isRunning()) {
+            // Already running when the server joined a server group in the meantime.
             DebugL << "Sync manager has been started";
             SyncManager::Instance().start();
         }
@@ -1142,6 +1143,74 @@ static void loadWatermarkTemplateFromMap(CameraOption &option,  const unordered_
     }
 }
 
+#ifdef ENABLE_SYNC_CHANGES
+// Set when the server joined a server group: the device config waits until the ESC data has caught up.
+// Both run on the server config loader, one config at a time.
+static bool s_joined_sync_group = false;
+// When it waits since (ms); the wait is given up after kJoinCatchUpMaxMs.
+static uint64_t s_join_wait_since_ms = 0;
+static const uint64_t kJoinCatchUpMaxMs = 10 * 60 * 1000;
+
+// serverLocationId changed between 0 (standalone server) and a server group (config already reloaded).
+static void onSyncGroupChanged(int server_group) {
+    const bool in_group = server_group != 0;
+    auto &sync = SyncManager::Instance();
+    if (!in_group) {
+        WarnL << "Server location set to 0: standalone server, ESC sync stopped";
+        s_joined_sync_group = false;
+        sync.stop();
+        return;
+    }
+    if (isDecommissioned()) {
+        return; // started by onServerQualified() once listed again
+    }
+    InfoL << "Server joined server group " << server_group << ", catching up with it before applying its config";
+    if (!sync.isRunning()) {
+        sync.start();
+    }
+    s_join_wait_since_ms = 0;
+    s_joined_sync_group = true;
+}
+
+// Before the device config is applied: once this server is in a sync group, its ESC data first catches
+// up with the group (a camera deleted or moved here would otherwise be decided on stale data), then the
+// changes it made while standalone are appended to the log. False = retry the config later.
+static bool catchUpWithSyncGroup() {
+    auto &sync = SyncManager::Instance();
+    if (!ClusterManager::inSyncGroup() || !sync.isRunning()) {
+        s_joined_sync_group = false;
+        return true; // standalone, or sync off: the changes stay recorded
+    }
+    if (!s_joined_sync_group && !sync.hasStandaloneChanges()) {
+        return true;
+    }
+    const uint64_t now_ms = toolkit::getCurrentMillisecond(true);
+    if (s_join_wait_since_ms == 0) {
+        s_join_wait_since_ms = now_ms;
+    }
+    // Alone in the group: there is nothing to catch up with.
+    bool has_member = false;
+    GET_CONFIG(string, self_id, General::kMediaServerId);
+    for (const auto &id : ClusterManager::Instance().getMediaServerIds()) {
+        if (id != self_id && ClusterManager::isSyncGroup(ClusterManager::Instance().getMediaServer(id).serverGroupId)) {
+            has_member = true;
+            break;
+        }
+    }
+    if (has_member && !sync.isCaughtUpSince(sync.startedMs())) {
+        if (now_ms - s_join_wait_since_ms < kJoinCatchUpMaxMs) {
+            InfoL << "Still catching up with the server group, config not applied yet";
+            return false;
+        }
+        WarnL << "Server group not caught up after " << kJoinCatchUpMaxMs / 1000 << "s, applying the config anyway";
+    }
+    sync.replayStandaloneChanges();
+    s_joined_sync_group = false;
+    s_join_wait_since_ms = 0;
+    return true;
+}
+#endif
+
 static void loadServerConfigFromJson(const Json::Value &data) {
     int change = 0;
     auto &ini = mINI::Instance();
@@ -1164,6 +1233,7 @@ static void loadServerConfigFromJson(const Json::Value &data) {
         ini[Cluster::kServerLocationId] = serverLocationId;
         change++;
     }
+    const bool sync_group_changed = (currentServerLocationId == 0) != (serverLocationId == 0);
     string mediaServerProjectId = !data["projectId"].isNull() ? data["projectId"].asString() : "";
     string currentMediaServerProjectId = ini[Manager::kMediaServerProjectId];
     if (currentMediaServerProjectId != mediaServerProjectId) {
@@ -1178,6 +1248,11 @@ static void loadServerConfigFromJson(const Json::Value &data) {
         NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
         ini.dumpFile(g_ini_file);
     }
+#ifdef ENABLE_SYNC_CHANGES
+    if (sync_group_changed) {
+        onSyncGroupChanged(serverLocationId);
+    }
+#endif
 
     // stream reader threshold config
     bool unlimitedConnectPerCamera = !data["unlimitedStreamPerCamera"].isNull() ? data["unlimitedStreamPerCamera"].asBool() : false;
@@ -1278,9 +1353,6 @@ static void loadServerClusterFromJson(const Json::Value &data) {
         ClusterManager::Instance().removeMediaServer(id);
     }
 
-#ifdef ENABLE_SYNC_CHANGES
-    SyncManager::Instance().setSingleNodeMode(ClusterManager::Instance().getMediaServerIds().size() == 1);
-#endif
     TraceL << "Load media server cluster config: " << ClusterManager::Instance().getMediaServerIds().size() << " active servers";
 }
 
@@ -1396,6 +1468,12 @@ bool loadServerConfigJson(const Json::Value &data_api) {
     if (data.isMember("list_media_server") && data["list_media_server"].isArray()) {
         loadServerClusterFromJson(data["list_media_server"]);
     }
+
+#ifdef ENABLE_SYNC_CHANGES
+    if (!catchUpWithSyncGroup()) {
+        return false;
+    }
+#endif
 
     unordered_map<string, string> watermark_template_map;
     if (data.isMember("watermark_configs") && data["watermark_configs"].isArray()) {

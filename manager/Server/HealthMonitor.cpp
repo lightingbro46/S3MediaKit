@@ -778,6 +778,8 @@ void HealthMonitor::collectNow() {
     GET_CONFIG(int, server_location_id, Cluster::kServerLocationId);
     GET_CONFIG(bool, enable_failover, Cluster::kEnableFailover);
     summary["serverLocationId"] = server_location_id;
+    // 0 = standalone server: in no cluster, servers with 0 are not grouped together.
+    summary["standalone"] = server_location_id == 0;
     summary["enableFailover"] = enable_failover;
     summary["generatedAt"] = (Json::Int64)now;
     summary["rev"] = (Json::UInt64)_rev;
@@ -1719,7 +1721,6 @@ void HealthMonitor::collectCluster(HealthEvaluator &ev, Json::Value &summary, in
     // Peers answer ClusterManager's health check (every 60 s); only reachable ones have a URL.
     auto &cm = ClusterManager::Instance();
     auto reachable = cm.getPeerUrls();
-    GET_CONFIG(int, self_group_id, Cluster::kServerLocationId);
     int known = 0, unreachable = 0, group_peers = 0, failover_peers = 0, failover_reachable = 0;
     Json::Value peers(Json::arrayValue);
     for (const auto &id : cm.getMediaServerIds()) {
@@ -1731,7 +1732,8 @@ void HealthMonitor::collectCluster(HealthEvaluator &ev, Json::Value &summary, in
         unreachable += ok ? 0 : 1;
         auto info = cm.getMediaServer(id);
         // Values of the VMS server list; hasFailover = that node takes backup cameras.
-        if (info.serverGroupId == self_group_id) {
+        // A standalone server (serverLocationId 0) has no group: servers with 0 are not its peers.
+        if (ClusterManager::isSyncGroup(info.serverGroupId)) {
             ++group_peers;
             if (info.hasFailover) {
                 ++failover_peers;
@@ -1761,14 +1763,35 @@ void HealthMonitor::collectCluster(HealthEvaluator &ev, Json::Value &summary, in
     Json::Value &sync = cl["sync"];
 #ifdef ENABLE_SYNC_CHANGES
     auto sv = SyncManager::Instance().healthView();
+    GET_CONFIG(bool, enable_sync_db, Database::kEnableSyncDb);
     sync["enabled"] = sv.running;
+    // Why the sync runs or not, for the app (enabled alone cannot tell a standalone server from a build
+    // or config without sync).
+    const char *state = "running";
+    if (!enable_sync_db) {
+        state = "disabled_config";
+    } else if (!ClusterManager::inSyncGroup()) {
+        state = "standalone";
+    } else if (sv.decommissioned) {
+        state = "decommissioned";
+    } else if (!sv.running) {
+        state = "stopped"; // not started yet (first seconds after start-up)
+    } else if (sv.standalone_changes_pending) {
+        state = "catching_up"; // joined a group, changes made while standalone not replayed yet
+    } else if (sv.single_node) {
+        state = "single_node"; // alone in the group (bootstraps only after an hour alone, as the seed)
+    } else if (!sv.bootstrapped) {
+        state = "catching_up";
+    }
+    sync["state"] = state;
+    sync["decommissioned"] = sv.decommissioned;
+    // Removed from the cluster by the service API: this node's changes no longer reach the others. The
+    // sync is stopped then, so this does not depend on it running.
+    ev.addLevel("cluster", "cluster.decommissioned", sv.decommissioned ? HealthLevel::CRITICAL : HealthLevel::OK,
+                sv.decommissioned ? 1 : 0, 0, std::string(), true);
     if (sv.running) {
         sync["bootstrapped"] = sv.bootstrapped;
         sync["single_node"] = sv.single_node;
-        sync["decommissioned"] = sv.decommissioned;
-        // Removed from the cluster by the service API: this node's changes no longer reach the others.
-        ev.addLevel("cluster", "cluster.decommissioned", sv.decommissioned ? HealthLevel::CRITICAL : HealthLevel::OK,
-                    sv.decommissioned ? 1 : 0, 0, std::string(), true);
         sync["peers"] = Json::arrayValue;
         map<string, uint64_t> seen;
         if (!sv.single_node && !sv.decommissioned) {
@@ -1792,9 +1815,12 @@ void HealthMonitor::collectCluster(HealthEvaluator &ev, Json::Value &summary, in
             }
         }
         _sync_peer_seen_ms.swap(seen);
+    } else {
+        _sync_peer_seen_ms.clear();
     }
 #else
     sync["enabled"] = false;
+    sync["state"] = "disabled_build";
 #endif
 
     // Webhooks to the VMS/ESC, counted after their retries.

@@ -229,14 +229,14 @@ def server_entry(node_id, ports):
         "isRtspPortAuto": True, "isRtmpPortAuto": True,
         "httpPortNat": ports["http"], "httpsPortNat": 0,
         "rtspPortNat": ports["rtsp"], "rtmpPortNat": ports["rtmp"],
-        "clientUseSsl": False, "hasFailover": True, "serverGroupId": 0,
+        "clientUseSsl": False, "hasFailover": True, "serverGroupId": 1,
     }
 
 
 def api_config(node_ids, devices, args):
     return {
         "media_server": {
-            "serverGroupId": 0, "failover": True,
+            "serverGroupId": 1, "failover": True,
             "maxConfigCameras": max(1024, args.cameras * 2),
             "maxStream": max(2048, args.cameras * 4),
             "maxStreamPerCamera": 8,
@@ -323,7 +323,7 @@ def base_overrides(node_id, d, ports, args):
         "manager": {"apiSecret": "",
                     "certSavePath": d + "/www/certs",
                     "maxAllowedDevices": max(1024, args.cameras * 2)},
-        "cluster": {"serverLocationId": 0, "failoverActiveDelaySec": 15},
+        "cluster": {"serverLocationId": 1, "failoverActiveDelaySec": 15},  # 0 = standalone, no ESC sync
         "auth": {"enableAuthorize": 0},
         # Pool blocking cố định để so sánh được giữa các lần chạy; ONVIF chạy trên device().
         # STRESS_BLOCKING=code giữ mặc định trong code (đo cấu hình production).

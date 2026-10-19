@@ -98,6 +98,20 @@ Hai node ở server group 5 (`SERVER_GROUP_ID`), để danh sách peer đã lưu
 | pi4 | Trả lại cổng 18082 | node-a check ngay, node-b vào lại peer sync |
 | pi5 | Dừng node-a, xoá `api-config.json` của nó (service không trả danh sách server), khởi động lại | `peer.peer_list` lưu `serverGroupId=5`; node-a pull thành công từ node-b sau khi khởi động; không có lần nạp danh sách server nào |
 
+## Kịch bản server độc lập (serverLocationId 0)
+```bash
+bash tests/integration/sync_cluster/run_cluster.sh /tmp/s3mk_standalone standalone
+```
+Hai node khởi động ở server group 0 (server độc lập), mỗi node chạy một camera riêng. Kiểm tra nằm trong
+`check_standalone.py` (DB ESC của từng node + `/media/monitor/summary`). Mã thoát là số kiểm tra lỗi.
+Các kịch bản khác chạy ở group 1 (`SERVER_GROUP_ID`, mặc định 1): group 0 không đồng bộ.
+
+| Bước | Diễn biến | Kiểm tra |
+|---|---|---|
+| sa1 | Cả hai ở group 0 | summary `standalone=true`, `cluster.sync.state=standalone`; mỗi DB ESC chỉ có camera của mình; không có dòng `transaction_log` của chính node, có `misc_data` `STANDALONE_CHANGE:*`; `/media/esc/sync/changes` từ node kia trả 403 |
+| sa2 | Service đẩy group 1 cho cả hai | `state=running`; camera của node kia (tạo lúc độc lập) có trong DB; `STANDALONE_CHANGE:*` đã phát lại hết vào log; `sync/changes` trả 200 |
+| sa3 | Đẩy lại group 0 | `state=standalone`; 30 s sau không có dòng log mới của chính node |
+
 ## Kịch bản
 | Phase | Nội dung |
 |---|---|
