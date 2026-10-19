@@ -10,7 +10,7 @@
 namespace managerkit {
 
 // ──────────────────────────────────────────────────────────────────
-// health_metrics: one evaluated health sample (migration 23)
+// health_metrics: one evaluated health sample (migrations 23, 24)
 // ──────────────────────────────────────────────────────────────────
 struct HealthMetric {
     int64_t id = 0;
@@ -27,6 +27,10 @@ struct HealthMetric {
     int alerts_active = 0;
     int64_t proc_rss = 0;            // bytes
     std::string components_json = "{}";
+    // Webhooks to hook.api_url (migration 24); -1 = no data.
+    float webhook_failure_pct = -1;
+    int64_t webhook_queued_max = -1;        // most hooks waiting for a slot since the previous sample
+    int64_t webhook_queue_wait_max_ms = -1;
 };
 
 DECLARE_ENTITY(HealthMetric, "health_metrics",
@@ -44,7 +48,10 @@ DECLARE_ENTITY(HealthMetric, "health_metrics",
     &HealthMetric::poller_delay_max_ms, "poller_delay_max_ms",
     &HealthMetric::alerts_active,       "alerts_active",
     &HealthMetric::proc_rss,            "proc_rss",
-    &HealthMetric::components_json,     "components_json"
+    &HealthMetric::components_json,     "components_json",
+    &HealthMetric::webhook_failure_pct, "webhook_failure_pct",
+    &HealthMetric::webhook_queued_max,  "webhook_queued_max",
+    &HealthMetric::webhook_queue_wait_max_ms, "webhook_queue_wait_max_ms"
 )
 
 class HealthMetricsRepository : public SqliteRepository<HealthMetric> {

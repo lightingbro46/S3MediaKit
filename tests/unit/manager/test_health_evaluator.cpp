@@ -620,6 +620,11 @@ TEST(HealthHistory, BucketsKeepWorstLevelAndAverages) {
         m.cameras_online = 10 + i;
         m.proc_rss = 100 + i;
         m.poller_delay_max_ms = (float)i;
+        if (i >= 1) {                    // row 0 predates the webhook columns (-1)
+            m.webhook_failure_pct = i == 1 ? 25.f : 0.f;
+            m.webhook_queued_max = i * 10;
+            m.webhook_queue_wait_max_ms = 1000 - i;
+        }
         rows.push_back(m);
     }
     auto points = healthHistoryPoints(rows, 120);
@@ -633,8 +638,17 @@ TEST(HealthHistory, BucketsKeepWorstLevelAndAverages) {
     EXPECT_EQ(101, points[0]["proc_rss"].asInt64());
     EXPECT_EQ("ok", points[1]["overall"].asString());
     EXPECT_DOUBLE_EQ(3, points[1]["poller_delay_max_ms"].asDouble());
-    // No bucket: one point per row.
-    EXPECT_EQ(4u, healthHistoryPoints(rows, 0).size());
+    EXPECT_DOUBLE_EQ(25, points[0]["webhook_failure_pct"].asDouble());
+    EXPECT_EQ(10, points[0]["webhook_queued_max"].asInt64());
+    EXPECT_EQ(999, points[0]["webhook_queue_wait_max_ms"].asInt64());
+    EXPECT_EQ(30, points[1]["webhook_queued_max"].asInt64());
+    // No bucket: one point per row; the old row has no webhook numbers.
+    auto raw = healthHistoryPoints(rows, 0);
+    EXPECT_EQ(4u, raw.size());
+    EXPECT_TRUE(raw[0]["webhook_failure_pct"].isNull());
+    EXPECT_TRUE(raw[0]["webhook_queued_max"].isNull());
+    EXPECT_TRUE(raw[0]["webhook_queue_wait_max_ms"].isNull());
+    EXPECT_DOUBLE_EQ(0, raw[2]["webhook_failure_pct"].asDouble());
 }
 
 TEST(HealthCoverage, CameraWarnsOnLowCoverageAndGaps) {

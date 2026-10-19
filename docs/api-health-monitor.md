@@ -165,7 +165,7 @@ VMS gửi 0 hoặc không gửi `serverGroupId` đều ra 0. `/media/mserver/hea
 | `delivery.restore` | `failed_1h`, `failed_24h` (khi bật tier storage) |
 | `cluster` | `peers_known`, `peers_unreachable`, `peers[]` (`id`, `name`, `reachable`, `serverLocationId`, `hasFailover`: theo danh sách server VMS), `group_peers` (peer cùng `serverLocationId`; 0 khi `standalone`), `failover_capable_peers` (trong đó có `hasFailover = true`, tức nhận được camera của node này khi nó hỏng), `failover_capable_reachable` (trong đó đang liên lạc được). Chỉ hiển thị, không đánh giá mức: nhóm nhiều node không bật failover là cấu hình hợp lệ |
 | `cluster.sync` | `enabled` (sync đang chạy), `state` (lý do, xem dưới), `decommissioned`; khi đang chạy thêm `bootstrapped`, `single_node`, `peers[]` (`id`, `last_ok_at`, `last_ok_age_sec`) |
-| `cluster.webhook` | `window_sec`, `requests`, `failures`, `failure_pct`: các lần gọi tới `hook.api_url` (VMS/ESC), kết quả cuối sau khi đã retry; lời gọi giữa các node không tính (đã có `peers_unreachable`). `failure_reasons` (trong cửa sổ): `timeout` (backend không trả lời kịp `hook.timeoutSec`), `poller_late` (timeout bị phát hiện trễ hơn `hook.timeoutSec` + 3 s: poller của chính MediaServer bị chặn, request có thể chưa gửi đi hoặc câu trả lời đã nằm sẵn trong socket; xem `pollers.delay_max_ms`), `network`, `http_<mã>` (5xx, 408, 429), `busy` (hàng đợi `hook.maxQueue` đầy), `queue_timeout` (chờ slot quá `hook.timeoutSec`, không gửi), `other`. Bộ giới hạn `hook.maxConcurrent`: `inflight` (đang gửi), `queued` (đang chờ slot), `queue_wait_max_ms` (chờ lâu nhất trong cửa sổ). `queued`/`queue_wait_max_ms` tăng trong khi `timeout` chưa có = VMS chậm dần hoặc `hook.maxConcurrent` quá nhỏ |
+| `cluster.webhook` | `window_sec`, `requests`, `failures`, `failure_pct`: các lần gọi tới `hook.api_url` (VMS/ESC), kết quả cuối sau khi đã retry; lời gọi giữa các node không tính (đã có `peers_unreachable`). `failure_reasons` (trong cửa sổ): `timeout` (backend không trả lời kịp `hook.timeoutSec`), `poller_late` (timeout bị phát hiện trễ hơn `hook.timeoutSec` + 3 s: poller của chính MediaServer bị chặn, request có thể chưa gửi đi hoặc câu trả lời đã nằm sẵn trong socket; xem `pollers.delay_max_ms`), `network`, `http_<mã>` (5xx, 408, 429), `busy` (hàng đợi `hook.maxQueue` đầy), `queue_timeout` (chờ slot quá `hook.timeoutSec`, không gửi), `other`. Bộ giới hạn `hook.maxConcurrent`: `inflight` (đang gửi), `queued` (đang chờ slot), `queue_wait_max_ms` (chờ lâu nhất trong cửa sổ). `max_concurrent`, `max_queue`: giá trị `hook.maxConcurrent` / `hook.maxQueue` đang dùng; `max_concurrent = 0` = tắt giới hạn, khi đó `inflight`/`queued` luôn 0. `queued`/`queue_wait_max_ms` tăng trong khi `timeout` chưa có = VMS chậm dần hoặc `hook.maxConcurrent` quá nhỏ |
 | `host.ram` (thêm) | `proc_rss_growth_mb_per_h` (độ dốc RSS, null khi chưa đủ 2 h số liệu), `proc_rss_growth_span_sec` |
 | `process` (thêm) | `restarts_24h` (số lần khởi động có lần chạy trước trong 24 h), `unclean_restarts_24h` (lần chạy trước không thoát sạch: crash, kill) |
 | `recording.coverage` | `computed_at`, `cameras_evaluated` (camera có ≥ 1 h lẽ ra ghi), `below_warn`, `below_crit`, `low_pct`, `avg_pct` |
@@ -422,7 +422,8 @@ bucket; khoảng rộng tự gộp để mỗi chuỗi ≤ ~2000 điểm, bội 
     "points": [{"timestamp": 1760413800, "samples": 5, "overall": "warning", "score": 86.0, "score_min": 80,
                 "cameras_total": 300, "cameras_online": 297.4, "rec_expected": 298, "rec_active": 297.8,
                 "rec_stalled": 0.2, "viewers_total": 41.2, "poller_delay_max_ms": 3.0, "alerts_active": 2,
-                "proc_rss": 1834500096}],
+                "proc_rss": 1834500096, "webhook_failure_pct": 18.43, "webhook_queued_max": 300,
+                "webhook_queue_wait_max_ms": 4943}],
     "system": [{"timestamp": 1760413800, "samples": 30, "cpu_usage_pct": 41.2, "ram_usage_pct": 62.0, "...": "..."}]
   }
 }
@@ -431,6 +432,11 @@ bucket; khoảng rộng tự gộp để mỗi chuỗi ≤ ~2000 điểm, bội 
 - `points` từ bảng `health_metrics`, một mẫu mỗi `monitor.historyIntervalSec` (60 s); trong bucket:
   `overall` xấu nhất, `score` trung bình và `score_min`, các số đếm trung bình, `poller_delay_max_ms`,
   `alerts_active`, `proc_rss` lớn nhất.
+- Webhook tới `hook.api_url`, đều lấy max trong bucket: `webhook_failure_pct` (`cluster.webhook.failure_pct`
+  lúc ghi mẫu), `webhook_queued_max` (số hook chờ slot lớn nhất kể từ mẫu trước, không phải giá trị tức thời;
+  0 khi tắt `hook.maxConcurrent`), `webhook_queue_wait_max_ms` (`cluster.webhook.queue_wait_max_ms`, cửa sổ
+  `monitor.integrationWindowSec`). Mẫu ghi trước migration `24_health_metrics_webhook.sql` trả `null`.
+  `fields=webhook` chọn cả ba.
 - `system`: như `/media/mserver/systemStatisticHistory` cùng khoảng và bucket.
 - Giữ `monitor.historyRetentionDays` ngày (mặc định 30). Chuỗi `system` lấy từ `system_metrics`, chỉ giữ
   `globalmonitor.metrics_retention_days` ngày (mặc định 7): hỏi xa hơn thì `system` rỗng phần cũ, `points` vẫn có.
