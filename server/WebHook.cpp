@@ -1389,25 +1389,33 @@ void installWebHook() {
         body["port"] = sender.get_peer_port();
         body["id"] = sender.getIdentifier();
 #endif
+        // Sessions opening the same token/device at once (a grid, a mass reconnect) share one hook.
+        auto done = [reply, isStreamLimit, register_session](const string &err) {
+            if (!err.empty()) {
+                reply(err);
+                return;
+            }
+            register_session();
+            isStreamLimit();
+        };
+        if (!UserAuthorManager::Instance().joinPlayCheck(jwt_token, device_id, done)) {
+            return;
+        }
         ArgsType body;
         body["data"] = device_id;
         HeaderType header;
         header["Authorization"] = (StrPrinter << "Bearer " << jwt_token);
         // Execute hook
-        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, reply, isStreamLimit, register_session](const Value &obj, const string &err) mutable {
+        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token](const Value &obj, const string &err) {
+            string result;
             if (!err.empty() && !isHookDenied(err)) {
                 // Timeout, 5xx, network: the backend gave no answer. Caching a REJECT would block this
                 // camera for the grant lifetime; answer "retry later" (503) and ask again next time.
-                reply("ResourceUnavailable");
-                return;
+                result = "ResourceUnavailable";
+            } else if (!UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty()) || !err.empty()) {
+                result = "Unauthorized";
             }
-            const bool cached = UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty());
-            if (!err.empty() || !cached) {
-                reply("Unauthorized");
-                return;
-            }
-            register_session();
-            isStreamLimit();
+            UserAuthorManager::Instance().finishPlayCheck(jwt_token, device_id, result);
         });
     });
 

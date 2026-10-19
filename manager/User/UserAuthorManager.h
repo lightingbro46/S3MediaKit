@@ -80,6 +80,19 @@ public:
                            const std::string &reason);
 
     /**
+     * Join the on_play hook for a token/device pair. True: the caller is the first and must send the
+     * hook, then call finishPlayCheck(). False: `cb` waits for the hook already in flight.
+     */
+    bool joinPlayCheck(const std::string &jwt_token, const std::string &device_id,
+                       const std::function<void(const std::string &err)> &cb);
+
+    /**
+     * Answer every caller waiting in joinPlayCheck() for this pair (`err` empty = allowed).
+     * The callbacks run outside the manager lock, on the calling thread.
+     */
+    void finishPlayCheck(const std::string &jwt_token, const std::string &device_id, const std::string &err);
+
+    /**
      * Add cluster author cache
      */
     void addClusterAuthorCache(const std::string &author_id, const std::string &key, bool permit = false, uint64_t max_elapsed = 300);
@@ -158,6 +171,8 @@ private:
     };
     std::unordered_map<std::string /*token*/, std::vector<MediaSessionInfo>> _map_token_sessions;
     std::unordered_set<std::string /*token:device*/> _token_checks;
+    // token:device -> callbacks waiting for the in-flight on_play hook
+    std::unordered_map<std::string, std::vector<std::function<void(const std::string &err)>>> _play_waiters;
     std::recursive_mutex _mtx;
     toolkit::Timer::Ptr _timer;
 };
