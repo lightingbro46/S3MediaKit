@@ -8,7 +8,9 @@ MediaServer đã kiểm trước khi gọi hook.
 
 `<work>/hook_fault.json` (đọc lại mỗi request, không có thì bỏ qua) làm hook đó chậm hoặc lỗi để
 thử cơ chế gia hạn quyền: `{"delay_sec": 10}` trả lời sau 10 s, `{"status": 503}` trả 503 cho
-mọi user. `deny_users.json` vẫn được xét trước.
+mọi user, `{"max_concurrency": 16}` chỉ phục vụ 16 request hook đó cùng lúc (phần còn lại chờ,
+giả VMS quá tải). `deny_users.json` vẫn được xét trước. Mỗi request hook đó ghi `conc`: số request
+hook đó đang mở tại lúc tới (gồm cả đang chờ), để đối chiếu giới hạn `hook.maxConcurrent`.
 
 Mọi request được ghi (path, thời điểm, body rút gọn) vào `<work>/mock_api_events.jsonl`
 để kịch bản đối chiếu hook nào đã tới, ví dụ callback kết quả job trích xuất.
@@ -26,6 +28,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 WORK = sys.argv[1]
 PORT = int(sys.argv[2])
 LOCK = threading.Lock()
+CONC_LOCK = threading.Lock()
+CONC = [0]
+# Recreated when max_concurrency changes.
+GATE = {"limit": 0, "sem": None}
 EVENTS = os.path.join(WORK, "mock_api_events.jsonl")
 CHECK_CAMERA = "/api/camera/check-camera-of-user"
 # Server truyền nguyên body JSON cho callback của hook và không xét `code` (phần kiểm code
@@ -71,16 +77,38 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         code = 0
         user = ""
+        conc = 0
+        arrived = time.time()
         if path == CHECK_CAMERA:
             user = jwt_user(self.headers.get("Authorization", ""))
             fault = hook_fault()
-            if fault.get("delay_sec"):
-                time.sleep(float(fault["delay_sec"]))
+            with CONC_LOCK:
+                CONC[0] += 1
+                conc = CONC[0]
+                limit = int(fault.get("max_concurrency") or 0)
+                if GATE["limit"] != limit:
+                    GATE["limit"] = limit
+                    GATE["sem"] = threading.Semaphore(limit) if limit else None
+                sem = GATE["sem"]
+            try:
+                if sem:
+                    sem.acquire()
+                try:
+                    if fault.get("delay_sec"):
+                        time.sleep(float(fault["delay_sec"]))
+                finally:
+                    if sem:
+                        sem.release()
+            finally:
+                with CONC_LOCK:
+                    CONC[0] -= 1
             if denied(user):
                 code = 403
             elif fault.get("status"):
                 code = int(fault["status"])
-        record = {"t": time.time(), "path": path, "code": code}
+        record = {"t": time.time(), "arrived": arrived, "path": path, "code": code}
+        if path == CHECK_CAMERA:
+            record["conc"] = conc
         if user:
             record["user"] = user
         if not path.endswith(("heartbeat", "report", "configuration", "configuration-2nd-gen")):
