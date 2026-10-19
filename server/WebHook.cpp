@@ -1395,6 +1395,12 @@ void installWebHook() {
         header["Authorization"] = (StrPrinter << "Bearer " << jwt_token);
         // Execute hook
         do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, reply, isStreamLimit, register_session](const Value &obj, const string &err) mutable {
+            if (!err.empty() && !isHookDenied(err)) {
+                // Timeout, 5xx, network: the backend gave no answer. Caching a REJECT would block this
+                // camera for the grant lifetime; answer "retry later" (503) and ask again next time.
+                reply("ResourceUnavailable");
+                return;
+            }
             const bool cached = UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty());
             if (!err.empty() || !cached) {
                 reply("Unauthorized");
@@ -1440,7 +1446,8 @@ void installWebHook() {
         // Execute hook
         do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, force_refresh, invoker](const Value &obj, const string &err) mutable {
             bool cached = true;
-            if (!force_refresh || err.empty()) {
+            // A transient failure (timeout, 5xx, network) is never cached as a REJECT.
+            if (err.empty() || (!force_refresh && isHookDenied(err))) {
                 cached = UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty(), 600, force_refresh);
             } else if (isHookDenied(err)) {
                 // The backend refused the refresh: close the sessions now instead of at the grant expiry.
