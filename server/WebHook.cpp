@@ -1,6 +1,7 @@
 ﻿#include <cstring>
 #include <deque>
 #include <mutex>
+#include <random>
 #include <sstream>
 #include "Util/logger.h"
 #include "Util/onceToken.h"
@@ -1562,8 +1563,17 @@ void installWebHook() {
                 // Timeout, 5xx, network: the backend gave no answer. Caching a REJECT would block this
                 // camera for the grant lifetime; answer "retry later" (503) and ask again next time.
                 result = "ResourceUnavailable";
-            } else if (!UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty()) || !err.empty()) {
+            } else if (!err.empty()) {
+                UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, false);
                 result = "Unauthorized";
+            } else {
+                // 480-600 s: grants opened in one burst spread their refresh over 2-3 ticks of the
+                // 60 s timer; the 180 s lead time still leaves two attempts before expiry.
+                static thread_local std::mt19937 rng(std::random_device{}());
+                const uint64_t ttl = 600 - std::uniform_int_distribution<uint64_t>(0, 120)(rng);
+                if (!UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, true, ttl)) {
+                    result = "Unauthorized";
+                }
             }
             UserAuthorManager::Instance().finishPlayCheck(jwt_token, device_id, result);
         });
