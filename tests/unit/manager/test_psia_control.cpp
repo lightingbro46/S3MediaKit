@@ -1,5 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -15,6 +21,7 @@
 #include "Backchannel/IsapiTwoWayAudioPusher.h"
 #include "Control/OnvifDeviceControl.h"
 #include "Control/PsiaDeviceControl.h"
+#include "Util/mini.h"
 
 using namespace managerkit;
 using namespace managerkit::psia_detail;
@@ -718,6 +725,80 @@ TEST(PsiaMockTest, NonPsiaServerIsNotThisProtocol) {
     PsiaControl ctr(addr, "admin", "admin123");
     EXPECT_FALSE(ctr.connect());
     EXPECT_EQ(ConnectError::NOT_THIS_PROTOCOL, ctr.lastConnectError()) << ctr.lastError();
+}
+
+// Answers every request with a 200 whose body comes one byte every 300 ms, so the receive timeout
+// never trips: a camera trickling its answer.
+class TrickleServer {
+public:
+    TrickleServer() {
+        _fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in addr = {};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        ::bind(_fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
+        socklen_t len = sizeof(addr);
+        ::getsockname(_fd, reinterpret_cast<sockaddr *>(&addr), &len);
+        _port = ntohs(addr.sin_port);
+        ::listen(_fd, 16);
+        _thread = std::thread([this]() {
+            for (;;) {
+                int client = ::accept(_fd, nullptr, nullptr);
+                if (client < 0) {
+                    return;
+                }
+                serve(client);
+                ::close(client);
+            }
+        });
+    }
+    ~TrickleServer() {
+        _stop = true;
+        ::shutdown(_fd, SHUT_RDWR);
+        ::close(_fd);
+        _thread.join();
+    }
+    std::string address() const { return "127.0.0.1:" + std::to_string(_port); }
+
+private:
+    void serve(int client) {
+        std::string data;
+        char buf[4096];
+        while (data.find("\r\n\r\n") == std::string::npos) {
+            const ssize_t n = ::recv(client, buf, sizeof(buf), 0);
+            if (n <= 0) {
+                return;
+            }
+            data.append(buf, n);
+        }
+        const std::string head = "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\n"
+                                 "Content-Length: 100000\r\nConnection: close\r\n\r\n";
+        if (::send(client, head.data(), head.size(), MSG_NOSIGNAL) < 0) {
+            return;
+        }
+        // Until the client gives up and closes the connection.
+        while (!_stop && ::send(client, " ", 1, MSG_NOSIGNAL) == 1) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        }
+    }
+
+    int _fd = -1;
+    int _port = 0;
+    std::atomic<bool> _stop {false};
+    std::thread _thread;
+};
+
+TEST(IsapiTimeoutTest, TrickledAnswerIsCutByTheTransferTimeout) {
+    toolkit::mINI::Instance()[IsapiCtrl::kRequestTimeoutMs] = 1000;
+    TrickleServer server;
+    IsapiControl ctr(server.address(), "admin", "admin123");
+    const auto start = std::chrono::steady_clock::now();
+    EXPECT_FALSE(ctr.connect());
+    const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    toolkit::mINI::Instance()[IsapiCtrl::kRequestTimeoutMs] = 5000;
+    // Two attempts, each cut at the 1 s transfer timeout (whole seconds, so up to ~2 s).
+    EXPECT_LE(took, 6000) << ctr.lastError();
 }
 
 TEST(PsiaMockTest, ClosedPortIsUnreachable) {

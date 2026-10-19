@@ -1004,6 +1004,11 @@ void MultiMediaSourceMuxer::resetTracks() {
 }
 
 bool MultiMediaSourceMuxer::onTrackFrame(const Frame::Ptr &frame_in) {
+    if (frame_in->getTrackType() == TrackVideo) {
+        // getCurrentMillisecond() is a cached clock: one relaxed store per frame.
+        _last_video_frame_ms.store(getCurrentMillisecond(), std::memory_order_relaxed);
+        _video_frames.fetch_add(1, std::memory_order_relaxed);
+    }
     auto frame = frame_in;
     if (_option.modify_stamp != ProtocolOption::kModifyStampOff) {
         // Timestamp does not use the original absolute timestamp

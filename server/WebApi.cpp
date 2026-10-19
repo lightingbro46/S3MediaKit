@@ -71,16 +71,12 @@
 #endif
 
 #include "Server/GlobalMonitor.h"
+#include "Server/HealthMonitor.h"
 #include "Manager.h"
 #include "Onvif/Onvif.h"
 #include "Onvif/SoapUtil.h"
-#include "WebApiMonitor.h"
-#include "WebApiStorage.h"
 #include "WebApiErrCode.h"
 
-#include "Storage/TransactionLog.h"
-#include "Storage/TransactionPeerAckLog.h"
-#include "Storage/MiscData.h"
 #ifdef ENABLE_TIER_STORAGE
 #include "Storage/StoragePool.h"
 #include "Storage/StoragePolicy.h"
@@ -105,6 +101,7 @@ namespace API {
 #define API_FIELD "api."
 const string kApiDebug = API_FIELD"apiDebug";
 const string kSecret = API_FIELD"secret";
+const char kDefaultSecret[] = "035c73f7-bb6b-4889-a715-d9eb2d1925cc";
 const string kSnapRoot = API_FIELD"snapRoot";
 const string kExtractRoot = API_FIELD"extractRoot";
 const string kDefaultSnap = API_FIELD"defaultSnap";
@@ -113,7 +110,7 @@ const string kJsonNotFoundPrefixs = API_FIELD"jsonNotFoundPrefixes";
 
 static onceToken token([]() {
     mINI::Instance()[kApiDebug] = "1";
-    mINI::Instance()[kSecret] = "035c73f7-bb6b-4889-a715-d9eb2d1925cc";
+    mINI::Instance()[kSecret] = kDefaultSecret;
     mINI::Instance()[kSnapRoot] = "./www/snap/";
     mINI::Instance()[kExtractRoot] = "./www/extract/";
     mINI::Instance()[kDefaultSnap] = "./www/logo.png";
@@ -845,11 +842,17 @@ void installWebApi() {
         getThreadsLoad(WorkThreadPool::Instance(), API_ARGS_VALUE, invoker);
     });
 
-    // Queue and busy time of the blocking pools (BlockingExecutors); window fields reset per call
+    // Queue and busy time of the blocking pools (BlockingExecutors). The health monitor is the
+    // periodic caller of stats() (it resets the window), so while it runs the window fields cover
+    // its last cycle (monitor.intervalSec); otherwise they cover the time since the previous call.
     // Test url http://127.0.0.1/index/api/getBlockingExecutors
     api_regist("/index/api/getBlockingExecutors", [](API_ARGS_MAP) {
         CHECK_SECRET();
-        for (const auto &st : BlockingExecutors::stats()) {
+        std::vector<BlockingExecutors::PoolStats> pools;
+        if (!HealthMonitor::Instance().blockingStats(pools)) {
+            pools = BlockingExecutors::stats();
+        }
+        for (const auto &st : pools) {
             Value obj(objectValue);
             obj["name"] = st.name;
             obj["threads"] = st.threads;
@@ -2471,77 +2474,6 @@ void installWebApi() {
 #endif
     /////////////////////////S3MediaKit - MediaServer////////////////////////////
 
-    // Admin api format: /media/api/... 
-    api_regist("/media/api/getSyncStatus", [](API_ARGS_MAP_ASYNC) {
-        auto poller = apiRequestPoller(sender);
-        auto session = apiRequestSession(sender);
-        auto on_access = [headerOut, allArgs, val, invoker, poller, session]() mutable {
-            // Full scans of transaction_sequence / transaction_peer_ack_log and one
-            // transaction_log scan per peer: all SQLite, all on the API worker.
-            dispatchApiWork(poller, session, headerOut, val, invoker, [](Json::Value &val) {
-                GET_CONFIG(string, mediaServerId, General::kMediaServerId);
-
-                // 1. transaction_sequence — local cursors (what we have received from each peer)
-                auto seq_impl = std::make_shared<TransactionSequenceImp>();
-                auto seq_list = seq_impl->findAll();
-                Json::Value seq_json = Json::arrayValue;
-                for (const auto &s : seq_list) {
-                    Json::Value item;
-                    item["peer_guid"] = s.peer_guid;
-                    item["db_guid"]   = s.db_guid;
-                    item["sequence"]  = s.sequence;
-                    seq_json.append(item);
-                }
-                val["data"]["transaction_sequence"] = seq_json;
-
-                // 2. transaction_peer_ack_log — how far each peer has pulled from us
-                auto ack_impl = std::make_shared<PeerAckLogImp>();
-                auto ack_list = ack_impl->findAll();
-                Json::Value ack_json = Json::arrayValue;
-                for (const auto &a : ack_list) {
-                    Json::Value item;
-                    item["peer_guid"]     = a.peer_guid;
-                    item["db_guid"]       = a.db_guid;
-                    item["src_peer_guid"] = a.src_peer_guid;
-                    item["src_db_guid"]   = a.src_db_guid;
-                    item["acked_seq"]     = a.acked_seq;
-                    item["updated_at"]    = (Json::Int64)a.updated_at;
-                    ack_json.append(item);
-                }
-                val["data"]["transaction_ack_log"] = ack_json;
-
-                // 3. transaction_log row count per (peer_guid, db_guid)
-                // Use cursors already fetched from transaction_sequence
-                Json::Value log_count_json = Json::arrayValue;
-                auto log_impl = std::make_shared<TransactionLogImp>();
-                for (const auto &s : seq_list) {
-                    // Count rows with sequence > 0 (i.e., all) for this peer/db pair
-                    auto rows_for_peer = log_impl->findSinceSeq(s.peer_guid, s.db_guid, 0, 0);
-                    Json::Value lc;
-                    lc["peer_guid"] = s.peer_guid;
-                    lc["db_guid"]   = s.db_guid;
-                    lc["count"]     = (Json::UInt)rows_for_peer.size();
-                    log_count_json.append(lc);
-                }
-                val["data"]["transaction_log_counts"] = log_count_json;
-            
-                // 4. local node identity
-                auto imp = std::make_shared<MiscDataImp>();
-                auto ret = imp->findAll();
-                Json::Value misc_json;
-                for (const auto &r : ret) {
-                    if (r.key.empty() || r.value.empty()) {
-                        continue;
-                    }
-                    val["data"][r.key] = r.value;
-                }
-                val["data"]["mediaServerId"] = mediaServerId;
-            });
-        };
-
-        CHECK_CLUSTER_AUTHOR_ASYNC(on_access);
-    });
-
     api_regist("/media/api/cluster/access", [](API_ARGS_MAP_ASYNC) {
         CHECK_ARGS("secret", "authorId", "mediaServerId");
 
@@ -2571,442 +2503,129 @@ void installWebApi() {
         invoker(200, headerOut, val.toStyledString());
     });
 
-    // List files/folders in a directory under api.downloadRoot
-    // GET /media/api/listFiles?secret=xxx&path=relative/path
-    api_regist("/media/api/listFiles", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-
-        // One ::stat on the directory plus two more per entry: on the API worker.
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            GET_CONFIG_FUNC(std::string, download_root_str, API::kDownloadRoot, [](const string &str) -> std::string {
-                return str;
-            });
-            auto root_abs = File::absolutePath("", download_root_str, true);
-            // Remove trailing slash for consistent concat
-            if (!root_abs.empty() && root_abs.back() == '/') {
-                root_abs.pop_back();
-            }
-
-            string rel_path = allArgs["path"];
-            // Reject traversal attempts
-            if (rel_path.find("..") != std::string::npos) {
-                val["code"] = API::OtherFailed;
-                val["msg"] = "Path traversal not allowed";
-                return;
-            }
-            // Strip leading slash
-            if (!rel_path.empty() && rel_path.front() == '/') {
-                rel_path = rel_path.substr(1);
-            }
-
-            string dir_path = rel_path.empty() ? root_abs : (root_abs + "/" + rel_path);
-
-            // Verify directory exists
-            struct stat st;
-            if (::stat(dir_path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
-                val["code"] = API::OtherFailed;
-                val["msg"] = "Directory not found";
-                return;
-            }
-
-            Json::Value entries(Json::arrayValue);
-            File::scanDir(dir_path, [&](const string &entry_path, bool isDir) -> bool {
-                // Only immediate children (non-recursive)
-                string inside = entry_path.substr(dir_path.size());
-                if (inside.empty()) return true;
-                if (inside.front() == '/') inside = inside.substr(1);
-                if (inside.find('/') != std::string::npos) return true; // deeper level, skip
-
-                Json::Value item;
-                item["name"] = inside;
-                item["isDir"] = isDir;
-                if (!isDir) {
-                    struct stat fs;
-                    item["size"] = (::stat(entry_path.c_str(), &fs) == 0) ? (Json::Int64)fs.st_size : (Json::Int64)-1;
-                    item["mtime"] = (::stat(entry_path.c_str(), &fs) == 0) ? (Json::Int64)fs.st_mtime : (Json::Int64)0;
-                } else {
-                    item["size"] = (Json::Int64)-1;
-                    item["mtime"] = (Json::Int64)0;
-                }
-                item["path"] = rel_path.empty() ? inside : (rel_path + "/" + inside);
-                item["absPath"] = entry_path;
-                entries.append(item);
-                return true;
-            }, false);
-
-            val["data"]["root"] = root_abs;
-            val["data"]["path"] = rel_path;
-            val["data"]["entries"] = entries;
-        });
-    });
-
-    // Download a file under api.downloadRoot (secret-auth, no on_http_access needed)
-    // GET /media/api/serveFile?secret=xxx&path=relative/path&save_name=foo.txt
-    api_regist("/media/api/serveFile", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-        CHECK_ARGS("path");
-
-        GET_CONFIG_FUNC(std::string, download_root_str2, API::kDownloadRoot, [](const string &str) -> std::string {
-            return str;
-        });
-        auto root_abs2 = File::absolutePath("", download_root_str2, true);
-        if (!root_abs2.empty() && root_abs2.back() == '/') {
-            root_abs2.pop_back();
-        }
-
-        string rel = allArgs["path"];
-        if (rel.find("..") != std::string::npos) {
-            invoker(401, StrCaseMap{}, "Path traversal not allowed");
-            return;
-        }
-        if (!rel.empty() && rel.front() == '/') {
-            rel = rel.substr(1);
-        }
-
-        string abs_path = rel.empty() ? root_abs2 : (root_abs2 + "/" + rel);
-
-        // Only the ::stat is blocking, and only noticeably so when api.downloadRoot is an NFS or
-        // other network mount. The response itself stays on the request poller, which owns the
-        // session that streams the file.
-        auto poller = apiRequestPoller(sender);
-        auto session = apiRequestSession(sender);
-        auto is_file = std::make_shared<bool>(false);
-        runApiWork(poller, session,
-            [abs_path, is_file]() {
-                struct stat st;
-                *is_file = ::stat(abs_path.c_str(), &st) == 0 && !S_ISDIR(st.st_mode);
-            },
-            [abs_path, is_file, allArgs, invoker, session](const std::exception_ptr &error) {
-                if (error) {
-                    responseApiException(error, invoker, session);
-                    return;
-                }
-                if (!*is_file) {
-                    invoker(404, StrCaseMap{}, "File not found");
-                    return;
-                }
-                StrCaseMap res_header;
-                auto save_name = allArgs["save_name"];
-                if (!save_name.empty()) {
-                    res_header.emplace("Content-Disposition", "attachment;filename=\"" + save_name + "\"");
-                }
-                invoker.responseFile(allArgs.parser.getHeader(), res_header, abs_path);
-            });
-    });
-
     api_regist("/media/api/getThreadsLoad", [](API_ARGS_MAP_ASYNC) {
-        auto on_access = [&sender, headerOut, allArgs, val, invoker]() mutable {
-            getThreadsLoad(EventPollerPool::Instance(), API_ARGS_VALUE, invoker);
-        };
-        CHECK_CLUSTER_AUTHOR_ASYNC(on_access);
+        CHECK_SECRET();
+        getThreadsLoad(EventPollerPool::Instance(), API_ARGS_VALUE, invoker);
     });
 
     api_regist("/media/api/getWorkThreadsLoad", [](API_ARGS_MAP_ASYNC) {
-        auto on_access = [&sender, headerOut, allArgs, val, invoker]() mutable {
-            getThreadsLoad(WorkThreadPool::Instance(), API_ARGS_VALUE, invoker);
-        };
-        CHECK_CLUSTER_AUTHOR_ASYNC(on_access);
-    });
-
-    api_regist("/media/api/getStatistic", [](API_ARGS_MAP_ASYNC) {
-        auto on_access = [&sender, headerOut, allArgs, val, invoker]() mutable {
-            getStatisticJson([headerOut, val, invoker](const Value &data) mutable {
-                val["data"] = data;
-                invoker(200, headerOut, val.toStyledString());
-            });
-        };
-       
-        CHECK_CLUSTER_AUTHOR_ASYNC(on_access);
-    });
-
-    // The two `systemStatistic*` routes mirror `/media/mserver/systemStatistic*` behind the cluster
-    // guard instead of a user JWT. As for the storage family, only the guard stays here; the body is
-    // the shared function of WebApiMonitor.h, so the two families cannot drift apart.
-    api_regist("/media/api/systemStatistic", [](API_ARGS_MAP_ASYNC) {
-        // No `sender` capture: CHECK_CLUSTER_AUTHOR_ASYNC may run this after the handler returned.
-        auto on_access = [headerOut, val, invoker]() mutable {
-            managerkit::systemStatistic(val);
-            invoker(200, headerOut, val.toStyledString());
-        };
-
-        CHECK_CLUSTER_AUTHOR_ASYNC(on_access);
-    });
-
-    api_regist("/media/api/systemStatisticHistory", [](API_ARGS_MAP_ASYNC) {
-        CHECK_ARGS_("from", "to", "limit");
-        auto poller = apiRequestPoller(sender);
-        auto session = apiRequestSession(sender);
-        auto on_access = [headerOut, allArgs, val, invoker, poller, session]() mutable {
-            dispatchApiWork(poller, session, headerOut, val, invoker, [allArgs](Json::Value &val) {
-                managerkit::systemStatisticHistory(allArgs, val);
-            });
-        };
-
-        CHECK_CLUSTER_AUTHOR_ASYNC(on_access);
-    });
-
-    // List statistics for all camera devices
-    // GET /media/api/device/statisticsList?secret=xxx
-    api_regist("/media/api/device/statisticsList", [](API_ARGS_MAP) {
         CHECK_SECRET();
+        getThreadsLoad(WorkThreadPool::Instance(), API_ARGS_VALUE, invoker);
+    });
 
-        val["data"] = Json::arrayValue;
-        DeviceSource::for_each_device([&](const DeviceSource::Ptr &device) {
-            auto item = makeDeviceStatisticJson(device);
-            if (!item.isNull() && item.isMember("deviceId")) {
-                val["data"].append(item);
+    api_regist("/media/api/getServerConfig", [](API_ARGS_MAP) {
+        CHECK_SECRET();
+        Value obj;
+        for (auto &pr : mINI::Instance()) {
+            obj[pr.first] = (string &)pr.second;
+        }
+        val["data"].append(obj);
+    });
+
+    api_regist("/media/api/setServerConfig", [](API_ARGS_MAP) {
+        CHECK_SECRET();
+        auto &ini = mINI::Instance();
+        int changed = API::Success;
+        for (auto &pr : allArgs.args) {
+            if (ini.find(pr.first) == ini.end()) {
+#if 1
+                // This key does not exist
+                continue;
+#else
+                // Add configuration options to dynamically add multiple ffmpeg cmd templates
+                ini[pr.first] = pr.second;
+                // Prevent changed changes
+                continue;
+#endif
             }
+            if (pr.first == FFmpeg::kBin) {
+                WarnL << "Configuration named " << FFmpeg::kBin << " is not allowed to be set by setServerConfig api.";
+                continue;
+            }
+            if (ini[pr.first] == pr.second) {
+                continue;
+            }
+            ini[pr.first] = pr.second;
+            // Replacement successful
+            ++changed;
+        }
+        if (changed > 0) {
+            NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+            ini.dumpFile(g_ini_file);
+        }
+        val["changed"] = changed;
+    });
+
+#if !defined(_WIN32)
+    api_regist("/media/api/restartServer", [](API_ARGS_MAP) {
+        CHECK_SECRET();
+        EventPollerPool::Instance().getPoller()->doDelayTask(1000, []() {
+            // Try to exit normally
+            ::kill(getpid(), SIGINT);
+
+            // Force exit after 3 seconds
+            EventPollerPool::Instance().getPoller()->doDelayTask(3000, []() {
+                exit(0);
+                return 0;
+            });
+
+            return 0;
         });
+        val["msg"] = "MediaServer will reboot in on 1 second";
     });
-
-#ifdef ENABLE_TIER_STORAGE
-    // The `/media/api/storage/*` family mirrors `/media/mserver/storage/*` but behind
-    // CHECK_SECRET() instead of a user JWT. The guard stays here on the request poller (different
-    // trust boundary, not to be merged); the body is the shared function from WebApiStorage.h, so
-    // the two families cannot drift apart, and it runs on the API worker pool.
-    // Reads share the `storage.read` group and mutations the `storage.mutation` serial group with
-    // WebApiStorage.cpp: both families read and write the same tables, caches and registrations.
-    api_regist("/media/api/storage/dashboard/detail", [](API_ARGS_JSON_ASYNC) {
+#else
+    api_regist("/media/api/restartServer", [](API_ARGS_MAP) {
         CHECK_SECRET();
+        // Create a restart batch script file
+        FILE *pf;
+        errno_t err = ::_wfopen_s(&pf, L"RestartServer.cmd", L"w"); //"w" If the file exists, its contents will be overwritten
+        if (err == 0) {
+            char szExeName[1024];
+            char drive[_MAX_DRIVE] = { 0 };
+            char dir[_MAX_DIR] = { 0 };
+            char fname[_MAX_FNAME] = { 0 };
+            char ext[_MAX_EXT] = { 0 };
+            char exeName[_MAX_FNAME] = { 0 };
+            GetModuleFileNameA(NULL, szExeName, 1024); // Get the full path of the process
+            _splitpath(szExeName, drive, dir, fname, ext);
+            strcpy(exeName, fname);
+            strcat(exeName, ext);
+            fprintf(pf, "@echo off\ntaskkill /f /im %s\nstart \"\" \"%s\"\ndel %%0", exeName, szExeName);
+            fclose(pf);
+            // Execute the created batch script after 1 second
+            EventPollerPool::Instance().getPoller()->doDelayTask(1000, []() {
+                STARTUPINFO si;
+                PROCESS_INFORMATION pi;
+                ZeroMemory(&si, sizeof si);
+                ZeroMemory(&pi, sizeof pi);
+                si.cb = sizeof si;
+                si.dwFlags = STARTF_USESHOWWINDOW;
+                si.wShowWindow = SW_HIDE;
+                TCHAR winSysDir[1024];
+                ZeroMemory(winSysDir, sizeof winSysDir);
+                GetSystemDirectory(winSysDir, 1024);
+                TCHAR appName[1024];
+                ZeroMemory(appName, sizeof appName);
 
-        dispatchApiWork(sender, headerOut, val, invoker, [](Json::Value &val) {
-            storageDashboardDetail(val);
-        }, nullptr, apiWorkLimit("storage.read"));
+                _stprintf(appName, "%s\\cmd.exe", winSysDir);
+                BOOL bRet = CreateProcess(appName, " /c RestartServer.cmd", NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+
+                if (bRet == FALSE) {
+                    int err = GetLastError();
+                    cout << endl << "Unable to perform restart operation, error code：" << err << endl;
+                }
+                WaitForSingleObject(pi.hProcess, INFINITE);
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+                return 0;
+            });
+            val["msg"] = "The server will automatically restart after one second";
+        } else {
+            val["msg"] = "Failed to create a restart script file";
+            val["code"] = API::OtherFailed;
+        }
     });
-
-    api_regist("/media/api/storage/dashboard/summary", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-
-        dispatchApiWork(sender, headerOut, val, invoker, [](Json::Value &val) {
-            storageDashboardSummary(val);
-        }, nullptr, apiWorkLimit("storage.read"));
-    });
-
-    api_regist("/media/api/storage/alert/list", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storageAlertList(allArgs, val);
-        }, nullptr, apiWorkLimit("storage.read"));
-    });
-
-    api_regist("/media/api/storage/restoreJob/list", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storageRestoreJobList(allArgs, val);
-        }, nullptr, apiWorkLimit("storage.read"));
-    });
-
-    api_regist("/media/api/storage/tieringJob/list", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storageTieringJobList(allArgs, val);
-        }, nullptr, apiWorkLimit("storage.read"));
-    });
-
-    api_regist("/media/api/storage/expiredSegment/list", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storageExpiredSegmentList(allArgs, val);
-        }, nullptr, apiWorkLimit("storage.read"));
-    });
-
-    api_regist("/media/api/storage/protected/list", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storageProtectedList(allArgs, val);
-        }, nullptr, apiWorkLimit("storage.read"));
-    });
-
-    // Constant answer: no blocking work, so no dispatch.
-    api_regist("/media/api/storage/pool/options", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-
-        storagePoolOptions(val);
-        invoker(200, headerOut, val.toStyledString());
-    });
-
-    api_regist("/media/api/storage/mountpoint/available", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storageMountpointAvailable(allArgs, val);
-        }, nullptr, apiWorkLimit("storage.read"));
-    });
-
-    api_regist("/media/api/storage/pool/testConnection", [](API_ARGS_JSON_ASYNC) {
-        CHECK_SECRET();
-
-        // The connection test (filesystem/S3 round trip) runs on the API worker, but not in the
-        // serial mutation group: it writes nothing. No read group either, because a pool that does
-        // not answer holds its worker for the whole connect timeout.
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storagePoolTestConnection(allArgs, val);
-        });
-    });
-
-    api_regist("/media/api/storage/camera/effectivePolicy/list", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storageCameraEffectivePolicyList(allArgs, val);
-        }, nullptr, apiWorkLimit("storage.read"));
-    });
-
-    api_regist("/media/api/storage/camera/timeline", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-        CHECK_ARGS_("camera_id", "start_time", "end_time");
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storageCameraTimeline(allArgs, val);
-        }, nullptr, apiWorkLimit("storage.read"));
-    });
-
-    api_regist("/media/api/storage/camera/summary", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-        CHECK_ARGS_("camera_id");
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storageCameraSummary(allArgs, val);
-        }, nullptr, apiWorkLimit("storage.read"));
-    });
-
-    api_regist("/media/api/storage/pool/list", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storagePoolList(allArgs, val);
-        }, nullptr, apiWorkLimit("storage.read"));
-    });
-
-    api_regist("/media/api/storage/pool/detail", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-        CHECK_ARGS_("id");
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storagePoolDetail(allArgs, val);
-        }, nullptr, apiWorkLimit("storage.read"));
-    });
-
-    api_regist("/media/api/storage/pool/create", [](API_ARGS_JSON_ASYNC) {
-        CHECK_SECRET();
-        CHECK_ARGS_("name", "type", "tier");
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storagePoolCreate(allArgs, val);
-        }, nullptr, apiWorkSerial("storage.mutation"));
-    });
-
-    api_regist("/media/api/storage/pool/update", [](API_ARGS_JSON_ASYNC) {
-        CHECK_SECRET();
-        CHECK_ARGS_("id");
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storagePoolUpdate(allArgs, val);
-        }, nullptr, apiWorkSerial("storage.mutation"));
-    });
-
-    api_regist("/media/api/storage/pool/delete", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-        CHECK_ARGS_("id");
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storagePoolDelete(allArgs, val);
-        }, nullptr, apiWorkSerial("storage.mutation"));
-    });
-
-    api_regist("/media/api/storage/pool/encrypt/changePassword", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-        CHECK_ARGS_("id", "old_password", "new_password");
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storagePoolEncryptChangePassword(allArgs, val);
-        }, nullptr, apiWorkSerial("storage.mutation"));
-    });
-
-    api_regist("/media/api/storage/policy/list", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storagePolicyList(allArgs, val);
-        }, nullptr, apiWorkLimit("storage.read"));
-    });
-
-    api_regist("/media/api/storage/policy/detail", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-        CHECK_ARGS_("id");
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storagePolicyDetail(allArgs, val);
-        }, nullptr, apiWorkLimit("storage.read"));
-    });
-
-    api_regist("/media/api/storage/policy/create", [](API_ARGS_JSON_ASYNC) {
-        CHECK_SECRET();
-        CHECK_ARGS_("name", "total_retention_days");
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storagePolicyCreate(allArgs, val);
-        }, nullptr, apiWorkSerial("storage.mutation"));
-    });
-
-    api_regist("/media/api/storage/policy/update", [](API_ARGS_JSON_ASYNC) {
-        CHECK_SECRET();
-        CHECK_ARGS_("id");
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storagePolicyUpdate(allArgs, val);
-        }, nullptr, apiWorkSerial("storage.mutation"));
-    });
-
-    api_regist("/media/api/storage/policy/delete", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-        CHECK_ARGS_("id");
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storagePolicyDelete(allArgs, val);
-        }, nullptr, apiWorkSerial("storage.mutation"));
-    });
-
-    api_regist("/media/api/storage/policy/assignCamera", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-        CHECK_ARGS_("camera_id", "policy_id");
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storagePolicyAssignCamera(allArgs, val);
-        }, nullptr, apiWorkSerial("storage.mutation"));
-    });
-
-    api_regist("/media/api/storage/policy/assignCameras", [](API_ARGS_JSON_ASYNC) {
-        CHECK_SECRET();
-        CHECK_ARGS_("policy_id");
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storagePolicyAssignCameras(allArgs, val);
-        }, nullptr, apiWorkSerial("storage.mutation"));
-    });
-
-    api_regist("/media/api/storage/policy/removeCamera", [](API_ARGS_MAP_ASYNC) {
-        CHECK_SECRET();
-        CHECK_ARGS_("camera_id");
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storagePolicyRemoveCamera(allArgs, val);
-        }, nullptr, apiWorkSerial("storage.mutation"));
-    });
-
-    api_regist("/media/api/storage/policy/removeCameras", [](API_ARGS_JSON_ASYNC) {
-        CHECK_SECRET();
-
-        dispatchApiWork(sender, headerOut, val, invoker, [allArgs](Json::Value &val) {
-            storagePolicyRemoveCameras(allArgs, val);
-        }, nullptr, apiWorkSerial("storage.mutation"));
-    });
-#endif // ENABLE_TIER_STORAGE
+#endif
 
     // Configuration APIs
     managerkit::registerConfigurationApis();

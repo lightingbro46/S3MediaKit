@@ -215,7 +215,7 @@ def api_config(work, env, state):
     server = server_entry(NODE_ID, {"http": p["http"], "rtsp": p["rtsp"], "rtmp": p["rtmp"]})
     return {
         "media_server": {
-            "serverGroupId": 0, "maxConfigCameras": 16, "maxStream": 64,
+            "serverGroupId": 0, "failover": True, "maxConfigCameras": 16, "maxStream": 64,
             "maxStreamPerCamera": 8, "projectId": PROJECT_ID,
             "unlimitedStream": True, "unlimitedStreamPerCamera": True,
         },

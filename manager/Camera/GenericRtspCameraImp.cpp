@@ -4,6 +4,8 @@
 #include "Common/config.h"
 #include "Thread/WorkThreadPool.h"
 #include "Local/MediaGapFillManager.h"
+#include "Server/HealthMonitor.h"
+#include "Common/MultiMediaSourceMuxer.h"
 
 using namespace std;
 using namespace toolkit;
@@ -16,6 +18,9 @@ GenericRtspCameraImp::GenericRtspCameraImp(const DeviceTuple& tuple, const std::
     _poller = DeviceSource::nextDevicePoller();
     CHECK(_poller != nullptr, "Failed to get poller for GenericRtspCameraImp");
     _src = std::make_shared<GenericRtspCamera>(tuple, stream_map);
+    for (int type = 0; type < StreamMax; ++type) {
+        _quality[type] = std::make_shared<StreamQuality>(static_cast<int64_t>(time(nullptr)));
+    }
     statistic->setDeviceTuple(tuple);
     statistic->setStreamTuples(stream_map);
 }
@@ -144,6 +149,10 @@ void GenericRtspCameraImp::setupScheduler() {
         }
         _scheduler.reset();
     }
+    if (!_option.enableRecord) {
+        // A disabled scheduler never calls back.
+        publishRecordExpectation(static_cast<int>(RecordMode::NoRecord), false);
+    }
     _scheduler = RecordScheduler::create(_src->getDeviceTuple(), _option.enableRecord, _option.recordSchedules, _poller);
     _scheduler->setListener(shared_from_this());
 }
@@ -163,6 +172,7 @@ void GenericRtspCameraImp::stop() {
     if (_scheduler) {
         _scheduler->stopTimer();
     }
+    publishRecordExpectation(static_cast<int>(RecordMode::NoRecord), false);
 
     auto strong_statistic = _statistic.lock();
     if (strong_statistic) {
@@ -218,11 +228,31 @@ void GenericRtspCameraImp::saveCameraOption(const CameraOption &option) {
 
 void GenericRtspCameraImp::onRecordModeChange(DeviceSource &sender, int archive_mode, bool start) {
     CHECK(getOwnerPoller(DeviceSource::NullDeviceSource())->isCurrentThread(), "Can only call onRecordModeChange in it's owner poller");
+    publishRecordExpectation(archive_mode, start);
     if (!_sink) {
         WarnL << "Stream sink for camera " << _src->getUrl() << " is not ready. Ignore setup record mode request";
         return;
     }
     _sink->setupRecord(archive_mode, start);
+}
+
+void GenericRtspCameraImp::publishRecordExpectation(int mode, bool event_active) {
+    bool expected = isRecordingExpected(_option.enableRecord, static_cast<RecordMode>(mode), event_active);
+    uint32_t packed = (static_cast<uint32_t>(mode) & 0xFF) | (event_active ? 0x100u : 0u) | (expected ? 0x200u : 0u);
+    uint32_t old = _record_expectation.exchange(packed);
+    if (((old & 0x200u) != 0) != expected || _record_expectation_since.load() == 0) {
+        _record_expectation_since = static_cast<int64_t>(time(nullptr));
+    }
+}
+
+GenericRtspCameraImp::RecordExpectation GenericRtspCameraImp::getRecordExpectation() const {
+    RecordExpectation out;
+    uint32_t packed = _record_expectation.load();
+    out.mode = static_cast<int>(packed & 0xFF);
+    out.event_active = (packed & 0x100u) != 0;
+    out.expected = (packed & 0x200u) != 0;
+    out.since = _record_expectation_since.load();
+    return out;
 }
 
 bool GenericRtspCameraImp::onRecordRootPathChange(DeviceSource &sender, const std::string &record_root_path) {
@@ -299,6 +329,7 @@ void GenericRtspCameraImp::onStreamReady(DeviceSource &sender, int type, bool li
             updated_status = (StrPrinter << "Byte speed too low (" << info->byte_speed << " B/s), stream considered stalled");
         }
         strong_statistic->addStreamStatistic(type, live, updated_status, info);
+        updateStreamQuality(type, live, info);
     }
     publishDeviceCapabilities(false);
     if (_option.emitStreamStatusChangeEvent && live != current_stream_live) {
@@ -309,6 +340,66 @@ void GenericRtspCameraImp::onStreamReady(DeviceSource &sender, int type, bool li
     DebugL << "Sent stream ready event for camera " << _src->getUrl() << " live=" << live << ", status=" << status;
 #endif
     }
+}
+
+void GenericRtspCameraImp::updateStreamQuality(int type, bool live, const mediakit::TranslationInfo *info) {
+    auto quality = _quality[type];
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    quality->onLive(live, now);
+    auto &meter = _frame_meter[type];
+    if (!live || !info || !_src->hasStreamTuple(type)) {
+        meter = FrameMeter();
+        return;
+    }
+    auto tuple = _src->getStreamTuple(type);
+    auto media = MediaSource::find(RTSP_SCHEMA, tuple.vhost, tuple.device_id, tuple.stream_id);
+    if (!media) {
+        meter = FrameMeter();
+        return;
+    }
+
+    // The track's fps comes from the SPS; the camera may send fewer frames: measure them.
+    double fps = -1;
+    if (auto muxer = media->getMuxer()) {
+        uint64_t frames = muxer->videoFrameCount();
+        uint64_t at_ms = getCurrentMillisecond();
+        if (meter.at_ms > 0 && at_ms > meter.at_ms + 5000 && frames >= meter.frames) {
+            fps = (frames - meter.frames) * 1000.0 / (at_ms - meter.at_ms);
+        }
+        meter.frames = frames;
+        meter.at_ms = at_ms;
+    }
+    for (const auto &it : info->stream_info) {
+        if (it.codec_type != TrackVideo) {
+            continue;
+        }
+        std::string format = it.codec_name + " " + std::to_string(it.video_width) + "x" + std::to_string(it.video_height);
+        // Many cameras' tracks report no bitrate: fall back to the stream's measured byte rate.
+        double kbps = it.bitrate > 0 ? it.bitrate / 1000.0 : (info->byte_speed > 0 ? info->byte_speed * 8 / 1000.0 : -1);
+        // No measurement yet (first sample after connect): skipped, onSample ignores fps <= 0.
+        quality->onSample(fps, kbps, format, now, HealthMonitorConfig::baselineConfig());
+        break;
+    }
+
+    // RTP loss belongs to the player's poller; one hop per stream per statistic sample (60 s).
+    std::weak_ptr<MediaSource> weak_media = media;
+    try {
+        media->getOwnerPoller()->async([weak_media, quality]() {
+            auto media = weak_media.lock();
+            if (!media) {
+                return;
+            }
+            float loss = media->getLossRate(TrackVideo);
+            quality->onLossRate(loss >= 0 ? loss * 100.0 : -1.0, static_cast<int64_t>(time(nullptr)));
+        }, false);
+    } catch (const std::exception &ex) {
+        // Sources without an owner poller report no loss.
+        DebugL << "No loss rate for " << tuple.shortUrl() << ": " << ex.what();
+    }
+}
+
+StreamQuality::Ptr GenericRtspCameraImp::getStreamQuality(int type) const {
+    return isValidStreamType(type) ? _quality[type] : nullptr;
 }
 
 void GenericRtspCameraImp::resetMediaHealth(int type) {
@@ -447,6 +538,10 @@ void GenericRtspCameraImp::setMediaProfile(const std::string &profileToken, Vide
         cb(SockException(Err_other, "Camera controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
         return;
     }
+    // The stream settings change: learn the fps/bitrate baseline again.
+    for (auto &quality : _quality) {
+        quality->resetBaseline();
+    }
     _controller->setMediaProfileAsync(profileToken, config, cb);
 }
 
@@ -577,6 +672,10 @@ void GenericRtspCameraImp::applyRuleVideoConfig(const std::string &logId, const 
         cb(SockException(Err_other, "Camera controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
         return;
     }
+    // The stream settings change: learn the fps/bitrate baseline again.
+    for (auto &quality : _quality) {
+        quality->resetBaseline();
+    }
     _controller->applyRuleVideoConfigAsync(logId, profileToken, config, cb);
 }
 
@@ -585,6 +684,10 @@ void GenericRtspCameraImp::rollbackRuleVideoConfig(const std::string &profileTok
     if (!_controller) {
         cb(SockException(Err_other, "Camera controller is not ready", ApiErrCode::CODE_DEVICE_OFFLINE));
         return;
+    }
+    // The stream settings change: learn the fps/bitrate baseline again.
+    for (auto &quality : _quality) {
+        quality->resetBaseline();
     }
     _controller->rollbackRuleVideoConfigAsync(profileToken, baseline, cb);
 }

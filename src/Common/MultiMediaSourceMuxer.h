@@ -1,6 +1,7 @@
 ﻿#ifndef S3MEDIAKIT_MULTIMEDIASOURCEMUXER_H
 #define S3MEDIAKIT_MULTIMEDIASOURCEMUXER_H
 
+#include <atomic>
 #include "Common/Stamp.h"
 #include "Common/MediaSource.h"
 #include "Common/MediaSink.h"
@@ -161,6 +162,11 @@ public:
     const ProtocolOption &getOption() const;
     const MediaTuple &getMediaTuple() const;
     std::string shortUrl() const;
+    // getCurrentMillisecond() (monotonic) of the last video frame that entered the muxer, 0 before the first one.
+    // Readable from any thread (health monitor: time since the camera last sent video).
+    uint64_t lastVideoFrameMs() const { return _last_video_frame_ms.load(std::memory_order_relaxed); }
+    // Video frames that entered the muxer since it was created (measured fps = delta / time).
+    uint64_t videoFrameCount() const { return _video_frames.load(std::memory_order_relaxed); }
 #if defined(ENABLE_RTPPROXY)
     void forEachRtpSender(const std::function<void(const std::string &ssrc, const RtpSender &sender)> &cb) const;
 #endif // ENABLE_RTPPROXY
@@ -194,6 +200,8 @@ private:
     bool _is_enable = false;
     bool _create_in_poller = false;
     bool _video_key_pos = false;
+    std::atomic<uint64_t> _last_video_frame_ms { 0 };
+    std::atomic<uint64_t> _video_frames { 0 };
     float _dur_sec;
     std::shared_ptr<class FramePacedSender> _paced_sender;
     MediaTuple _tuple;

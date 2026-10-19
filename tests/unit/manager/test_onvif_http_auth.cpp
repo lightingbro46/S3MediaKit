@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <map>
 #include <mutex>
@@ -104,6 +105,8 @@ TEST(OnvifFailureTest, ClassifiesNetworkAndCredentialFailures) {
     EXPECT_EQ(DeviceFailure::Unauthorized, OnvifControl::classifyFailure(403, "", false));
     EXPECT_EQ(DeviceFailure::Unreachable, OnvifControl::classifyFailure(SOAP_TCP_ERROR, "connect failed", false));
     EXPECT_EQ(DeviceFailure::Timeout, OnvifControl::classifyFailure(SOAP_EOF, "End of file or no input", false));
+    // A 200 header, then a body cut short.
+    EXPECT_EQ(DeviceFailure::Timeout, OnvifControl::classifyFailure(200, "Error 200: HTTP 200 OK", false));
     // WS-Security rejected inside a SOAP fault (camera in "digest&ws-username token" mode).
     EXPECT_EQ(DeviceFailure::Unauthorized,
               OnvifControl::classifyFailure(SOAP_FAULT, "SOAP 1.2 fault SOAP-ENV:Sender [ter:NotAuthorized]", false));
@@ -157,7 +160,9 @@ public:
     // SILENT: never answers anything but GetSystemDateAndTime.
     // WSSE: checks the WS-UsernameToken like a camera in "WS-UsernameToken" mode, against its own
     // clock (see setClockOffset()); a signature more than 10 s off is rejected like a bad password.
-    enum Auth { NONE, DIGEST, BASIC, SILENT, WSSE };
+    // TRICKLE: answers anything but GetSystemDateAndTime with a 200 whose body comes one byte every
+    // 500 ms, so the receive timeout never trips.
+    enum Auth { NONE, DIGEST, BASIC, SILENT, WSSE, TRICKLE };
 
     struct Request {
         string action;
@@ -280,12 +285,25 @@ private:
         if (_auth == WSSE) {
             req.authorized = open_time || checkWsse(body);
         } else {
-            req.authorized = _auth == NONE || _auth == SILENT || open_time || checkAuth(req.authorization, path);
+            req.authorized = _auth == NONE || _auth == SILENT || _auth == TRICKLE || open_time
+                || checkAuth(req.authorization, path);
         }
 
         if (_auth == SILENT && req.action != "GetSystemDateAndTime") {
             // Hold the request until the client gives up and closes the connection.
             while (!_stop && recv(fd, buf, sizeof(buf), 0) > 0) {
+            }
+            return;
+        }
+        if (_auth == TRICKLE && req.action != "GetSystemDateAndTime") {
+            const string head = "HTTP/1.1 200 OK\r\nContent-Type: application/soap+xml\r\n"
+                                "Content-Length: 100000\r\nConnection: close\r\n\r\n";
+            if (send(fd, head.data(), head.size(), MSG_NOSIGNAL) < 0) {
+                return;
+            }
+            // Until the client gives up and closes the connection.
+            while (!_stop && send(fd, " ", 1, MSG_NOSIGNAL) == 1) {
+                this_thread::sleep_for(chrono::milliseconds(500));
             }
             return;
         }
@@ -605,6 +623,72 @@ TEST_F(OnvifHttpAuthTest, SilentCameraTimesOut) {
     OnvifControl ctr(cam.host(), "admin", "pw");
     EXPECT_FALSE(ctr.connect());
     EXPECT_EQ(DeviceFailure::Timeout, ctr.lastFailure());
+}
+
+// Restores onvif.connectTimeoutSec when a test changed it.
+struct ConnectTimeoutGuard {
+    explicit ConnectTimeoutGuard(int sec) { set(sec); }
+    ~ConnectTimeoutGuard() { set(30); }
+    static void set(int sec) {
+        mINI::Instance()[OnvifCtrl::kConnectTimeoutSec] = sec;
+        NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+    }
+};
+
+int64_t elapsedMs(const chrono::steady_clock::time_point &start) {
+    return chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - start).count();
+}
+
+TEST_F(OnvifHttpAuthTest, TrickledAnswerIsCutByTheTransferTimeout) {
+    // No connect deadline: only the per-request bound is left. A byte every 500 ms never trips
+    // the 10 s receive timeout, and used to hold the request for as long as the camera liked.
+    ConnectTimeoutGuard guard(0);
+    FakeCamera cam(FakeCamera::TRICKLE, "admin", "pw");
+    OnvifControl ctr(cam.host(), "admin", "pw");
+    const auto start = chrono::steady_clock::now();
+    EXPECT_FALSE(ctr.connect());
+    const int64_t took = elapsedMs(start);
+    EXPECT_GE(took, 9000);
+    EXPECT_LE(took, 13000);
+    EXPECT_EQ(DeviceFailure::Timeout, ctr.lastFailure());
+}
+
+TEST_F(OnvifHttpAuthTest, ConnectDeadlineCutsASlowCameraAndIsCleared) {
+    FakeCamera cam(FakeCamera::SILENT, "admin", "pw");
+    OnvifControl ctr(cam.host(), "admin", "pw");
+    {
+        ConnectTimeoutGuard guard(2);
+        const auto start = chrono::steady_clock::now();
+        EXPECT_FALSE(ctr.connect());
+        const int64_t took = elapsedMs(start);
+        EXPECT_GE(took, 1500);
+        EXPECT_LE(took, 3500);
+        EXPECT_EQ(DeviceFailure::Timeout, ctr.lastFailure());
+        EXPECT_EQ(ConnectError::UNREACHABLE, ctr.lastConnectError());
+        EXPECT_NE(string::npos, ctr.lastError().find("ONVIF connect exceeded 2 s")) << ctr.lastError();
+        EXPECT_FALSE(ctr.deadlineExceeded()) << "connect() must clear its own deadline";
+    }
+    // A deadline left behind would fail this one at once with "Deadline exceeded".
+    ConnectTimeoutGuard guard(3);
+    const auto start = chrono::steady_clock::now();
+    EXPECT_FALSE(ctr.connect());
+    const int64_t took = elapsedMs(start);
+    EXPECT_GE(took, 2500);
+    EXPECT_LE(took, 4500);
+    EXPECT_NE(string::npos, ctr.lastError().find("ONVIF connect exceeded 3 s")) << ctr.lastError();
+}
+
+TEST_F(OnvifHttpAuthTest, DiscoveryDeadlineWinsOverTheConnectDeadline) {
+    // connectTimeoutSec would allow 30 s; the caller's deadline of 1 s is the one that applies.
+    FakeCamera cam(FakeCamera::SILENT, "admin", "pw");
+    OnvifControl ctr(cam.host(), "admin", "pw");
+    const auto start = chrono::steady_clock::now();
+    ctr.setDeadline(static_cast<uint64_t>(chrono::duration_cast<chrono::milliseconds>(
+        chrono::steady_clock::now().time_since_epoch()).count()) + 1000);
+    EXPECT_FALSE(ctr.connect());
+    EXPECT_LE(elapsedMs(start), 2500);
+    EXPECT_TRUE(ctr.deadlineExceeded()) << "the caller's deadline is the caller's to clear";
+    EXPECT_EQ(string::npos, ctr.lastError().find("ONVIF connect exceeded")) << ctr.lastError();
 }
 
 // ---- Camera clock -------------------------------------------------------------

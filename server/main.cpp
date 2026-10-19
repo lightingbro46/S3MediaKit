@@ -453,6 +453,7 @@ int start_main(int argc,char *argv[]) {
         // Execute migrating database before running other
         migrateDatabase();
         InfoL << "Migrating database has been executed";
+        installHealthMonitor();
         installWebApi();
         InfoL << "The http API interface has been started";
         installWebHook();

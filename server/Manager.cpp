@@ -23,6 +23,7 @@
 #include "Camera/VideoConfigJobManager.h"
 #include "Camera/CameraStatistic.h"
 #include "Server/GlobalMonitor.h"
+#include "Server/HealthMonitor.h"
 #include "Manager.h"
 #include "Server/ClusterManager.h"
 #include "Local/StatisticRecorder.h"
@@ -736,6 +737,8 @@ void releaseStorageManagers() {
 }
 
 void unInstallManagerHook() {
+    // Marks this run as ended cleanly (the next start counts crashes apart from planned restarts).
+    HealthMonitor::Instance().stop();
     releaseSyncDatabase();
     releaseAllDevice();
     releaseActiveJobs();
@@ -1346,15 +1349,6 @@ bool onServerQualified() {
         // Resumes from the stored cursors; a gap (log pruned meanwhile) triggers a full resync.
         sync.start();
         s_rejoin_sync_started_ms = toolkit::getCurrentMillisecond(true);
-        // start() forgets the peers: hand back the healthy ones of this server group instead of waiting
-        // for the next health check round.
-        GET_CONFIG(int, self_group_id, Cluster::kServerLocationId);
-        auto &cluster = ClusterManager::Instance();
-        for (const auto &peer : cluster.getPeerUrls()) {
-            if (cluster.getMediaServer(peer.first).serverGroupId == self_group_id) {
-                sync.addPeer(peer.first, peer.second);
-            }
-        }
     }
     // Sync disabled by config (start() did not run it): nothing to wait for.
     if (sync.isRunning() && !sync.isCaughtUpSince(s_rejoin_sync_started_ms)) {
@@ -1412,6 +1406,8 @@ bool loadServerConfigJson(const Json::Value &data_api) {
     if (data.isMember("devices") && data["devices"].isArray()) {
         // get vector of current camera key 
         auto current_cameras = CameraManager::Instance().getCameraKeys();
+        // Applied above with media_server: a node with failover off runs only its own cameras.
+        GET_CONFIG(bool, enable_failover, Cluster::kEnableFailover);
 
         for (const auto &camera : data["devices"]) {
             // Get camera config from json data
@@ -1419,6 +1415,12 @@ bool loadServerConfigJson(const Json::Value &data_api) {
             fromJson(tuple, camera);
             CameraOption option;
             fromJson(option, camera);
+            if (!enable_failover && option.enableFailover) {
+                // Backup camera (priMediaServerId of another node): left out of the list, so one running
+                // here is released by delCamera() below.
+                DebugL << "Failover is off, skip backup camera " << tuple.shortUrl();
+                continue;
+            }
             loadWatermarkTemplateFromMap(option, watermark_template_map);
             unordered_map<int, StreamTuple> stream_map;
             fromJson(stream_map, camera);
@@ -2093,6 +2095,12 @@ void countDeviceStatusJson(const Json::Value &data, int &online, int &offline) {
 void installGlobalMonitor() {
     // Start monitoring system resource usage
     GlobalMonitor::Instance().start();
+}
+
+void installHealthMonitor() {
+    // Health/quality evaluation for /media/monitor/* (reads GlobalMonitor). After migrateDatabase():
+    // it writes its history, process starts and stream baselines right away.
+    HealthMonitor::Instance().start();
 }
 
 Json::Value makeCameraOptionJson(const CameraOption &option) {

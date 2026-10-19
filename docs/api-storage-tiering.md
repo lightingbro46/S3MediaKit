@@ -16,11 +16,9 @@ Tất cả route dùng prefix:
 /media/mserver/storage
 ```
 
-27 trong số các route này có bản song song ở prefix `/media/api/storage`, dùng `CHECK_SECRET()`
-thay cho JWT người dùng (trust boundary khác, dành cho gọi nội bộ giữa các node). **Payload của hai
-họ là một**: thân handler là hàm thuần dùng chung khai báo ở `server/WebApiStorage.h`, nên tài liệu
-này mô tả đúng cả hai. Các route còn lại (`playback/resolve`, `policy/clone`, `camera/summary/list`,
-các route job/alert/protected dạng mutation…) chỉ có ở `/media/mserver/storage`.
+Họ song song `/media/api/storage/*` (`CHECK_SECRET()`, dùng cho `www/console`) đã gỡ cùng console
+(2026-10-17); storage chỉ còn họ `/media/mserver/storage` dưới đây. App giám sát desktop xem storage qua
+`/media/monitor/summary` ([monitor-metrics-console-review.md](monitor-metrics-console-review.md)).
 
 Handler `API_ARGS_MAP` nhận query/form params; handler `API_ARGS_JSON` nhận JSON body. Route list/detail được backend đăng ký theo cùng cơ chế `api_regist`, không tách route GET và POST.
 

@@ -286,6 +286,32 @@ def step_b_failover(state):
         state["b_stamp"] = stamp
 
 
+def node_b_active(rows):
+    return [r for r in rows if r[0] == "node-b" and r[2] == 0] if isinstance(rows, list) else rows
+
+
+def step_b_no_failover(state):
+    # cluster.enableFailover=0 on node-b: the backup camera the service hands it is not run.
+    report(not node_online("node-a"), "FO-40", "node-a is offline")
+    row = live_stream("node-b")
+    report(not row, "FO-41", "node-b with failover off does not pull the backup camera", str(row))
+    rows = assignments("node-b")
+    report(node_b_active(rows) == [], "FO-42", "node-b DB: no active assignment of node-b", str(rows))
+
+
+def step_b_live(state):
+    row = live_stream("node-b")
+    report(bool(row), "FO-43", "node-b (failover on) runs the backup camera again", str(row))
+
+
+def step_b_released(state):
+    # Failover turned off while node-b runs the backup camera: released at that config push.
+    row = live_stream("node-b")
+    report(not row, "FO-44", "node-b releases the backup camera when failover is turned off", str(row))
+    rows = assignments("node-b")
+    report(node_b_active(rows) == [], "FO-45", "node-b DB: its assignment is released", str(rows))
+
+
 def step_a_back(state):
     now = int(time.time())
     t_a, t_b, t_back = state["t_a_start"], state["t_b_start"], state["t_back"]
@@ -382,7 +408,8 @@ def step_retention(state):
 def main():
     state = load_state()
     steps = {"a_live": step_a_live, "b_failover": step_b_failover,
-             "a_back": step_a_back, "retention": step_retention}
+             "a_back": step_a_back, "retention": step_retention,
+             "b_no_failover": step_b_no_failover, "b_live": step_b_live, "b_released": step_b_released}
     if STEP.startswith("mark:"):
         # run_cluster.sh records when each service decision was applied.
         state[STEP[5:]] = int(time.time())

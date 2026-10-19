@@ -113,6 +113,10 @@ STRESS_INI="hls.segDur=4" MS_EXTRA_ARGS="-t 16" MEDIA_PROFILE=realistic \
    nhóm nào cố định (ghi hình, SQLite, pool `api`/`device`).
 5. **Hàm nóng ở bậc 500** (`perf_500.txt`, self time theo thread/thư viện/hàm). Phân tích sâu hơn:
    `perf report -i perf_500.data` (file `.data` nằm trong `ccu_work/live_step/`, không vào tarball).
+6. Dòng **Monitor ở bậc 500** và bảng "Monitor `/media/monitor/summary` trong cửa sổ đo" (cột `collect ms tb/max` = `process.monitor.collect_ms`): monitor có báo
+   giả ở tải định mức không (bậc đạt mà monitor báo), có bỏ sót bậc trượt không. Cách hiệu chỉnh ngưỡng
+   từ kết quả này: [health-monitor-runbook.md](health-monitor-runbook.md) mục 3. Binary không có API
+   monitor thì cột ghi "không có số liệu".
 
 ## 5. Từ nút thắt tới tham số
 

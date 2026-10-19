@@ -92,10 +92,6 @@ public:
     void start();
     void stop();
 
-    // Manager peer nodes (when cluster membership changes)
-    void addPeer(const std::string &peer_id, const std::string &base_url);
-    void removePeer(const std::string &peer_id);
-
     // Expose for HTTP handler: build snapshot of local DB
     SnapshotData buildLocalSnapshot();
 
@@ -116,6 +112,17 @@ public:
     void setSingleNodeMode(bool single_node);
 
     bool isRunning();
+
+    // State for the health monitor, copied under the lock (no database access).
+    struct HealthView {
+        bool running = false;
+        bool bootstrapped = false;
+        bool single_node = false;
+        bool decommissioned = false;
+        // peer -> wall clock ms of the last pull answered with everything (0 = none yet).
+        std::unordered_map<std::string, uint64_t> last_complete_pull_ms;
+    };
+    HealthView healthView();
 
     // Bootstrapped, and every peer answered a pull sent at or after `since_ms` with all it had: the ESC
     // data includes everything the peers held at that time. True without peers.
@@ -235,8 +242,11 @@ private:
     // Serializes applyBatch/applySnapshot; normally they already run on _worker, the lock also
     // covers direct callers such as unit tests.
     std::mutex                                   _apply_mtx;
-    std::unordered_map<std::string, std::string> _peers; // node_id → base_url
-    std::unordered_set<std::string>              _bootstrapping; // guard: bootstrap in progress
+    // The peers to sync with are not stored here: ClusterManager::getSyncPeerUrls() is read on every
+    // use, so only per-peer sync state lives below. Lock rule: ClusterManager is called without
+    // holding _mtx, and ClusterManager never calls into SyncManager while holding its own lock.
+    // Guard: bootstrap in progress. Cleared by the doBootstrap callback, which always runs (HTTP timeout).
+    std::unordered_set<std::string>              _bootstrapping;
     std::string                                  _last_bootstrap_peer; // for logging
     // Answers per peer while bootstrapping, for the seed election (cleared once bootstrapped).
     std::unordered_map<std::string, BootstrapProbe> _bootstrap_probes;
@@ -255,6 +265,7 @@ private:
     bool _single_node = false;
     std::atomic<bool> _decommissioned { false };
     // peer → send time of the last pull that returned all its pending entries (guarded by _mtx).
+    // Kept while the peer is unreachable; dropped once it leaves this server group.
     std::unordered_map<std::string, uint64_t> _last_complete_pull_ms;
 };
 

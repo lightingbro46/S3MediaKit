@@ -322,7 +322,7 @@ Báo khi `requiredBytes × storage.retention_forecast_safety_factor` (mặc đ�
   nhận nhắc lại; nên dùng ngưỡng lớn hơn chu kỳ nhắc lại (ví dụ 7 giờ).
 - Pool HOT còn có thêm một dòng `storage_alerts` loại `TIER_RETENTION_CAPACITY_LOW` (tối đa một dòng/giờ/pool cho cùng mức; đổi mức thì ghi ngay).
 
-Số liệu hiện tại đọc qua `GET /media/mserver/systemStatistic` (và `/media/api/systemStatistic`), object
+Số liệu hiện tại đọc qua `GET /media/mserver/systemStatistic` (và `/media/monitor/summary` → `storage.record_write`), object
 `data.record_write`:
 
 ```jsonc

@@ -384,8 +384,8 @@ Khi người dùng chọn “Thử lại” hoặc “Khôi phục lại”, g�
 
 ## 13. Web Console Player: restore theo chunk
 
-Phần này lấy state machine trong `www/console/player/pc-restore.js` làm tham
-chiếu. Contract dành cho FE mới được chuẩn hóa dùng JSON body và poll mỗi 5 giây,
+Phần này lấy state machine của `www/console/player/pc-restore.js` (đã gỡ 2026-10-17, xem lịch sử git
+trước commit gỡ console) làm tham chiếu. Contract dành cho FE mới được chuẩn hóa dùng JSON body và poll mỗi 5 giây,
 không phụ thuộc vào DOM hoặc player library của Console.
 
 ### 13.1. Nguồn timeline và routing

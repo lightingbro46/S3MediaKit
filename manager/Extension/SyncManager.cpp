@@ -247,11 +247,8 @@ void SyncManager::start() {
         _self_node_id = ResourceManager::Instance().getSelfNodeId();
         _self_db_id   = ResourceManager::Instance().getSelfDbGuid();
         _running      = true;
-        _peers.clear();
         _bootstrapping.clear();
-        // Peers are populated by ClusterManager::addPeer() after health checks.
-        // ClusterManager::healthCheckPersistedPeers() handles re-connecting to
-        // known peers on restart without SyncManager loading the list directly.
+        // Peers come from ClusterManager::getSyncPeerUrls() on every tick.
     }
 
     weak_ptr<SyncManager> weak_self = shared_from_this();
@@ -301,40 +298,11 @@ void SyncManager::stop() {
     _running      = false;
     _bootstrapped = false;
     _timer.reset();
-    _peers.clear();
     _bootstrapping.clear();
     _last_bootstrap_peer.clear();
     _bootstrap_probes.clear();
     _last_complete_pull_ms.clear();
     InfoL << "Sync manager has been stopped";
-}
-
-void SyncManager::addPeer(const string &peer_id, const string &base_url) {
-    {
-        lock_guard<mutex> lock(_mtx);
-        if (peer_id == _self_node_id) {
-            WarnL << "Ignore adding self to peer list";
-            return;
-        }
-        _peers[peer_id] = base_url;
-    }
-    InfoL << "Added peer: " << peer_id << " (" << base_url << ")";
-}
-
-void SyncManager::removePeer(const string &peer_id) {
-    lock_guard<mutex> lock(_mtx);
-    _peers.erase(peer_id);
-    _bootstrapping.erase(peer_id);
-    _bootstrap_probes.erase(peer_id);
-    _last_complete_pull_ms.erase(peer_id);
-    if (_last_bootstrap_peer == peer_id) {
-        _last_bootstrap_peer.clear();
-    }
-    InfoL << "Removed peer: " << peer_id;
-    // Note: Must NOT delete transaction_sequence entries for the removed peer, because:
-    // 1) If the peer is re-added later, the old cursor is still valid and can be resumed from.
-    // 2) If the peer is permanently removed, the transaction_sequence entries for that peer will 
-    // be orphaned but harmless (they won't match any incoming peer_id) and can be ignored or cleaned up manually if desired.
 }
 
 bool SyncManager::isBootstrapped() {
@@ -360,15 +328,35 @@ SnapshotData SyncManager::buildLocalSnapshot() {
 //    _bootstrapped → incremental pull from ALL peers every tick.
 
 void SyncManager::onTick() {
-    unordered_map<string, string> peers_copy;
+    // Read ClusterManager before taking _mtx (see the lock rule in SyncManager.h).
+    auto peers_copy = ClusterManager::Instance().getSyncPeerUrls();
+    unordered_set<string> members;
+    {
+        GET_CONFIG(int, self_group_id, Cluster::kServerLocationId);
+        auto &cluster = ClusterManager::Instance();
+        for (const auto &id : cluster.getMediaServerIds()) {
+            if (cluster.getMediaServer(id).serverGroupId == self_group_id) {
+                members.insert(id);
+            }
+        }
+    }
     bool bootstrapped;
     bool bootstrap_in_progress;
     {
         lock_guard<mutex> lock(_mtx);
         if (!_running) return;
-        peers_copy           = _peers;
         bootstrapped         = _bootstrapped;
         bootstrap_in_progress = !_bootstrapping.empty();
+        // Forget the sync state of servers that left this group; an unreachable member keeps it.
+        for (auto it = _last_complete_pull_ms.begin(); it != _last_complete_pull_ms.end();) {
+            it = members.count(it->first) ? std::next(it) : _last_complete_pull_ms.erase(it);
+        }
+        for (auto it = _bootstrap_probes.begin(); it != _bootstrap_probes.end();) {
+            it = members.count(it->first) ? std::next(it) : _bootstrap_probes.erase(it);
+        }
+        if (!_last_bootstrap_peer.empty() && !members.count(_last_bootstrap_peer)) {
+            _last_bootstrap_peer.clear();
+        }
     }
 
     if (bootstrapped && !isDecommissioned()) {
@@ -433,19 +421,14 @@ void SyncManager::onTick() {
                     if (key == _last_bootstrap_peer) seen_last = true;
                     continue;
                 }
-                if (_peers.count(key)) {
-                    target_id  = key;
-                    target_url = _peers.at(key);
-                    break;
-                }
+                target_id  = key;
+                target_url = peers_copy.at(key);
+                break;
             }
             // Wrap around: no peer found after last → restart from beginning
             if (target_id.empty() && !peer_keys.empty()) {
-                const string &key = peer_keys[0];
-                if (_peers.count(key)) {
-                    target_id  = key;
-                    target_url = _peers.at(key);
-                }
+                target_id  = peer_keys[0];
+                target_url = peers_copy.at(target_id);
             }
             if (!target_id.empty()) {
                 _bootstrapping.insert(target_id);
@@ -1246,12 +1229,12 @@ void SyncManager::maybePruneLog() {
     // Watermark peers: healthy peers plus known peers that are offline but may still resume
     // incrementally (see selectPruneWatermarkPeers).
     unordered_set<string> healthy;
+    for (const auto &pair : ClusterManager::Instance().getSyncPeerUrls()) {
+        healthy.insert(pair.first);
+    }
     string self_id;
     {
         lock_guard<mutex> lock(_mtx);
-        for (const auto &pair : _peers) {
-            healthy.insert(pair.first);
-        }
         self_id = _self_node_id;
     }
     GET_CONFIG(int, self_group_id, Cluster::kServerLocationId);
@@ -1290,12 +1273,28 @@ bool SyncManager::isRunning() {
     return _running;
 }
 
+SyncManager::HealthView SyncManager::healthView() {
+    auto peers = ClusterManager::Instance().getSyncPeerUrls();
+    lock_guard<mutex> lock(_mtx);
+    HealthView v;
+    v.running = _running;
+    v.bootstrapped = _bootstrapped;
+    v.single_node = _single_node;
+    v.decommissioned = _decommissioned.load();
+    for (const auto &peer : peers) {
+        auto it = _last_complete_pull_ms.find(peer.first);
+        v.last_complete_pull_ms[peer.first] = it == _last_complete_pull_ms.end() ? 0 : it->second;
+    }
+    return v;
+}
+
 bool SyncManager::isCaughtUpSince(uint64_t since_ms) {
+    auto peers = ClusterManager::Instance().getSyncPeerUrls();
     lock_guard<mutex> lock(_mtx);
     if (!_running || !_bootstrapped) {
         return false;
     }
-    for (const auto &peer : _peers) {
+    for (const auto &peer : peers) {
         auto it = _last_complete_pull_ms.find(peer.first);
         if (it == _last_complete_pull_ms.end() || it->second < since_ms) {
             return false;

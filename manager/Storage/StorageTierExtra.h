@@ -301,6 +301,21 @@ public:
         return ret;
     }
 
+    // FAILED jobs whose last update is at or after `updated_from` (unix seconds), oldest update first.
+    std::vector<RestoreJob> findFailedUpdatedSince(int64_t updated_from, int limit) {
+        auto rows = _executor->executeRaw(
+            toolkit::QueryBuilder()
+                .select(EntityTraits<RestoreJob>::getColumns())
+                .from(EntityTraits<RestoreJob>::tableName())
+                .where("status = ? AND updated_at >= ?", {"FAILED", std::to_string(updated_from)})
+                .orderBy("updated_at ASC")
+                .limit(limit));
+        std::vector<RestoreJob> ret;
+        for (const auto &row : rows)
+            ret.push_back(EntityTraits<RestoreJob>::fromRow(row));
+        return ret;
+    }
+
     std::vector<RestoreJob> queryOverlapping(const std::string &camera_id,
                                              int64_t start_time,
                                              int64_t end_time,

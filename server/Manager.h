@@ -44,6 +44,8 @@ Json::Value makeDeviceStoragesJson();
 void countDeviceStatusJson(const Json::Value &data, int &online, int &offline);
 
 void installGlobalMonitor();
+// Health monitor (/media/monitor/*): after migrateDatabase(), it writes its tables at once.
+void installHealthMonitor();
 
 Json::Value makeDeviceStatisticJson(const managerkit::DeviceSource::Ptr &device);
 

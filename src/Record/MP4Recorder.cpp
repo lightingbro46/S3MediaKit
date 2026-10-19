@@ -1,9 +1,11 @@
 ﻿#ifdef ENABLE_MP4
+#include <atomic>
 #include <ctime>
 #include <sys/stat.h>
 #include <map>
 #include <mutex>
 #include "Util/File.h"
+#include "Util/uv_errno.h"
 #include "Util/onceToken.h"
 #include "Common/config.h"
 #include "Common/Parser.h"
@@ -138,6 +140,12 @@ TaskExecutor::Ptr MP4Recorder::closeExecutorFor(const string &stream_key) {
     return (*pools)[std::hash<string>()(stream_key) % pools->size()];
 }
 
+static std::atomic<uint64_t> s_write_errors { 0 };
+
+uint64_t MP4Recorder::writeErrorCount() {
+    return s_write_errors.load(std::memory_order_relaxed);
+}
+
 MP4Recorder::MP4Recorder(const MediaTuple &tuple, const string &path, size_t max_second) {
     // ///record Business Logic//////
     static_cast<MediaTuple &>(_info) = tuple;
@@ -194,6 +202,9 @@ void MP4Recorder::createFile() {
     GET_CONFIG(string, appName, Record::kAppName);
     _info.url = appName + "/" + _info.app + "/" + _info.stream + "/" + date + "/" + file_name;
 
+    // A failed open must not leave the previous segment's tmp path behind: closing would rename
+    // that file again and announce a segment that is not on disk.
+    _full_path_tmp.clear();
     try {
         _muxer = std::make_shared<MP4Muxer>();
         TraceL << "Open tmp mp4 file: " << full_path_tmp;
@@ -204,6 +215,7 @@ void MP4Recorder::createFile() {
         }
         _full_path_tmp = full_path_tmp;
     } catch (std::exception &ex) {
+        s_write_errors.fetch_add(1, std::memory_order_relaxed);
         WarnL << ex.what();
     }
 }
@@ -220,16 +232,22 @@ void MP4Recorder::asyncClose() {
         TraceL << "Closing tmp mp4 file: " << full_path_tmp;
         muxer->closeMP4();
         TraceL << "Closed tmp mp4 file: " << full_path_tmp;
-        if (!full_path_tmp.empty()) {
-            // Get file size
-            info.file_size = File::fileSize(full_path_tmp);
-            if (info.file_size < 1024) {
-                // The recording file is too small, delete it
-                File::delete_file(full_path_tmp);
-                return;
-            }
-            // Change the temporary file name to the official file name to prevent access to the mp4 before it is completed
-            rename(full_path_tmp.data(), info.file_path.data());
+        if (full_path_tmp.empty()) {
+            // The file could not be opened: nothing was recorded.
+            return;
+        }
+        // Get file size
+        info.file_size = File::fileSize(full_path_tmp);
+        if (info.file_size < 1024) {
+            // The recording file is too small, delete it
+            File::delete_file(full_path_tmp);
+            return;
+        }
+        // Change the temporary file name to the official file name to prevent access to the mp4 before it is completed
+        if (rename(full_path_tmp.data(), info.file_path.data()) != 0) {
+            s_write_errors.fetch_add(1, std::memory_order_relaxed);
+            WarnL << "Rename " << full_path_tmp << " failed: " << get_uv_errmsg(false);
+            return;
         }
         const auto io_ms = close_ticker.elapsedTime();
         close_ticker.resetTime();

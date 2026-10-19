@@ -132,6 +132,19 @@ unordered_map<std::string, RecordScheduleItem> RecordScheduler::parseRecordSched
     return ret;
 }
 
+bool isRecordingExpected(bool enable_record, RecordMode mode, bool event_active) {
+    if (!enable_record) {
+        return false;
+    }
+    switch (mode) {
+        case RecordMode::RecordAlways:
+        // The low resolution stream records all the time, the main one on motion.
+        case RecordMode::RecordLowResAndMotion: return true;
+        case RecordMode::RecordOnlyMotion: return event_active;
+        default: return false;
+    }
+}
+
 RecordScheduler::Ptr RecordScheduler::create(const DeviceTuple &tuple, bool start, const std::string &schedule_str, const toolkit::EventPoller::Ptr &poller) {
     auto scheduler = std::make_shared<RecordScheduler>(tuple, start, schedule_str, poller);
     scheduler->createTimer();
@@ -230,7 +243,7 @@ void RecordScheduler::onSchedulerChange(RecordScheduleItem &item) {
     }
 }
 
-int RecordScheduler::getRecordScheduledActive(time_t time) const {
+int RecordScheduler::getRecordScheduledActive(time_t time) {
     auto week_time = StrTimeUtils::getWeekTime(time);
     return toRecordScheduleDay(week_time.day_of_week) * 24 + week_time.hour;
 }

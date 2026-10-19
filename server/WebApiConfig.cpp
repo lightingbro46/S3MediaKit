@@ -138,8 +138,10 @@ void registerConfigurationApis() {
         }
     });
 
+    // No secret here: the cluster layout (serverLocationId, enableFailover) is in /media/monitor/summary.
     api_regist("/media/mserver/healthcheck", [](API_ARGS_MAP) {
         val["data"]["mediaServerId"] = mINI::Instance()[General::kMediaServerId];
+        val["data"]["version"] = kServerVersion;
     });
 
     api_regist("/media/mserver/incur", [](API_ARGS_MAP_ASYNC) {

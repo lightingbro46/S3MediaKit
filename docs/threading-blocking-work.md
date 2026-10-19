@@ -403,6 +403,14 @@ Quét dải IP (`manager/Control/SubnetScan.cpp`):
 | `searcher.timeout_sec` | 10 | Hạn tổng probe một địa chỉ: request `device/discovery` (tính từ lúc nhận, gồm cả thời gian xếp hàng) và từng IP của `subnetScan`. Quá hạn trả `CODE_DEVICE_TIMEOUT` (HTTP 504, 905006) kèm `data.address`, `data.err_msg`. Giữ nhỏ hơn `http.keepAliveSecond` (15) |
 | `searcher.delay_close_sec` | 300 | Thời gian giữ kết quả scan nền trước khi đóng |
 
+Camera đang quản lý (`manager/Control/OnvifDeviceControl.cpp`, `PsiaDeviceControl.cpp`):
+
+| Key | Mặc định | Ghi chú |
+|---|---|---|
+| `onvif.connectTimeoutSec` | 30 | Hạn tổng phần bắt buộc của ONVIF `connect()` (`GetDeviceInformation` tới hết `getMediaProfiles`) trên thread `device()`. Quá hạn: `connect()` trả `false`, lỗi `ONVIF connect exceeded N s`, `DeviceFailure::Timeout`, chu kỳ sau thử lại. Các lệnh đọc không bắt buộc sau profile không bị tính. Discovery giữ hạn `searcher.timeout_sec` của nó. `<= 0` = không giới hạn |
+
+Ngoài ra mỗi request SOAP của ONVIF có `transfer_timeout` 10 s cho mỗi pha gửi/nhận, ISAPI/PSIA có `transfer_timeout` = `isapi/psia.request_timeout_ms` (làm tròn lên giây). Nhờ đó camera gửi nhỏ giọt từng byte (`recv_timeout` không bao giờ hết) cũng chỉ giữ thread `device()` khoảng 11 s cho mỗi request.
+
 ## 6. Hạn Chế Đã Biết
 
 - `/index/api/getSnap` vẫn để client chọn thread qua query param `async`, và nhánh `async=0`
@@ -456,8 +464,8 @@ Script gọi discovery ONVIF **và** discovery RTSP tới một IP bị drop gó
 `/media/mserver/healthcheck` trong suốt thời gian đó. Kết quả mong đợi: discovery mất
 20s/10s trong khi healthcheck vẫn ở mức vài milli giây.
 
-Bước 6 phủ họ `/media/api/*` (trust boundary `CHECK_SECRET`): 21 route đọc + 5 mutation, kiểm tra
-status/code không đổi, cộng một vòng `storage/dashboard/detail` song song với healthcheck.
+Bước 6 phủ `/media/monitor/summary|history`, kiểm tra status/code không đổi và các route `/media/api/*` đã gỡ
+cùng `www/console` (kể cả `getSyncStatus`) trả 404.
 `run_cluster.sh` truyền secret của node qua `API_SECRET` — secret được MediaServer sinh ngẫu nhiên
 lúc khởi động rồi ghi vào `config.ini` (file dump theo CRLF nên phải `tr -d '\r'`).
 

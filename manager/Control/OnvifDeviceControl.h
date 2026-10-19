@@ -34,6 +34,9 @@ extern const std::string kClockSyncIntervalSec;
 extern const std::string kClockSkewThresholdSec;
 // 0 stops the server from ever setting a camera clock (cameras kept in time by their own NTP).
 extern const std::string kClockSyncEnable;
+// Seconds the required part of connect() (device information up to the media profiles) may take;
+// <= 0 = unbounded. Not applied when the caller set its own deadline with setDeadline().
+extern const std::string kConnectTimeoutSec;
 } // namespace OnvifCtrl
 
 // ONVIF event subscription (docs/camera-control-protocol.md, "Sự kiện ONVIF"). Topics are read on connect whatever kEventEnable says.
@@ -72,8 +75,9 @@ public:
     /**
      * Bound every later SOAP request of this object by an absolute deadline, in milliseconds of
      * std::chrono::steady_clock (0 = none, the default). Each request then waits at most the time
-     * left (never more than the usual 10 s), and none is sent once it has passed. Only the one-off
-     * discovery probe sets it; call it before connect(), from the thread that connects.
+     * left (never more than the usual 10 s), and none is sent once it has passed. The one-off
+     * discovery probe sets it before connect(), from the thread that connects; otherwise connect()
+     * sets its own (onvif.connectTimeoutSec) and clears it once the media profiles are read.
      */
     void setDeadline(uint64_t steady_ms);
 
@@ -436,8 +440,8 @@ private:
 
     /**
      * Fit the timeouts of `soap` to the deadline of setDeadline() before a request. Returns false
-     * (and fails `soap` with SOAP_TCP_ERROR) once the deadline has passed; true, with nothing
-     * changed, when there is no deadline.
+     * (and fails `soap` with SOAP_TCP_ERROR) once the deadline has passed. Without a deadline it
+     * restores the usual 10 s timeouts, transfer_timeout included.
      */
     bool applyDeadline(struct soap *soap);
 
@@ -615,7 +619,7 @@ private:
     std::vector<OnvifRelayOutputProfile> _relayOutputProfiles;
 
     std::string _soapErrMsg;
-    // See setDeadline(); written before connect() on the probing thread only.
+    // See setDeadline(); read and written under _soap_mtx (connect() and every request hold it).
     uint64_t _deadline_ms = 0;
     bool _deadline_exceeded = false;
     std::atomic<int> _last_failure {static_cast<int>(DeviceFailure::None)};

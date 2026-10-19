@@ -89,6 +89,34 @@ target_sources(unit_storage PRIVATE manager/test_disk_io_monitor.cpp manager/tes
 target_link_libraries(unit_storage PRIVATE S3MediaKit::ManagerKit S3MediaKit::ext-codec)
 add_test(NAME unit.storage_all COMMAND unit_storage)
 
+# Health monitor evaluation, hysteresis, config validation and procfs parsers.
+# GlobalMonitor pulls in the camera code, so server/ symbols come from the tier-storage stubs.
+add_s3_unit_test(unit_health_monitor
+  manager/test_health_evaluator.cpp
+  manager/test_cluster_manager.cpp
+  "${PROJECT_SOURCE_DIR}/tests/integration/tier_storage/tier_storage_test_stubs.cpp")
+target_link_libraries(unit_health_monitor PRIVATE
+  -Wl,--start-group
+  S3MediaKit::MediaKit
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec
+  S3MediaKit::ext-plugin
+  -Wl,--end-group)
+target_include_directories(unit_health_monitor PRIVATE "${PROJECT_SOURCE_DIR}/server")
+# Codec plugin logs on stdout break gtest discovery: run the whole binary as one test.
+add_test(NAME unit.health_monitor_all COMMAND unit_health_monitor)
+set_tests_properties(unit.health_monitor_all PROPERTIES LABELS unit TIMEOUT 30)
+
+# Health monitor history tables (migration 23) against a temporary mserver DB.
+add_s3_unit_test(unit_health_metrics storage/test_health_metrics.cpp)
+target_link_libraries(unit_health_metrics PRIVATE
+  S3MediaKit::ManagerKit
+  S3MediaKit::ext-codec)
+target_compile_definitions(unit_health_metrics PRIVATE
+  S3_MSERVER_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/migration/mserver_updates")
+add_test(NAME unit.health_metrics_all COMMAND unit_health_metrics)
+set_tests_properties(unit.health_metrics_all PROPERTIES LABELS unit TIMEOUT 30)
+
 add_s3_unit_test(unit_extract_job storage/test_extract_job.cpp)
 target_link_libraries(unit_extract_job PRIVATE S3MediaKit::ManagerKit)
 add_test(NAME unit.extract_job COMMAND unit_extract_job)

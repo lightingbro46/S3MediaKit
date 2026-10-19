@@ -122,7 +122,6 @@ COPY --from=build /opt/media/lib/ /opt/media/lib/
 COPY --from=build /opt/media/ffmpeg-bin/ /usr/local/bin/
 COPY --from=build /opt/media/S3MediaKit/default.pem /opt/media/bin/
 # COPY --from=build /opt/media/S3MediaKit/release/linux/${MODEL}/config.ini /opt/media/conf/
-COPY --from=build /opt/media/S3MediaKit/www/console/ /opt/media/bin/www/console/
 COPY --from=build /opt/media/S3MediaKit/migration/mserver_updates/ /opt/media/bin/mserver_updates/
 COPY --from=build /opt/media/S3MediaKit/migration/updates/ /opt/media/bin/updates/
 COPY --from=build /opt/media/S3MediaKit/tools/package/check_runtime_libs.sh /opt/media/tools/

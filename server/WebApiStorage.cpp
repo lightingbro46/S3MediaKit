@@ -10,9 +10,10 @@
  * Routes are mounted under /media/mserver/storage/...
  * All endpoints share the CHECK_AUTH_TOKEN() guard.
  *
- * The handler bodies declared in WebApiStorage.h are shared with the /media/api/storage/* family
- * registered in WebApi.cpp, which sits behind CHECK_SECRET() instead. Only the guards differ; both
- * families answer the same payload.
+ * Each route keeps its guard at the registration and runs its body (a plain function in this file)
+ * on the API worker pool. Bodies run blocking work (SQLite, filesystem, object storage), fill `val`
+ * (the `data` field and, on error, the fields the response must keep) and throw
+ * ApiResponseException for business errors, like RETURN_API_RESPONSE(code, msg).
  */
 
 #include <algorithm>
@@ -23,7 +24,6 @@
 #include "Manager.h"
 #include "ApiWorkDispatcher.h"
 #include "WebApi.h"
-#include "WebApiStorage.h"
 #include "WebApiErrCode.h"
 #include "Camera/CameraManager.h"
 #include "Common/StrUtil.h"
@@ -47,11 +47,10 @@ using namespace managerkit;
 #ifdef ENABLE_TIER_STORAGE
 
 // ===================================================================
-// Shared handler bodies (see WebApiStorage.h)
+// Handler bodies
 //
-// These run on the API worker pool and are called by both endpoint families. Where the two
-// families used to answer different payloads, the `/media/mserver/storage/*` payload is the one
-// kept:
+// These run on the API worker pool. Where the removed /media/api/storage/* family used to answer a
+// different payload, the `/media/mserver/storage/*` payload is the one kept:
 //   - pool/list                    -> poolSummaryToJson (was poolDetailToJson on /media/api/...)
 //   - policy/list                  -> system default policy carries the unassigned camera count
 //   - policy/detail                -> policyDetailToJson without the summary fields
@@ -195,8 +194,6 @@ Json::Value failedIdsToJson(const std::vector<std::string> &unknown,
     for (const auto &id : failed) failed_arr.append(id);
     return failed_arr;
 }
-
-} // namespace
 
 // --- Section 1: storage pools -------------------------------------------------------------
 
@@ -1109,13 +1106,14 @@ void storageMountpointAvailable(const ArgsMap &allArgs, Json::Value &val) {
     val["data"] = data;
 }
 
+} // namespace
 } // namespace managerkit
 
 // ===================================================================
 // Register all storage API routes
 //
-// Each route keeps its own guards (CHECK_AUTH_TOKEN + CHECK_USER_PERMISSION here, CHECK_SECRET in
-// the /media/api/storage/* family) and dispatches the shared body to the API worker pool.
+// Each route checks CHECK_AUTH_TOKEN + CHECK_USER_PERMISSION and dispatches the body to the API
+// worker pool.
 // ===================================================================
 namespace managerkit {
 

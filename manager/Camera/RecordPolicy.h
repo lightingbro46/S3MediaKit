@@ -46,6 +46,13 @@ struct RecordScheduleItem {
     }
 };
 
+/**
+ * Whether a camera should be writing recordings now, from the scheduler's own decision (mode of the
+ * current schedule hour and whether a motion event is open). Used by the health monitor to spot
+ * cameras that should record but do not.
+ */
+bool isRecordingExpected(bool enable_record, RecordMode mode, bool event_active);
+
 enum class RecordEventType : uint8_t {
     Unknown = 0,
     Motion,
@@ -76,14 +83,15 @@ public:
 
     static std::unordered_map<std::string, RecordScheduleItem> parseRecordScheduleStr(const std::string &str);
 
+    // Index (day * 24 + hour, local time, Monday = 0) of the schedule hour that contains `time`.
+    static int getRecordScheduledActive(time_t time);
+
     bool isEnabled() const { return _running.load(); }
 
 private:
     void check(time_t time_now);
 
     void onSchedulerChange(RecordScheduleItem &item);
-
-    int getRecordScheduledActive(time_t time) const;
 
 private:
     DeviceTuple _tuple;

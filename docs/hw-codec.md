@@ -162,7 +162,7 @@ Mặc định đã an toàn (production sinh config từ default trong code):
 
 ## 3. Theo dõi
 
-`/index/api/getStatistic` và `/media/api/getStatistic` có thêm:
+`/index/api/getStatistic` có thêm:
 
 | Trường | Ý nghĩa |
 |---|---|

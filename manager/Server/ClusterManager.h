@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <mutex>
+#include <cstdint>
 #include <unordered_map>
 #include "Util/logger.h"
 #include "Poller/Timer.h"
@@ -37,9 +38,9 @@ struct MediaServerInfo {
     bool isAutoHttpPort = true;
     bool isAutoHttpsPort = true;
     bool clientUseSsl = false;
-    bool useWebDomain; // use web domain to access media server, if false, use domain or ip to access media server
-    bool useDomain; // whether to use domain to access media server, if false, use ip
-    bool useCustomPath;
+    bool useWebDomain = false; // use web domain to access media server, if false, use domain or ip to access media server
+    bool useDomain = false; // whether to use domain to access media server, if false, use ip
+    bool useCustomPath = false;
     std::string customPath; // if useCustomPath is true, use this custom path to access media server, e.g. "http://domain/customPath"
     bool hasFailover = false;
     int serverGroupId = 0;
@@ -94,6 +95,7 @@ struct MediaServerInfo {
         v["useCustomPath"] = useCustomPath;
         v["customPath"] = customPath;
         v["hasFailover"] = hasFailover;
+        v["serverGroupId"] = serverGroupId;
         return v;
     }
 
@@ -121,6 +123,8 @@ struct MediaServerInfo {
         info.useCustomPath = v["useCustomPath"].asBool();
         info.customPath = v["customPath"].asString();
         info.hasFailover = v["hasFailover"].asBool();
+        // Peer lists saved by older builds have no group: 0 until the service API lists the server again.
+        info.serverGroupId = v.get("serverGroupId", 0).asInt();
         return info;
     }
 };
@@ -147,6 +151,12 @@ public:
      */
     std::unordered_map<std::string, std::string> getPeerUrls();
 
+    /**
+     * Returns peer id → base_url of the health-checked peers in this server group (excluding this
+     * node): the peers the ESC database is synced with.
+     */
+    std::unordered_map<std::string, std::string> getSyncPeerUrls();
+
     void addMediaServer(const std::string &id, const MediaServerInfo &info, bool skip_save = false);
     
     void removeMediaServer(const std::string &id);
@@ -154,9 +164,14 @@ public:
     void loadSavedMediaServerInfo();
 
 private:
+    friend class ClusterManagerTestPeer;
+
     ClusterManager();
 
-    void healthCheck(const std::string &id, const std::string &origin_urls);
+    void healthCheck(const std::string &id, const std::string &origin_urls, uint64_t revision);
+
+    void onHealthCheckResult(const std::string &id, const std::string &origin_urls, uint64_t revision,
+                             const std::string &err, int idx);
 
     void onManager();
 
@@ -169,6 +184,10 @@ private:
     // Map of peer id to its base URL (e.g. "http://ip:port"), only for healthy peers that passed health check, used for sync and broadcast. 
     // Updated by healthCheck() and cleared when peer is removed.
     std::unordered_map<std::string /*id*/, std::string /*base_url*/> _map_peer_url;
+    // Revision of each peer configuration. Health-check results are applied only when their revision
+    // still matches, so an in-flight request cannot restore a removed peer or an obsolete URL.
+    std::unordered_map<std::string /*id*/, uint64_t /*revision*/> _map_peer_revision;
+    uint64_t _next_peer_revision = 0;
 };
 
 } // namespace managerkit

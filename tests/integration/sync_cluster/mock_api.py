@@ -33,6 +33,14 @@ class Handler(BaseHTTPRequestHandler):
             server_id = json.loads(raw.decode("utf-8", "replace")).get("mediaServerId", "")
         except (ValueError, AttributeError):
             server_id = ""
+        if "system-event" in self.path:
+            # check_monitor.py reads the system alert hooks (eventCode) back from this log.
+            # One line per event: MediaServer sends styled (multi-line) JSON.
+            try:
+                line = json.dumps(json.loads(raw.decode("utf-8", "replace")))
+            except ValueError:
+                line = raw.decode("utf-8", "replace").replace("\n", " ")
+            sys.stdout.write("SYSTEM_EVENT %s\n" % line)
         status, body = 200, {"code": 0, "ok": 1}
         if server_id and server_id in not_qualified_ids():
             status = 412
