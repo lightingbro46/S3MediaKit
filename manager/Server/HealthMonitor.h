@@ -256,6 +256,8 @@ public:
     Json::Value history(int64_t from, int64_t to, int bucket_sec, const std::string &fields);
 
 private:
+    friend class HealthMonitorTestPeer; // unit tests run one collector
+
     HealthMonitor();
 
     struct PollerDelay {

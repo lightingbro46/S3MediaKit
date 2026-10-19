@@ -245,6 +245,10 @@ private:
 
     // Runs the cleanup of removed peers whose time has come (sync worker).
     void maybeCleanupRemovedPeers(const std::unordered_map<std::string, std::string> &peers, uint64_t now_ms);
+    // Warnings when joining a server group (from replayStandaloneChanges): changes older than the tombstone
+    // TTL, and group members that cannot resume this node's log because its start was pruned. Returns the
+    // number of warnings logged.
+    int warnJoinRisks(int64_t oldest_change_ms, size_t deletes);
     // Records that a pull from `peer_id` sent at `sent_ms` returned everything the peer had.
     void markPullComplete(const std::string &peer_id, uint64_t sent_ms);
 

@@ -102,9 +102,11 @@ phải peer của nó. DB ESC local vẫn được đọc/ghi như thường.
   đã giữ được ghi vào log theo thứ tự timestamp, giữ timestamp gốc, nên LWW ở peer chọn đúng. Peer không
   cần đổi gì.
 - N → 0: SyncManager dừng ngay.
-- Giới hạn: lệnh xoá cũ hơn `database.row_version_tombstone_ttl_days` vẫn được phát lại nhưng peer có thể
-  đã quên tombstone; chuyển A → 0 → B (nhóm mới) mà log thời ở A đã bị prune thì peer của B gặp gap và
-  resync từ snapshot.
+- Giới hạn, đều có log cảnh báo (`warnJoinRisks`) lúc phát lại:
+  - thay đổi cũ hơn `database.row_version_tombstone_ttl_days`: vẫn được phát lại nhưng peer có thể đã quên
+    tombstone của chúng (`Changes made while standalone go back N days ...`);
+  - chuyển A → 0 → B (nhóm mới) mà đầu log thời ở A đã bị prune: server của B chưa ack log của node này sẽ
+    gặp gap và resync từ snapshot (`Log entries 1..N of this node were pruned and ... never pulled them`).
 
 ### Node một mình trong nhóm
 

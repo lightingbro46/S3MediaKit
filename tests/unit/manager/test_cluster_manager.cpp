@@ -3,6 +3,8 @@
 #include "Common/config.h"
 #include "Util/NoticeCenter.h"
 #include "Server/ClusterManager.h"
+#include "Server/HealthMonitor.h"
+#include "Server/HealthEvaluator.h"
 #ifdef ENABLE_SYNC_CHANGES
 #include "Extension/SyncManager.h"
 #endif
@@ -48,6 +50,17 @@ public:
     static void applyResult(ClusterManager &manager, const string &id, const string &urls,
                             uint64_t revision, const string &err, int idx) {
         manager.onHealthCheckResult(id, urls, revision, err, idx);
+    }
+};
+
+// Friend of HealthMonitor: runs the cluster collector alone.
+class HealthMonitorTestPeer {
+public:
+    static HealthEvaluation collectCluster(Json::Value &summary) {
+        HealthHysteresis hysteresis;
+        HealthEvaluator ev(hysteresis, 1, time(nullptr));
+        HealthMonitor::Instance().collectCluster(ev, summary, time(nullptr));
+        return ev.finish();
     }
 };
 
@@ -273,6 +286,62 @@ TEST_F(ClusterManagerRevisionTest, SyncPeersFollowClusterAndKeepStateWhileUnreac
     view = sync.healthView();
     ASSERT_EQ(1u, view.last_complete_pull_ms.size());
     EXPECT_EQ(100u, view.last_complete_pull_ms["peer-a"]);
+}
+#endif
+
+#ifdef ENABLE_SYNC_CHANGES
+const HealthReason *findReason(const HealthEvaluation &eval, const string &metric) {
+    for (const auto &r : eval.reasons) {
+        if (r.metric == metric) {
+            return &r;
+        }
+    }
+    return nullptr;
+}
+
+// A decommissioned node has its sync stopped (onServerNotQualified, or not started at start-up): the
+// critical reason must still be reported.
+TEST(HealthMonitorClusterTest, DecommissionedIsCriticalWhileSyncIsStopped) {
+    ClusterManagerTestPeer::reset(ClusterManager::Instance());
+    auto &sync = SyncManager::Instance();
+    ASSERT_FALSE(sync.isRunning());
+    sync.setDecommissioned(true);
+    Json::Value summary;
+    auto eval = HealthMonitorTestPeer::collectCluster(summary);
+    sync.setDecommissioned(false);
+
+    const auto &st = summary["cluster"]["sync"];
+    EXPECT_FALSE(st["enabled"].asBool());
+    EXPECT_TRUE(st["decommissioned"].asBool());
+    EXPECT_EQ("decommissioned", st["state"].asString());
+    auto reason = findReason(eval, "cluster.decommissioned");
+    ASSERT_NE(nullptr, reason);
+    EXPECT_EQ(HealthLevel::CRITICAL, reason->level);
+
+    Json::Value back;
+    eval = HealthMonitorTestPeer::collectCluster(back);
+    EXPECT_EQ(nullptr, findReason(eval, "cluster.decommissioned"));
+    EXPECT_EQ("stopped", back["cluster"]["sync"]["state"].asString());
+}
+
+// serverLocationId 0 is a valid setup: state standalone, no group peer, nothing raised.
+TEST(HealthMonitorClusterTest, StandaloneServerIsReportedWithoutReasons) {
+    ClusterManagerTestPeer::reset(ClusterManager::Instance());
+    const int self_group = mINI::Instance()[Cluster::kServerLocationId];
+    auto set_group = [](int group) {
+        mINI::Instance()[Cluster::kServerLocationId] = group;
+        NOTICE_EMIT(BroadcastReloadConfigArgs, Broadcast::kBroadcastReloadConfig);
+    };
+    set_group(0);
+    Json::Value summary;
+    auto eval = HealthMonitorTestPeer::collectCluster(summary);
+    set_group(self_group);
+
+    EXPECT_EQ("standalone", summary["cluster"]["sync"]["state"].asString());
+    EXPECT_EQ(0, summary["cluster"]["group_peers"].asInt());
+    for (const auto &r : eval.reasons) {
+        EXPECT_NE("cluster", r.component) << r.metric;
+    }
 }
 #endif
 
