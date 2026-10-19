@@ -27,6 +27,7 @@ const string kProfileResyncIntervalSec = ONVIF_CTRL_FIELD"profileResyncIntervalS
 const string kClockSyncIntervalSec = ONVIF_CTRL_FIELD"clockSyncIntervalSec";
 const string kClockSkewThresholdSec = ONVIF_CTRL_FIELD"clockSkewThresholdSec";
 const string kClockSyncEnable = ONVIF_CTRL_FIELD"clockSyncEnable";
+const string kConnectTimeoutSec = ONVIF_CTRL_FIELD"connectTimeoutSec";
 
 static onceToken token([]() {
     // How long a camera's clock offset stays usable before it is measured again.
@@ -50,6 +51,10 @@ static onceToken token([]() {
     // Whether the maintenance cycle may set a camera clock at all (only ever from that cycle,
     // never from an API command).
     mINI::Instance()[kClockSyncEnable] = 1;
+    // Bound, in seconds, on the part of connect() that decides whether the camera can be controlled
+    // (device information up to the media profiles); a camera slower than this counts as offline
+    // until the next cycle. <= 0 removes the bound. Discovery keeps its own deadline.
+    mINI::Instance()[kConnectTimeoutSec] = 30;
 });
 } // namespace OnvifCtrl
 
@@ -312,12 +317,16 @@ void OnvifControl::setDeadline(uint64_t steady_ms) {
 
 bool OnvifControl::applyDeadline(struct soap *soap) {
     if (_deadline_ms == 0) {
+        // Also undoes the timeouts shortened under a deadline that has since been cleared. Even
+        // without one, transfer_timeout bounds a request a camera trickles out byte by byte.
+        soap->connect_timeout = soap->recv_timeout = soap->send_timeout = kSoapTimeoutSec;
+        soap->transfer_timeout = kSoapTimeoutSec;
         return true;
     }
     const uint64_t now = steadyNowMs();
     if (now >= _deadline_ms) {
         _deadline_exceeded = true;
-        soap_set_sender_error(soap, "Deadline exceeded", "The discovery deadline has passed", SOAP_TCP_ERROR);
+        soap_set_sender_error(soap, "Deadline exceeded", "The request deadline has passed", SOAP_TCP_ERROR);
         return false;
     }
     const uint64_t left_ms = std::min<uint64_t>(_deadline_ms - now, kSoapTimeoutSec * 1000);
@@ -617,13 +626,38 @@ bool OnvifControl::connect() {
     std::lock_guard<std::recursive_mutex> lk(_soap_mtx);
     if (_m_soap == nullptr) {
         _m_soap = soap_new();
-        _m_soap->connect_timeout = _m_soap->recv_timeout = _m_soap->send_timeout = 10; // timeout connection for 10 seconds
+        _m_soap->connect_timeout = _m_soap->recv_timeout = _m_soap->send_timeout = kSoapTimeoutSec;
+        _m_soap->transfer_timeout = kSoapTimeoutSec;
         soap_register_plugin(_m_soap, soap_wsse);
         OnvifHttpAuth::attach(_m_soap);
         _http_auth.reset(new OnvifHttpAuth(_m_soap, _strDeviceIp));
 
         _proxyDevice = new DeviceBindingProxy(_m_soap);
     }
+
+    // Bound the part that decides whether the camera can be controlled, unless the caller (discovery)
+    // set a deadline of its own. Cleared once the media profiles are read, on every path: a deadline
+    // left behind would fail every later PTZ command.
+    GET_CONFIG(int, connect_timeout_sec, OnvifCtrl::kConnectTimeoutSec);
+    bool own_deadline = _deadline_ms == 0 && connect_timeout_sec > 0;
+    if (own_deadline) {
+        setDeadline(steadyNowMs() + static_cast<uint64_t>(connect_timeout_sec) * 1000);
+    }
+    onceToken clear_deadline(nullptr, [&]() {
+        if (own_deadline) {
+            setDeadline(0);
+        }
+    });
+    auto fail_required = [&]() {
+        if (own_deadline && _deadline_exceeded) {
+            _soapErrMsg = "ONVIF connect exceeded " + std::to_string(connect_timeout_sec) + " s";
+            _last_failure = static_cast<int>(DeviceFailure::Timeout);
+            _lastConnectError = ConnectError::UNREACHABLE;
+            WarnL << "Onvif device " << _strDeviceIp << ": " << _soapErrMsg;
+        }
+        disconnect();
+        return false;
+    };
 
     _lastConnectError = ConnectError::OTHER;
     if (!getDeviceInformation()) {
@@ -633,20 +667,23 @@ bool OnvifControl::connect() {
             // verdict on the credentials, so no longer retry pause and no other protocol tried.
             _lastConnectError = ConnectError::OTHER;
         }
-        disconnect();
-        return false;
+        return fail_required();
     }
 
     getNetworkInterfaces(); // non-critical
 
     if (!getDeviceCapabilities()) {
-        disconnect();
-        return false;
+        return fail_required();
     }
 
     if (!getMediaProfiles()) {
-        disconnect();
-        return false;
+        return fail_required();
+    }
+    // The optional reads below are bound per request only: skipping them would leave the
+    // capabilities (events above all) missing until the next full connect().
+    if (own_deadline) {
+        setDeadline(0);
+        own_deadline = false;
     }
 
     getImagingCapabilities(); // non-critical
@@ -1467,7 +1504,10 @@ DeviceFailure OnvifControl::classifyFailure(const FailureContext &ctx) {
         case SOAP_SSL_ERROR:
             return DeviceFailure::Unreachable;
         // Connected, but no complete answer: receive timeout or the camera dropped the connection.
+        // gSOAP reports the status (200) when this happens after the HTTP header, e.g. a body
+        // trickled until the transfer timeout cut it.
         case SOAP_EOF:
+        case 200:
             return DeviceFailure::Timeout;
         default:
             // A SOAP fault (any HTTP status) saying the WS-Security credentials were rejected.
@@ -1529,7 +1569,8 @@ void OnvifControl::reportError() {
 struct LocalDeviceSoap {
     explicit LocalDeviceSoap(const std::string &url) : endpoint(url) {
         soap = soap_new();
-        soap->connect_timeout = soap->recv_timeout = soap->send_timeout = 10;
+        soap->connect_timeout = soap->recv_timeout = soap->send_timeout = kSoapTimeoutSec;
+        soap->transfer_timeout = kSoapTimeoutSec;
         soap_register_plugin(soap, soap_wsse);
         OnvifHttpAuth::attach(soap);
         proxy = new DeviceBindingProxy(soap);

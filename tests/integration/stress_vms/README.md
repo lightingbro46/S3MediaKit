@@ -69,7 +69,7 @@ Toàn bộ tải đến từ ba tiến trình Python, không cần camera thật
 nên đổi được giữa chừng mà không cần restart:
 
 - `drop_spec.json` — `offline` (trả 404), `flaky` (ngắt phiên theo chu kỳ).
-- `onvif_fault_spec.json` — `latency_ms`, `offline`, `fail_ops`, `ptz_omit_zoom_spaces`.
+- `onvif_fault_spec.json` — `latency_ms`, `offline`, `fail_ops`, `ptz_omit_zoom_spaces`, `trickle_ms` (body từng byte).
 
 ## Cohort camera
 
@@ -378,6 +378,7 @@ thì dùng biến môi trường — `run_stress.sh` truyền nó xuống mọi 
 ```bash
 STRESS_PTZ_OMIT_ZOOM=10 run_stress.sh /tmp/s3mk_ptz mid onvif    # cứ 10 camera thì 1 camera
 STRESS_PTZ_OMIT_ZOOM=all run_stress.sh /tmp/s3mk_ptz smoke steady # toàn bộ thiết bị
+STRESS_ONVIF_TRICKLE=3 NODES=1 run_stress.sh /tmp/s3mk_trickle 8 steady # camera 3 trả ONVIF từng byte
 ```
 
 Cờ được áp **sau** các nhánh riêng của từng phase, vì `onvif_storm` và `recover` ghi đè

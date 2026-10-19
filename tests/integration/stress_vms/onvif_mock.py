@@ -18,7 +18,8 @@ Dùng:
       "devices": {
         "127.0.2.5":  {"latency_ms": 9000},            # ONVIF chậm -> kiểm pool device()
         "127.0.2.6":  {"offline": true},               # rớt kết nối
-        "127.0.2.7":  {"fail_ops": ["ContinuousMove"]} # lỗi riêng lệnh PTZ
+        "127.0.2.7":  {"fail_ops": ["ContinuousMove"]}, # lỗi riêng lệnh PTZ
+        "127.0.2.8":  {"trickle_ms": 500}              # trả từng byte, cách nhau 500 ms
       }
     }
 
@@ -1048,6 +1049,7 @@ class Handler(BaseHTTPRequestHandler):
         ip = self.connection.getsockname()[0]
         dev = REG.device(ip)
         policy = REG.policy(ip)
+        self._trickle = float(policy.get("trickle_ms", 0)) / 1000.0
 
         if policy.get("offline"):
             try:
@@ -1143,7 +1145,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", 'application/soap+xml; charset=utf-8')
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        trickle = getattr(self, "_trickle", 0)
+        if trickle <= 0:
+            self.wfile.write(data)
+            return
+        # Camera nhỏ giọt: header ngay, body từng byte; recv_timeout của client không bao giờ hết.
+        self.wfile.flush()
+        try:
+            for i in range(len(data)):
+                self.wfile.write(data[i:i + 1])
+                self.wfile.flush()
+                time.sleep(trickle)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        self.close_connection = True
 
 
 def spec_reloader():

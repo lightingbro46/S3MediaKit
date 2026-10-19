@@ -400,6 +400,13 @@ def write_specs(work, cams, by_cohort, phase):
             dev = faults["devices"].setdefault(device_ip(index_of[cam["id"]]), {})
             dev["ptz_omit_zoom_spaces"] = True
 
+    # Camera nhỏ giọt (docs/onvif-connect-deadline-plan.md): body ONVIF từng byte, cách 500 ms.
+    #   STRESS_ONVIF_TRICKLE=3,5  -> camera index 3 và 5
+    for item in os.environ.get("STRESS_ONVIF_TRICKLE", "").split(","):
+        if item.strip():
+            dev = faults["devices"].setdefault(device_ip(int(item)), {})
+            dev["trickle_ms"] = 500
+
     write_json(drop_path, drop)
     write_json(fault_path, faults)
 

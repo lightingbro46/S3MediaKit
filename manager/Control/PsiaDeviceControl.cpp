@@ -765,6 +765,9 @@ int PsiaControl::request(const char *method, const std::string &path, const std:
         // gSOAP takes negative values as microseconds.
         int timeout = timeout_ms > 0 ? -timeout_ms * 1000 : -5000000;
         _soap->connect_timeout = _soap->recv_timeout = _soap->send_timeout = timeout;
+        // Bounds a reply trickled byte by byte, which never trips recv_timeout. Whole seconds,
+        // rounded up: gSOAP 2.8.133 scales the negative (microsecond) form wrongly.
+        _soap->transfer_timeout = (-timeout / 1000 + 999) / 1000;
         soap_register_plugin(_soap, http_da);
     }
     const std::string url = "http://" + _address + path;
