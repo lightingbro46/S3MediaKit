@@ -605,12 +605,23 @@ void HealthMonitor::onPlayResult(const string &err) {
     }
 }
 
-void HealthMonitor::onWebhookResult(bool ok) {
+void HealthMonitor::onWebhookResult(const string &failure) {
     lock_guard<mutex> lck(_webhook_mtx);
     ++_webhook_current.requests;
-    if (!ok) {
+    if (!failure.empty()) {
         ++_webhook_current.failures;
+        ++_webhook_current.reasons[failure];
     }
+}
+
+void HealthMonitor::onWebhookQueue(uint64_t inflight, uint64_t queued) {
+    _webhook_inflight = inflight;
+    _webhook_queued = queued;
+}
+
+void HealthMonitor::onWebhookQueueWait(uint64_t wait_ms) {
+    lock_guard<mutex> lck(_webhook_mtx);
+    _webhook_current.queue_wait_max_ms = std::max(_webhook_current.queue_wait_max_ms, wait_ms);
 }
 
 void HealthMonitor::requestPollerDelays() {
@@ -1824,13 +1835,25 @@ void HealthMonitor::collectCluster(HealthEvaluator &ev, Json::Value &summary, in
 #endif
 
     // Webhooks to the VMS/ESC, counted after their retries.
-    PlayBucket current;
+    WebhookBucket current;
     {
         lock_guard<mutex> lck(_webhook_mtx);
-        current = _webhook_current;
-        _webhook_current = PlayBucket();
+        current = std::move(_webhook_current);
+        _webhook_current = WebhookBucket();
     }
     auto total = rollBuckets(_webhook_buckets, current, window_sec, interval_sec);
+    std::map<string, uint64_t> reasons;
+    uint64_t queue_wait_max_ms = 0;
+    for (const auto &b : _webhook_buckets) {
+        queue_wait_max_ms = std::max(queue_wait_max_ms, b.queue_wait_max_ms);
+        for (const auto &kv : b.reasons) {
+            reasons[kv.first] += kv.second;
+        }
+    }
+    Json::Value wh_reasons(Json::objectValue);
+    for (const auto &kv : reasons) {
+        wh_reasons[kv.first] = (Json::UInt64)kv.second;
+    }
     double failure_pct = 0;
     const auto wh_th = threshold("webhookFailurePct");
     auto wh_level = failureRateLevel(total.requests, total.failures, 10, wh_th, failure_pct);
@@ -1840,6 +1863,10 @@ void HealthMonitor::collectCluster(HealthEvaluator &ev, Json::Value &summary, in
     cl["webhook"]["requests"] = (Json::UInt64)total.requests;
     cl["webhook"]["failures"] = (Json::UInt64)total.failures;
     cl["webhook"]["failure_pct"] = num(failure_pct);
+    cl["webhook"]["failure_reasons"] = wh_reasons;
+    cl["webhook"]["inflight"] = (Json::UInt64)_webhook_inflight.load();
+    cl["webhook"]["queued"] = (Json::UInt64)_webhook_queued.load();
+    cl["webhook"]["queue_wait_max_ms"] = (Json::UInt64)queue_wait_max_ms;
 
     // Device events to Kafka (EventBus is built without ENABLE_KAFKA too, then never enabled).
     Json::Value &kj = cl["kafka"];
