@@ -86,13 +86,14 @@ NODES = [
      "failover": True, "cameras": ["dead"],
      "ini": {"globalmonitor": {"memory_warning_threshold": 1}},
      "expect": {"reasons[].metric": "ram.usage_pct", "components.ingest": "critical",
-                "cluster.sync.single_node": True}},
+                "cluster.sync.single_node": True, "cluster.sync.state": "single_node"}},
     # MediaServer replaces the default api.secret at start (main.cpp), so the node starts with a
     # random one and gets the default back through setServerConfig, as an operator could do.
     {"id": "it-mon-default", "build": "monitor", "scenario": "default_secret", "http": 18184,
+     # serverLocationId 0: standalone server, the ESC sync does not run.
      "group": 0, "failover": True, "cameras": [], "runtimeSecret": DEFAULT_SECRET,
      "expect": {"apiSecretIsDefault": True, "components.host": "ok", "components.cluster": "ok",
-                "cluster.sync.bootstrapped": True}},
+                "standalone": True, "cluster.sync.state": "standalone"}},
     {"id": "it-mon-off", "build": "monitor", "scenario": "disabled", "http": 18185, "group": 0,
      "failover": False, "cameras": [], "ini": {"monitor": {"enable": 0}},
      "expect": {"enabled": False}},

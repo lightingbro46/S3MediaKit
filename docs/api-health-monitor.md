@@ -128,17 +128,17 @@ trả `{"code":0,"notModified":true}` không kèm `data`.
 
 `data` gồm các field của `health` (trừ `uptimeSec`, `version` nằm trong `process`/top-level) và:
 
-Nhận diện cluster cho app: các server có cùng `serverLocationId` là một cluster (cùng nhóm đồng bộ
-database ESC). `enableFailover` (của node này) / `cluster.peers[].hasFailover` (của node khác, theo danh
+Nhận diện cluster cho app: các server có cùng `serverLocationId` **khác 0** là một cluster (cùng nhóm
+đồng bộ database ESC). `serverLocationId = 0` (`standalone = true`) là server độc lập: không thuộc cluster
+nào, không đồng bộ ESC; app **không** gom các server 0 thành một cluster. `enableFailover` (của node này) / `cluster.peers[].hasFailover` (của node khác, theo danh
 sách server VMS) chỉ cho biết node đó có **nhận camera dự phòng** (camera có `priMediaServerId` là node
 khác) hay không; không ảnh hưởng đồng bộ. Node `enableFailover = false` chỉ chạy camera của chính nó; cờ
 đổi khi đang chạy thì camera dự phòng đang chạy được thả ở lần VMS đẩy cấu hình đó.
-`serverLocationId = 0` là giá trị hợp lệ (VMS gửi 0 hoặc không gửi `serverGroupId`), không có nghĩa là
-"chưa đặt". `/media/mserver/healthcheck` (không khoá) không trả các field này.
+VMS gửi 0 hoặc không gửi `serverGroupId` đều ra 0. `/media/mserver/healthcheck` (không khoá) không trả các field này.
 
 | Nhóm | Field |
 |---|---|
-| (gốc `data`) | `serverLocationId` (số, nhóm server VMS đẩy xuống qua `serverGroupId`), `enableFailover` (boolean, cờ `failover` VMS đẩy xuống): cấu hình hiện tại, đổi khi VMS đẩy cấu hình mới, hiện ở snapshot ngay sau đó |
+| (gốc `data`) | `serverLocationId` (số, nhóm server VMS đẩy xuống qua `serverGroupId`), `standalone` (boolean, `serverLocationId = 0`), `enableFailover` (boolean, cờ `failover` VMS đẩy xuống): cấu hình hiện tại, đổi khi VMS đẩy cấu hình mới, hiện ở snapshot ngay sau đó |
 | `host.cpu` | `cores`, `usage_pct` (máy), `proc_usage_pct`, `load1`, `load1_per_core` |
 | `host.ram` | `total`, `used`, `usage_pct`, `proc_rss` (byte), `proc_usage_pct` |
 | `host.swap` | `total`, `used`, `used_pct` |
@@ -163,14 +163,27 @@ khác) hay không; không ảnh hưởng đồng bộ. Node `enableFailover = fa
 | `storage.database` | `checked_at`, `stale`, `write_ms` (thời gian lấy khoá ghi `BEGIN IMMEDIATE` DB MediaServer, null khi lỗi), `error` |
 | `storage.tier` | `enabled` (false khi build tắt tier storage); khi bật: `pools[]` (`id`, `name`, `tier`, `type`, `enabled`, `usage_pct`, `health_check`, `health_status` `OK`/`WARNING`/`HIGH`/`CRITICAL`/`OFFLINE`/`UNKNOWN`, `health_stale`, `message`, `throughput_low`, `write_mbps`, `backlog_bytes`, `backlog_eta_sec`), `jobs` (`tiering_failed_24h`, `tiering_pending`, `tiering_running`, `restore_failed_24h`, `restore_failed_1h`, `restore_pending`) |
 | `delivery.restore` | `failed_1h`, `failed_24h` (khi bật tier storage) |
-| `cluster` | `peers_known`, `peers_unreachable`, `peers[]` (`id`, `name`, `reachable`, `serverLocationId`, `hasFailover`: theo danh sách server VMS), `group_peers` (peer cùng `serverLocationId`), `failover_capable_peers` (trong đó có `hasFailover = true`, tức nhận được camera của node này khi nó hỏng), `failover_capable_reachable` (trong đó đang liên lạc được). Chỉ hiển thị, không đánh giá mức: nhóm nhiều node không bật failover là cấu hình hợp lệ |
-| `cluster.sync` | `enabled` (false khi build tắt sync hoặc `database.enable_sync_db=0`), `bootstrapped`, `single_node`, `decommissioned`, `peers[]` (`id`, `last_ok_at`, `last_ok_age_sec`) |
+| `cluster` | `peers_known`, `peers_unreachable`, `peers[]` (`id`, `name`, `reachable`, `serverLocationId`, `hasFailover`: theo danh sách server VMS), `group_peers` (peer cùng `serverLocationId`; 0 khi `standalone`), `failover_capable_peers` (trong đó có `hasFailover = true`, tức nhận được camera của node này khi nó hỏng), `failover_capable_reachable` (trong đó đang liên lạc được). Chỉ hiển thị, không đánh giá mức: nhóm nhiều node không bật failover là cấu hình hợp lệ |
+| `cluster.sync` | `enabled` (sync đang chạy), `state` (lý do, xem dưới), `decommissioned`; khi đang chạy thêm `bootstrapped`, `single_node`, `peers[]` (`id`, `last_ok_at`, `last_ok_age_sec`) |
 | `cluster.webhook` | `window_sec`, `requests`, `failures`, `failure_pct`: các lần gọi tới `hook.api_url` (VMS/ESC), kết quả cuối sau khi đã retry; lời gọi giữa các node không tính (đã có `peers_unreachable`) |
 | `host.ram` (thêm) | `proc_rss_growth_mb_per_h` (độ dốc RSS, null khi chưa đủ 2 h số liệu), `proc_rss_growth_span_sec` |
 | `process` (thêm) | `restarts_24h` (số lần khởi động có lần chạy trước trong 24 h), `unclean_restarts_24h` (lần chạy trước không thoát sạch: crash, kill) |
 | `recording.coverage` | `computed_at`, `cameras_evaluated` (camera có ≥ 1 h lẽ ra ghi), `below_warn`, `below_crit`, `low_pct`, `avg_pct` |
 | `delivery.play.open` | thời gian từ yêu cầu xem tới khi có luồng (`MediaSource::findAsync`, gồm chờ kéo luồng theo yêu cầu) trong `monitor.playWindowSec`: `live_samples`, `live_p50_ms`, `live_p95_ms`, `live_max_ms` (luồng live mở được), `replay_samples`, `replay_max_ms` (xem lại, có thể chờ restore S3, chỉ đếm), `not_found` (không có luồng sau `general.maxStreamWaitMS`, thường do client gửi sai id, chỉ đếm) |
 | `cluster.kafka` | `enabled`; khi bật: `mode` (`LIVE`/`SPOOL`/`DRAIN`), `brokers_up`, `brokers_known`, `queued`, `delivered`, `spool_pending`, `spool_bytes`, `dropped_rate` (vượt hạn mức/camera, không tính là lỗi), `dropped` (mất do giới hạn spool/hàng đợi), `last_drop_at` |
+
+`cluster.sync.state`, theo thứ tự ưu tiên:
+
+| `state` | Nghĩa | Đánh giá |
+|---|---|---|
+| `disabled_build` | build tắt `ENABLE_SYNC_CHANGES` | không |
+| `disabled_config` | `database.enable_sync_db=0` | không |
+| `standalone` | `serverLocationId = 0`: server độc lập, cấu hình hợp lệ | không |
+| `decommissioned` | service đã bỏ node khỏi cụm (HTTP 412) | `cluster.decommissioned` critical |
+| `stopped` | chưa chạy (vài giây đầu sau khởi động) | không |
+| `catching_up` | vừa vào nhóm, thay đổi lúc độc lập chưa phát lại; hoặc chưa bootstrap | `sync.bootstrapped` warning |
+| `single_node` | một mình trong nhóm (tự làm seed sau 1 h) | không |
+| `running` | đang đồng bộ với peer | `sync.last_ok_age_sec` |
 
 Số liệu `storage.database`, `storage.tier`, `delivery.restore` đọc SQLite nên chạy trên pool `api` mỗi
 `monitor.slowIntervalSec` (60 s), chu kỳ đánh giá dùng kết quả gần nhất; kết quả cũ hơn 3 lần chu kỳ đó

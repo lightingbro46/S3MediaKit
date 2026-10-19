@@ -150,8 +150,17 @@ std::unordered_map<std::string, std::string> ClusterManager::getPeerUrls() {
     return _map_peer_url;
 }
 
-std::unordered_map<std::string, std::string> ClusterManager::getSyncPeerUrls() {
+bool ClusterManager::inSyncGroup() {
     GET_CONFIG(int, self_server_group_id, Cluster::kServerLocationId);
+    return self_server_group_id != 0;
+}
+
+bool ClusterManager::isSyncGroup(int peer_group) {
+    GET_CONFIG(int, self_server_group_id, Cluster::kServerLocationId);
+    return self_server_group_id != 0 && peer_group == self_server_group_id;
+}
+
+std::unordered_map<std::string, std::string> ClusterManager::getSyncPeerUrls() {
     GET_CONFIG(string, self_id, General::kMediaServerId);
     std::unordered_map<std::string, std::string> peers;
     std::lock_guard<std::mutex> lck(_mtx);
@@ -160,7 +169,7 @@ std::unordered_map<std::string, std::string> ClusterManager::getSyncPeerUrls() {
             continue;
         }
         auto it = _map_server_info.find(pr.first);
-        if (it != _map_server_info.end() && it->second.serverGroupId == self_server_group_id) {
+        if (it != _map_server_info.end() && isSyncGroup(it->second.serverGroupId)) {
             peers.emplace(pr.first, pr.second);
         }
     }
@@ -225,8 +234,7 @@ void ClusterManager::removeMediaServer(const std::string &id) {
         std::lock_guard<std::mutex> lck(_mtx);
         auto it = _map_server_info.find(id);
         if (it != _map_server_info.end()) {
-            GET_CONFIG(int, self_server_group_id, Cluster::kServerLocationId);
-            same_group = it->second.serverGroupId == self_server_group_id;
+            same_group = isSyncGroup(it->second.serverGroupId);
             _map_server_info.erase(it);
         }
         _map_peer_url.erase(id);

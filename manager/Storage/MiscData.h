@@ -14,6 +14,9 @@ namespace managerkit {
 #define MISC_DATA_DB_BOOTSTRAP_DONE "DB_BOOTSTRAP_DONE"
 // Prefix of the keys recording media servers removed from the cluster whose ESC data is not cleaned up yet.
 #define MISC_DATA_REMOVED_PEER_PREFIX "REMOVED_PEER:"
+// Prefix of the local mutations made while this server was standalone (serverLocationId 0), one key
+// per row ("<table>|<row key>"), replayed to transaction_log once it joins a server group.
+#define MISC_DATA_STANDALONE_CHANGE_PREFIX "STANDALONE_CHANGE:"
 #define MISC_DATA_DB_BOOTSTRAP_PENDING_VALUE "{\"schema_version\":1,\"status\":\"pending\"}"
 
 struct MiscData {

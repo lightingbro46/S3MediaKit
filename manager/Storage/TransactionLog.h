@@ -292,6 +292,11 @@ public:
 
     void appendLocalDataMutation(const std::string &table, const std::string &op, const Json::Value &payload);
 
+    // Appends a change recorded while this server was standalone, with its original timestamp (its row
+    // versions were stamped then).
+    void appendReplayedMutation(const std::string &table, const std::string &op, const Json::Value &payload,
+                                int64_t timestamp);
+
     /**
      * Delete transaction_log entries for this node (peer_guid = self_peer_guid)
      * with sequence <= safe_seq.  Called by SyncManager after computing the
@@ -306,6 +311,9 @@ public:
     }
 
 private:
+    // Appends one entry of this node to transaction_log; the caller holds the append lock.
+    void appendLog(const std::string &table, const std::string &op, const Json::Value &payload, int64_t timestamp);
+
     TransactionSequenceImp::Ptr _seq_impl;
 };
 
