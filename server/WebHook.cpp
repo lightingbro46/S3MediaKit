@@ -174,6 +174,8 @@ static void submitServerConfig(Value config, bool qualified, uint64_t revision, 
 static void parse_http_response(const SockException &ex, const Parser &res, const function<void(const Value &, const string &, bool)> &fun) {
     bool should_retry = true;
     if (ex) {
+        // A backend too slow to answer within the timeout gets no extra load from retries.
+        should_retry = ex.getErrCode() != Err_timeout;
         auto errStr = StrPrinter << "[network err]:" << ex << endl;
         fun(Json::nullValue, errStr, should_retry);
         return;
