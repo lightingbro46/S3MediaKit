@@ -617,6 +617,9 @@ void HealthMonitor::onWebhookResult(const string &failure) {
 void HealthMonitor::onWebhookQueue(uint64_t inflight, uint64_t queued) {
     _webhook_inflight = inflight;
     _webhook_queued = queued;
+    uint64_t peak = _webhook_queued_peak.load();
+    while (queued > peak && !_webhook_queued_peak.compare_exchange_weak(peak, queued)) {
+    }
 }
 
 void HealthMonitor::onWebhookQueueWait(uint64_t wait_ms) {
@@ -1864,9 +1867,14 @@ void HealthMonitor::collectCluster(HealthEvaluator &ev, Json::Value &summary, in
     cl["webhook"]["failures"] = (Json::UInt64)total.failures;
     cl["webhook"]["failure_pct"] = num(failure_pct);
     cl["webhook"]["failure_reasons"] = wh_reasons;
-    cl["webhook"]["inflight"] = (Json::UInt64)_webhook_inflight.load();
-    cl["webhook"]["queued"] = (Json::UInt64)_webhook_queued.load();
+    // The limiter stops reporting once hook.maxConcurrent is 0: its last numbers would linger.
+    GET_CONFIG(uint32_t, hook_max_concurrent, "hook.maxConcurrent");
+    GET_CONFIG(uint32_t, hook_max_queue, "hook.maxQueue");
+    cl["webhook"]["inflight"] = (Json::UInt64)(hook_max_concurrent ? _webhook_inflight.load() : 0);
+    cl["webhook"]["queued"] = (Json::UInt64)(hook_max_concurrent ? _webhook_queued.load() : 0);
     cl["webhook"]["queue_wait_max_ms"] = (Json::UInt64)queue_wait_max_ms;
+    cl["webhook"]["max_concurrent"] = hook_max_concurrent;
+    cl["webhook"]["max_queue"] = hook_max_queue;
 
     // Device events to Kafka (EventBus is built without ENABLE_KAFKA too, then never enabled).
     Json::Value &kj = cl["kafka"];
@@ -2370,6 +2378,8 @@ Json::Value healthHistoryPoints(const vector<HealthMetric> &rows, int bucket_sec
         double poller_max = 0;
         int alerts_max = 0;
         int64_t rss_max = 0;
+        double wh_failure_pct = -1;       // -1 = no sample with webhook numbers
+        int64_t wh_queued = -1, wh_wait_ms = -1;
     };
     vector<Bucket> buckets;
     for (const auto &r : rows) {
@@ -2394,6 +2404,9 @@ Json::Value healthHistoryPoints(const vector<HealthMetric> &rows, int bucket_sec
         b.poller_max = std::max(b.poller_max, (double)r.poller_delay_max_ms);
         b.alerts_max = std::max(b.alerts_max, r.alerts_active);
         b.rss_max = std::max(b.rss_max, r.proc_rss);
+        b.wh_failure_pct = std::max(b.wh_failure_pct, (double)r.webhook_failure_pct);
+        b.wh_queued = std::max(b.wh_queued, r.webhook_queued_max);
+        b.wh_wait_ms = std::max(b.wh_wait_ms, r.webhook_queue_wait_max_ms);
     }
     Json::Value out(Json::arrayValue);
     for (const auto &b : buckets) {
@@ -2413,6 +2426,10 @@ Json::Value healthHistoryPoints(const vector<HealthMetric> &rows, int bucket_sec
         p["poller_delay_max_ms"] = std::round(b.poller_max * 100.0) / 100.0;
         p["alerts_active"] = b.alerts_max;
         p["proc_rss"] = (Json::Int64)b.rss_max;
+        // null = samples written before the webhook columns existed.
+        p["webhook_failure_pct"] = b.wh_failure_pct < 0 ? Json::Value() : Json::Value(std::round(b.wh_failure_pct * 100.0) / 100.0);
+        p["webhook_queued_max"] = b.wh_queued < 0 ? Json::Value() : Json::Value((Json::Int64)b.wh_queued);
+        p["webhook_queue_wait_max_ms"] = b.wh_wait_ms < 0 ? Json::Value() : Json::Value((Json::Int64)b.wh_wait_ms);
         out.append(p);
     }
     return out;
@@ -2460,6 +2477,13 @@ void HealthMonitor::recordHistory(const Json::Value &health, const Json::Value &
     m.poller_delay_max_ms = delay.isNumeric() ? delay.asFloat() : 0;
     m.alerts_active = health["alerts"]["active"].asInt();
     m.proc_rss = (int64_t)summary["host"]["ram"]["proc_rss"].asUInt64();
+    const auto &wh = summary["cluster"]["webhook"];
+    if (wh.isObject()) {
+        m.webhook_failure_pct = wh["failure_pct"].asFloat();
+        // The peak since the previous sample, not the instant value: a queue spike lasts seconds.
+        m.webhook_queued_max = wh["max_concurrent"].asUInt() ? (int64_t)_webhook_queued_peak.exchange(_webhook_queued.load()) : 0;
+        m.webhook_queue_wait_max_ms = (int64_t)wh["queue_wait_max_ms"].asUInt64();
+    }
     Json::FastWriter writer;
     m.components_json = writer.write(health["components"]);
     _db_queue->post([m]() {
@@ -2488,6 +2512,9 @@ Json::Value HealthMonitor::history(int64_t from, int64_t to, int bucket_sec, con
         if (!f.empty()) {
             wanted.insert(f);
         }
+    }
+    if (wanted.count("webhook")) {
+        wanted.insert({ "webhook_failure_pct", "webhook_queued_max", "webhook_queue_wait_max_ms" });
     }
     GET_CONFIG(string, media_server_id, General::kMediaServerId);
     Json::Value data;

@@ -53,6 +53,9 @@ TEST(HealthMetricsStore, InsertRangeRssAndPurge) {
         m.poller_delay_max_ms = 1.5f;
         m.proc_rss = i == 3 ? 0 : 1000 + i;   // 0 = not measured, left out of the RSS series
         m.components_json = "{\"host\":\"ok\"}";
+        m.webhook_failure_pct = 2.5f;
+        m.webhook_queued_max = 30 + i;
+        m.webhook_queue_wait_max_ms = 4943;
         ASSERT_TRUE(imp.insertMetric(m));
     }
     auto rows = imp.findByTimeRange(1060, 1180);
@@ -63,6 +66,9 @@ TEST(HealthMetricsStore, InsertRangeRssAndPurge) {
     EXPECT_EQ(3, rows[1].cameras_online);
     EXPECT_FLOAT_EQ(1.5f, rows[1].poller_delay_max_ms);
     EXPECT_EQ("{\"host\":\"ok\"}", rows[1].components_json);
+    EXPECT_FLOAT_EQ(2.5f, rows[1].webhook_failure_pct);
+    EXPECT_EQ(32, rows[1].webhook_queued_max);
+    EXPECT_EQ(4943, rows[1].webhook_queue_wait_max_ms);
     EXPECT_EQ(5u, imp.findByTimeRange(0, 0).size());
 
     auto rss = imp.findRssSince(1060);

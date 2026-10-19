@@ -415,6 +415,7 @@ private:
     WebhookBucket _webhook_current;
     std::atomic<uint64_t> _webhook_inflight{0};
     std::atomic<uint64_t> _webhook_queued{0};
+    std::atomic<uint64_t> _webhook_queued_peak{0}; // most queued since the last health_metrics sample
 
     // Result of the last slowCollect(), written on the API pool.
     struct PoolView {
