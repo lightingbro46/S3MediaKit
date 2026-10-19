@@ -12,13 +12,38 @@
 #include "MP4Recorder.h"
 #include "Thread/ThreadPool.h"
 #include "MP4Muxer.h"
+#include "Extension/Factory.h"
 
 using namespace std;
 using namespace toolkit;
 
 namespace mediakit {
 
+// A file cut because the video configuration changed and shorter than this is deleted instead of being
+// published: it is the few pictures of the old configuration the camera sent right before switching.
+static constexpr float kMinConfigChangeSegmentSec = 1.0f;
+
 namespace {
+class LeadingConfigFrame : public Frame {
+public:
+    explicit LeadingConfigFrame(Frame::Ptr frame) : _frame(std::move(frame)) { setIndex(_frame->getIndex()); }
+
+    uint64_t dts() const override { return _frame->dts(); }
+    uint64_t pts() const override { return _frame->pts(); }
+    size_t prefixSize() const override { return _frame->prefixSize(); }
+    bool keyFrame() const override { return true; }
+    bool configFrame() const override { return _frame->configFrame(); }
+    bool cacheAble() const override { return _frame->cacheAble(); }
+    bool dropAble() const override { return _frame->dropAble(); }
+    bool decodeAble() const override { return _frame->decodeAble(); }
+    char *data() const override { return _frame->data(); }
+    size_t size() const override { return _frame->size(); }
+    CodecId getCodecId() const override { return _frame->getCodecId(); }
+
+private:
+    Frame::Ptr _frame;
+};
+
 struct CloseCounters {
     mutex mtx;
     map<uint64_t, uint64_t> queued;
@@ -182,11 +207,19 @@ void MP4Recorder::createFile() {
         _next_file_time_ms += _muxer->getDuration();
     }
     closeFile();
+    const bool after_change_cut = _cfg.after_change_cut;
+    _cfg.after_change_cut = false;
     time_t file_time;
     if (_continuous_file_time) {
         file_time = static_cast<time_t>(_next_file_time_ms / 1000);
     } else {
         file_time = (_next_file_time_ms != 0) ? static_cast<time_t>(_next_file_time_ms / 1000) : ::time(NULL);
+        if (_next_file_time_ms == 0 && after_change_cut) {
+            // The previous file was cut by a video config change and this one follows it directly: shift it
+            // by 1s so that it starts after the end of the previous file on the timeline (start_time has a
+            // 1s resolution and ::time(NULL) truncates, which puts the two files on the same second).
+            file_time += 1;
+        }
         _next_file_time_ms = 0; // consume override
     }
 
@@ -220,18 +253,26 @@ void MP4Recorder::createFile() {
     }
 }
 
-void MP4Recorder::asyncClose() {
+void MP4Recorder::asyncClose(bool drop_short_segment) {
     auto muxer = _muxer;
     auto full_path_tmp = _full_path_tmp;
     auto info = _info;
     TraceL << "Start close tmp mp4 file: " << full_path_tmp;
-    closeExecutorFor(_info.shortUrl())->async([muxer, full_path_tmp, info]() mutable {
+    closeExecutorFor(_info.shortUrl())->async([muxer, full_path_tmp, info, drop_short_segment]() mutable {
         Ticker close_ticker;
         info.time_len = muxer->getDuration() / 1000.0f;
         // Closing mp4 can be very time-consuming, so it should be executed in the background thread
         TraceL << "Closing tmp mp4 file: " << full_path_tmp;
         muxer->closeMP4();
         TraceL << "Closed tmp mp4 file: " << full_path_tmp;
+        if (drop_short_segment && info.time_len < kMinConfigChangeSegmentSec) {
+            // Not published: no record event, so nothing reaches the timeline.
+            InfoL << "Drop " << info.time_len << "s mp4 cut by a video config change: " << info.file_path;
+            if (!full_path_tmp.empty()) {
+                File::delete_file(full_path_tmp);
+            }
+            return;
+        }
         if (full_path_tmp.empty()) {
             // The file could not be opened: nothing was recorded.
             return;
@@ -262,10 +303,11 @@ void MP4Recorder::asyncClose() {
     });
 }
 
-void MP4Recorder::closeFile() {
+void MP4Recorder::closeFile(bool drop_short_segment) {
     if (_muxer) {
-        asyncClose();
+        asyncClose(drop_short_segment);
         _muxer = nullptr;
+        _cfg.file_width = _cfg.file_height = 0;
     }
 }
 
@@ -275,25 +317,191 @@ void MP4Recorder::flush() {
     }
 }
 
+void MP4Recorder::markInterrupted() {
+    if (!_have_video) {
+        // Audio only: there is no codec configuration that can change, nothing to wait for.
+        return;
+    }
+    if (!_cfg.interrupted) {
+        InfoL << "Stream interrupted, hold mp4 until the next key frame: " << _info.file_path;
+    }
+    if (_muxer) {
+        // The last picture before the interruption is still in the FrameMerger: write it now, it is the
+        // end of the file if the configuration turns out to have changed.
+        _muxer->flush();
+    }
+    _cfg.interrupted = true;
+}
+
+static bool resolutionDiffers(int a_width, int a_height, int b_width, int b_height) {
+    return a_width && a_height && b_width && b_height && (a_width != b_width || a_height != b_height);
+}
+
+static void trackResolution(const Track::Ptr &track, int &width, int &height) {
+    width = height = 0;
+    auto video = std::dynamic_pointer_cast<VideoTrack>(track);
+    if (!video || !video->ready()) {
+        return;
+    }
+    // The parameter sets are only re-parsed on demand: a track keeps reporting the previous size otherwise.
+    video->update();
+    width = video->getVideoWidth();
+    height = video->getVideoHeight();
+}
+
+void MP4Recorder::trackStreamConfig(const Frame::Ptr &frame) {
+    if (!frame->configFrame()) {
+        return;
+    }
+    if (!_cfg.stream_track || _cfg.stream_track->getCodecId() != frame->getCodecId()) {
+        _cfg.stream_track = Factory::getTrackByCodecId(frame->getCodecId());
+    }
+    if (_cfg.stream_track) {
+        _cfg.stream_track->inputFrame(frame);
+    }
+}
+
+void MP4Recorder::streamResolution(int &width, int &height) {
+    trackResolution(_cfg.stream_track, width, height);
+}
+
+void MP4Recorder::videoResolution(int &width, int &height) const {
+    width = height = 0;
+    for (auto &track : _tracks) {
+        if (track->getTrackType() == TrackVideo) {
+            trackResolution(track, width, height);
+            return;
+        }
+    }
+}
+
 bool MP4Recorder::inputFrame(const Frame::Ptr &frame) {
+    if (_tracks.empty()) {
+        return false;
+    }
+
+    if (frame->getTrackType() == TrackVideo) {
+        for (auto &track : _tracks) {
+            if (track->getIndex() == frame->getIndex()) {
+                if (track->getCodecId() != frame->getCodecId()) {
+                    return false;
+                }
+                break;
+            }
+        }
+
+        trackStreamConfig(frame);
+        if (frame->configFrame() && _muxer && !_cfg.changed) {
+            int width = 0, height = 0;
+            streamResolution(width, height);
+            if (resolutionDiffers(width, height, _cfg.file_width, _cfg.file_height)) {
+                InfoL << "Video config changed (" << _cfg.file_width << "x" << _cfg.file_height << " -> " << width << "x"
+                      << height << "), close mp4: " << _info.file_path;
+                _cfg.changed = true;
+            } else if ((!width || !height) && _cfg.file_width && _cfg.file_height) {
+                holdVideoFrame(frame);
+                return true;
+            }
+        }
+        if (_cfg.changed) {
+            if (!frame->keyFrame()) {
+                // The new parameter sets belong to the next file: held, then written in front of its first
+                // key frame. A picture of another configuration cannot be decoded with this file's header.
+                holdVideoFrame(frame);
+                return frame->configFrame();
+            }
+            // MP4Muxer::closeMP4() does not flush its FrameMerger, and the config frames above were kept
+            // out of it, so flush explicitly or the last picture of the old configuration would be lost.
+            _muxer->flush();
+            if (_continuous_file_time) {
+                // createFile() only advances the continuous file time from a muxer that is still open.
+                _next_file_time_ms += _muxer->getDuration();
+            }
+            closeFile(true /* drop_short_segment */);
+            _cfg.changed = false;
+            // The next file created is the one that directly follows this cut.
+            _cfg.after_change_cut = true;
+        }
+    }
+
+    if (_cfg.interrupted) {
+        if (frame->getTrackType() != TrackVideo || !frame->keyFrame()) {
+            if (frame->getTrackType() == TrackVideo) {
+                // Parameter sets of the new session: written in front of its first key frame.
+                holdVideoFrame(frame);
+            }
+            return frame->configFrame();
+        }
+        InfoL << "Stream resumed, " << (_muxer ? "continue mp4: " + _info.file_path : std::string("open a new mp4"))
+              << " (" << _info.shortUrl() << ")";
+        _cfg.interrupted = false;
+    }
+
     auto stamp_inc = _delta_stamp[frame->getTrackType()].relativeStamp(frame->pts(), false);
     const auto segment_second = _file_index <= 1 ? _first_max_second : _max_second;
+    // Conditions for establishment
+    // 1. _muxer is empty (first frame, or the file was just closed on a resolution change)
+    // 2. It's time to slice, and there is only audio
+    // 3. It's time to slice, there is video and a video keyframe is encountered
     if (!_muxer || (stamp_inc > int64_t(segment_second) * 1000 && (!_have_video || frame->keyFrame()))) {
-        // Conditions for establishment
-        // 1. _muxer is empty
-        // 2. It's time to slice, and there is only audio
-        // 3. It's time to slice, there is video and a video keyframe is encountered
+        int track_width = 0, track_height = 0;
+        int stream_width = 0, stream_height = 0;
+        if (_have_video) {
+            videoResolution(track_width, track_height);
+            streamResolution(stream_width, stream_height);
+        }
+        if (resolutionDiffers(stream_width, stream_height, track_width, track_height)) {
+            if (!_cfg.mismatch) {
+                _cfg.mismatch = true;
+                _cfg.mismatch_dts = frame->dts();
+                InfoL << "Skip " << stream_width << "x" << stream_height << " history under a "
+                      << track_width << "x" << track_height << " track: " << _info.shortUrl();
+            }
+            if (frame->dts() < _cfg.mismatch_dts + 60 * 1000) {
+                return false;
+            }
+            // Safety net: whatever the reason the two never agreed, recording must not stop for good. The
+            // file is opened unchecked so this does not start over every 60s.
+            WarnL << "Stream and track still disagree on the resolution after 60s, record anyway: " << _info.shortUrl();
+            track_width = track_height = 0;
+        }
+        _cfg.mismatch = false;
         createFile();
+        _cfg.file_width = track_width;
+        _cfg.file_height = track_height;
         for (auto &ref : _delta_stamp) {
             ref.reset();
         }
     }
 
     if (_muxer) {
+        if (frame->getTrackType() == TrackVideo && (frame->keyFrame() || frame->configFrame())) {
+            // Parameter sets held back above go in front of the key frame (and of the parameter sets that
+            // follow them), so the first sample of the file, or the first one after an interruption, carries
+            // the configuration in-band: the file header alone is not enough for a playback that chains
+            // the samples of consecutive files into one stream.
+            writeHeldConfig();
+        }
         // Generate mp4 file
         return _muxer->inputFrame(frame);
     }
     return false;
+}
+
+void MP4Recorder::holdVideoFrame(const Frame::Ptr &frame) {
+    if (frame->configFrame()) {
+        _cfg.held_config.emplace_back(Frame::getCacheAbleFrame(frame));
+    } else {
+        // A picture went by: the parameter sets held so far do not lead a key frame any more.
+        _cfg.held_config.clear();
+    }
+}
+
+void MP4Recorder::writeHeldConfig() {
+    for (auto &config : _cfg.held_config) {
+        _muxer->inputFrame(std::make_shared<LeadingConfigFrame>(config));
+    }
+    _cfg.held_config.clear();
 }
 
 bool MP4Recorder::addTrack(const Track::Ptr &track) {
@@ -309,6 +517,7 @@ void MP4Recorder::resetTracks() {
     closeFile();
     _tracks.clear();
     _have_video = false;
+    _cfg.reset();
 }
 
 } /* namespace mediakit */

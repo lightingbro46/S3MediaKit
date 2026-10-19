@@ -3,6 +3,7 @@
 
 #include <mutex>
 #include <memory>
+#include <list>
 #include <vector>
 #include "Common/MediaSink.h"
 #include "Record/Recorder.h"
@@ -67,10 +68,56 @@ public:
      */
     bool addTrack(const Track::Ptr & track) override;
 
+    /**
+    * Handles a seamless reconnect without resetting tracks.
+    * The current file remains open until the first key frame; it is closed only
+    * when the resolution changes.
+    * Must be called on the inputFrame() thread.
+    */
+    void markInterrupted();
+
 private:
+    struct VideoConfigState {
+        // Codec configuration carried by the frames entering the recorder, kept in a scratch track fed with
+        // their parameter sets. It can be ahead of _tracks (the camera changed the configuration in-band, or
+        // across a seamless reconnect) or behind it (history replayed from the GOP cache).
+        Track::Ptr stream_track;
+        // Resolution the open file was opened with; 0x0 when it is unknown or must not be checked.
+        int file_width = 0;
+        int file_height = 0;
+        // Set when the stream changed resolution: the file is closed at the next key frame so that one mp4
+        // never holds two resolutions.
+        bool changed = false;
+        // First frame skipped because the track header cannot describe it, and whether such a skip is running.
+        uint64_t mismatch_dts = 0;
+        bool mismatch = false;
+        // Set by markInterrupted(): nothing is written before the next video key frame.
+        bool interrupted = false;
+        // The open file was just closed by a video config change: the next file created gets start_time + 1s.
+        bool after_change_cut = false;
+        // Parameter sets kept out of the file for now, written in front of the key frame they belong to.
+        std::list<Frame::Ptr> held_config;
+
+        // Back to the state of a recorder without tracks.
+        void reset() { *this = VideoConfigState(); }
+    };
+
     void createFile();
-    void closeFile();
-    void asyncClose();
+    // drop_short_segment: the file is closed because the video configuration changed; if it holds less
+    // than kMinConfigChangeSegmentSec it is deleted instead of being published.
+    void closeFile(bool drop_short_segment = false);
+    void asyncClose(bool drop_short_segment);
+
+    // Keeps the scratch track fed with the parameter sets carried by the incoming frames.
+    void trackStreamConfig(const Frame::Ptr &frame);
+    // Resolution the incoming frames are encoded with; 0x0 until a parameter set was seen.
+    void streamResolution(int &width, int &height);
+    // Resolution of the video track bound to this recorder, which is what its files are opened with.
+    void videoResolution(int &width, int &height) const;
+    // Parameter sets kept out of the file for now (config change, interruption, incomplete set): held so
+    // that they can be written in front of the key frame they belong to.
+    void holdVideoFrame(const Frame::Ptr &frame);
+    void writeHeldConfig();
 
 private:
     bool _have_video = false;
@@ -90,6 +137,7 @@ private:
     RecordInfo _info;
     MP4Muxer::Ptr _muxer;
     std::list<Track::Ptr> _tracks;
+    VideoConfigState _cfg;
 };
 
 #endif ///ENABLE_MP4
