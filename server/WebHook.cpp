@@ -539,7 +539,8 @@ void do_http_proxy(const string &url, const HttpArgs &param, const HeaderType &h
         bool hook_failed = ex || res.status() != "200";
         if (hook_failed) {
             // Hook failed
-            WarnL << "hook " << url << " " << ticker.elapsedTime() << "ms,failed" << ex.what() << ":" << paramStr;
+            WarnL << "hook " << url << " " << ticker.elapsedTime() << "ms,failed:"
+                  << (ex ? string(ex.what()) : "http status " + res.status()) << ":" << paramStr;
             if (retry-- > 0 && should_retry) {
                 requester->getPoller()->doDelayTask(MAX(retry_delay, 0.0) * 1000, [url, param, header, func, retry] {
                     do_http_proxy(url, param, header, func, retry);
