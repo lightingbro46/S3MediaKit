@@ -1572,6 +1572,13 @@ size_t SyncManager::replayStandaloneChanges() {
     }
     std::stable_sort(changes.begin(), changes.end(),
                      [](const Change &a, const Change &b) { return a.timestamp < b.timestamp; });
+    try {
+        warnJoinRisks(changes.empty() ? 0 : changes.front().timestamp,
+                      static_cast<size_t>(std::count_if(changes.begin(), changes.end(),
+                                                        [](const Change &c) { return c.op == TRAN_DATA_OP_DELETE; })));
+    } catch (const std::exception &ex) {
+        WarnL << "Failed to check the server group join: " << ex.what();
+    }
     TransactionLogImp log_imp;
     size_t appended = 0;
     for (const auto &c : changes) {
@@ -1587,6 +1594,62 @@ size_t SyncManager::replayStandaloneChanges() {
     }
     InfoL << "Replayed " << appended << " of " << changes.size() << " changes made while standalone";
     return appended;
+}
+
+int SyncManager::warnJoinRisks(int64_t oldest_change_ms, size_t deletes) {
+    int warnings = 0;
+    GET_CONFIG(int, tombstone_ttl_days, Database::kRowVersionTombstoneTtlDays);
+    const int64_t now_ms = static_cast<int64_t>(toolkit::getCurrentMillisecond(true));
+    const int64_t ttl_ms = static_cast<int64_t>(tombstone_ttl_days) * 24 * 3600 * 1000;
+    if (oldest_change_ms > 0 && tombstone_ttl_days > 0 && now_ms - oldest_change_ms > ttl_ms) {
+        // Peers prune their delete tombstones after the TTL: an old replayed change may meet rows the
+        // group deleted (or re-created) meanwhile and win or lose against them unexpectedly.
+        WarnL << "Changes made while standalone go back " << (now_ms - oldest_change_ms) / (24 * 3600 * 1000)
+              << " days, longer than " << Database::kRowVersionTombstoneTtlDays << "=" << tombstone_ttl_days
+              << " (" << deletes << " deletes among them): old changes may not resolve as expected against the group";
+        ++warnings;
+    }
+
+    // Joining another group than before (A -> 0 -> B): its servers never pulled this node's log. If the
+    // start of the log was pruned (while in A), they find a gap and resync from a snapshot.
+    string self_id, self_db;
+    {
+        lock_guard<mutex> lock(_mtx);
+        self_id = _self_node_id;
+        self_db = _self_db_id;
+    }
+    TransactionLog probe;
+    probe.peer_guid = self_id;
+    auto first = make_shared<TransactionLogImp>()->findByPeerGuid(probe, 0, 1);
+    if (first.empty() || first[0].sequence <= 1) {
+        return warnings; // the whole log is still there
+    }
+    const int first_seq = first[0].sequence;
+    unordered_map<string, int> acked; // group member -> seq of this node's log it acked
+    for (const auto &ack : make_shared<PeerAckLogImp>()->findAll()) {
+        if (ack.src_peer_guid == self_id && ack.src_db_guid == self_db) {
+            acked[ack.peer_guid] = std::max(acked[ack.peer_guid], ack.acked_seq);
+        }
+    }
+    string cannot_resume_ids;
+    size_t cannot_resume = 0;
+    auto &cluster = ClusterManager::Instance();
+    for (const auto &id : cluster.getMediaServerIds()) {
+        if (id == self_id || !ClusterManager::isSyncGroup(cluster.getMediaServer(id).serverGroupId)) {
+            continue;
+        }
+        auto it = acked.find(id);
+        if (it == acked.end() || it->second < first_seq - 1) {
+            cannot_resume_ids += (cannot_resume++ ? "," : "") + id;
+        }
+    }
+    if (cannot_resume > 0) {
+        WarnL << "Log entries 1.." << first_seq - 1 << " of this node were pruned and " << cannot_resume
+              << " server(s) of the group never pulled them (" << cannot_resume_ids
+              << "): they will see a gap and resync from a snapshot";
+        ++warnings;
+    }
+    return warnings;
 }
 
 uint64_t SyncManager::startedMs() {

@@ -12,6 +12,7 @@
 #include "Common/config.h"
 #include "Extension/Resource.h"
 #include "Extension/SyncManager.h"
+#include "Server/ClusterManager.h"
 #include "Storage/BookmarkIndex.h"
 #include "Storage/ExtractJob.h"
 #include "Storage/MigrationHistory.h"
@@ -115,6 +116,10 @@ public:
         std::make_shared<MiscDataImp>()->removeByKey(MISC_DATA_DB_BOOTSTRAP_DONE);
         std::lock_guard<std::mutex> lock(m._mtx);
         m._bootstrapped = false;
+    }
+
+    static int warnJoinRisks(SyncManager &m, int64_t oldest_change_ms, size_t deletes) {
+        return m.warnJoinRisks(oldest_change_ms, deletes);
     }
 
     static bool singleNode(SyncManager &m) {
@@ -1171,4 +1176,45 @@ TEST_F(SyncApplyTest, NodeAloneInItsGroupPrunesItsLogAndSeeds) {
     EXPECT_TRUE(SyncManagerTestPeer::isBootstrapped(m));
     EXPECT_FALSE(SyncManagerTestPeer::needsBootstrap(m));
     EXPECT_EQ(2u, own_logs());
+}
+
+// Joining a group: changes older than the tombstone TTL, and a member that never pulled this node's log
+// whose start was pruned (A -> 0 -> B), are warned about.
+TEST_F(SyncApplyTest, JoinWarnsAboutOldChangesAndMembersThatCannotResume) {
+    auto &m = SyncManager::Instance();
+    auto &rm = ResourceManager::Instance();
+    // The start of this node's log is pruned.
+    for (int i = 0; i < 2; ++i) {
+        VmsResourceStatus st;
+        st.guid = "st-join";
+        st.status = 10 + i;
+        std::make_shared<VmsResourceStatusImp>()->add(st);
+    }
+    std::make_shared<TransactionLogImp>()->pruneAckedLogs(rm.getSelfNodeId(), rm.getSelfDbGuid(), ownSeq() - 1);
+
+    const int64_t now = nowMs();
+    const int64_t day_ms = 24LL * 3600 * 1000;
+    EXPECT_EQ(0, SyncManagerTestPeer::warnJoinRisks(m, now - 60000, 0)); // no other server in the group
+    EXPECT_EQ(1, SyncManagerTestPeer::warnJoinRisks(m, now - 40 * day_ms, 1)); // older than the 30 days TTL
+
+    MediaServerInfo info;
+    info.id = "peer-join";
+    info.name = "peer-join";
+    info.ip = "127.0.0.1";
+    info.httpPort = 9;
+    info.serverGroupId = mINI::Instance()[mediakit::Cluster::kServerLocationId];
+    ClusterManager::Instance().addMediaServer("peer-join", info, true);
+    EXPECT_EQ(1, SyncManagerTestPeer::warnJoinRisks(m, now - 60000, 0));
+
+    // Once the member has acked this node's log up to the pruned part, it can resume.
+    PeerAckLog ack;
+    ack.peer_guid = "peer-join";
+    ack.db_guid = "db-join";
+    ack.src_peer_guid = rm.getSelfNodeId();
+    ack.src_db_guid = rm.getSelfDbGuid();
+    ack.acked_seq = ownSeq();
+    ack.updated_at = time(nullptr);
+    std::make_shared<PeerAckLogImp>()->add(ack);
+    EXPECT_EQ(0, SyncManagerTestPeer::warnJoinRisks(m, now - 60000, 0));
+    ClusterManager::Instance().removeMediaServer("peer-join");
 }
