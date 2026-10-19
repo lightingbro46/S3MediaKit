@@ -98,7 +98,7 @@ Cột "Báo giả ở tải định mức" là nhận định trước khi đo, 
 | `sync.bootstrapped` | warning | Node mới chưa đồng bộ xong dữ liệu ESC | Chờ; kéo dài thì xem log `SyncManager` | Không |
 | (`cluster.sync.state = standalone`) | không đánh giá | `serverLocationId = 0`: server độc lập, không đồng bộ ESC | Cấu hình hợp lệ. Cần đồng bộ thì đặt `serverGroupId` khác 0 trên VMS | Không |
 | `sync.last_ok_age_sec` (theo peer) | 120 / 600 | Đồng bộ với peer bị kẹt/lỗi | Log `SyncManager`, mạng giữa các node | Không |
-| `webhook.failure_pct` | > 0 / 20 | Backend VMS/ESC (`hook.api_url`) không trả lời/lỗi 5xx | Kiểm backend; dưới 10 lần gọi thì chỉ warning | Có thể khi backend bận (một lần timeout đã là warning) |
+| `webhook.failure_pct` | > 0 / 20 | Backend VMS/ESC (`hook.api_url`) không trả lời/lỗi 5xx | Kiểm backend; dưới 10 lần gọi thì chỉ warning. `summary.cluster.webhook.failure_reasons`: `timeout`/`http_5xx` = backend chậm/lỗi; `poller_late` = poller MediaServer bị chặn chứ không phải backend (xem `pollers.delay_max_ms`, thread `event poller N` trong log hook); `busy`/`queue_timeout` = hàng đợi đầy, xem `queued`, `queue_wait_max_ms`, cân nhắc tăng `hook.maxConcurrent` nếu backend còn chịu được | Có thể khi backend bận (một lần timeout đã là warning) |
 | `kafka.spool`, `kafka.dropped` | warning | Mất kết nối broker, spool đầy | Kiểm broker Kafka | Không |
 
 Webhook cảnh báo hệ thống (`system-event`: `Cpu*`, `Ram*`, `Disk*`…) được gửi từ luồng `monitor poller`

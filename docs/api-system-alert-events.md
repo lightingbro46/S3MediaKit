@@ -20,7 +20,10 @@ Content-Type: application/json
 - Phía API trả **bất kỳ mã 2xx** là thành công, body có thể rỗng.
 - Lỗi mạng, mã khác 2xx, hoặc body không phải JSON hợp lệ: MediaServer gửi lại `hook.retry` lần, mỗi lần cách
   `hook.retry_delay` giây. **Mặc định `hook.retry=0`, tức không gửi lại**: sự kiện bị mất nếu API không nhận được.
+  Timeout không được gửi lại (API đang chậm, gửi lại chỉ thêm tải).
 - Timeout mỗi request: `hook.timeoutSec` (mặc định 10 s).
+- Tối đa `hook.maxConcurrent` (mặc định 64) hook tới `hook.api_url` cùng lúc, phần còn lại chờ trong hàng
+  (`hook.maxQueue`, 2048). Thời gian chờ tính vào timeout; hàng đầy thì hook lỗi ngay, không gửi.
 - Các sự kiện được gửi bất đồng bộ và độc lập với nhau, **không đảm bảo thứ tự đến**. Khi có retry, một
   `*Warning` gửi lại có thể đến sau `*Recovered`. Hãy sắp theo `eventTime` (xem
   [Gợi ý xử lý phía API](#gợi-ý-xử-lý-phía-api)).

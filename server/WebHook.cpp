@@ -1,4 +1,7 @@
 ﻿#include <cstring>
+#include <deque>
+#include <mutex>
+#include <random>
 #include <sstream>
 #include "Util/logger.h"
 #include "Util/onceToken.h"
@@ -91,6 +94,9 @@ const string kApiUrl = HOOK_FIELD "api_url";
 
 const string kRetry = HOOK_FIELD "retry";
 const string kRetryDelay = HOOK_FIELD "retry_delay";
+// Hooks to api_url sent at once (0 = no limit) and waiting for a slot; a full queue fails the hook.
+const string kMaxConcurrent = HOOK_FIELD "maxConcurrent";
+const string kMaxQueue = HOOK_FIELD "maxQueue";
 
 static onceToken token([]() {
     mINI::Instance()[kEnable] = true;
@@ -143,6 +149,8 @@ static onceToken token([]() {
     mINI::Instance()[kConfigReapplySec] = 300;
     mINI::Instance()[kRetry] = 0;
     mINI::Instance()[kRetryDelay] = 3.0;
+    mINI::Instance()[kMaxConcurrent] = 64;
+    mINI::Instance()[kMaxQueue] = 2048;
     mINI::Instance()[kStreamChangedSchemas] = "rtsp/rtmp/fmp4/ts/hls/hls.fmp4";
     mINI::Instance()[kApiUrl] = "";
 });
@@ -174,6 +182,8 @@ static void submitServerConfig(Value config, bool qualified, uint64_t revision, 
 static void parse_http_response(const SockException &ex, const Parser &res, const function<void(const Value &, const string &, bool)> &fun) {
     bool should_retry = true;
     if (ex) {
+        // A backend too slow to answer within the timeout gets no extra load from retries.
+        should_retry = ex.getErrCode() != Err_timeout;
         auto errStr = StrPrinter << "[network err]:" << ex << endl;
         fun(Json::nullValue, errStr, should_retry);
         return;
@@ -329,70 +339,249 @@ string getVhost(const HttpArgs &value) {
 
 static atomic<uint64_t> s_hook_index { 0 };
 
-// Final result of a hook delivery (after retries) for the health monitor. Only calls to the VMS/ESC
-// (hook.api_url): do_http_hook also carries peer calls (sync pulls, health checks), which the
-// monitor sees as peer reachability. A 4xx refusal is the backend's answer; an exception in the
-// caller's handler is reported a second time, not a delivery.
-static void noteHookResult(const string &url, const string &err) {
+static const string kHookBusy = "[hook busy]";
+static const string kHookQueueTimeout = "[hook queue timeout]";
+// TcpClient checks the HTTP timeout every 2 s; 1 s more for scheduling noise.
+static const int64_t kHookTimeoutCheckSlackMs = 3000;
+
+// Calls to the VMS/ESC. do_http_hook also carries peer calls (sync pulls, health checks), which the
+// monitor sees as peer reachability and which the concurrency limit leaves alone.
+static bool isApiHook(const string &url) {
     GET_CONFIG(string, hook_api_url, Hook::kApiUrl);
-    if (hook_api_url.empty() || url.compare(0, hook_api_url.size(), hook_api_url) != 0) {
+    return !hook_api_url.empty() && url.compare(0, hook_api_url.size(), hook_api_url) == 0;
+}
+
+// Failure kind of a finished hook for the health monitor, empty = delivered. A 4xx refusal is the
+// backend's answer, not a delivery failure. `poller_late`: a timeout caused by our own blocked poller.
+static string hookFailureKind(const SockException &ex, const string &err, bool poller_late) {
+    if (err.empty() || isHookDenied(err)) {
+        return string();
+    }
+    if (ex) {
+        if (ex.getErrCode() == Err_timeout) {
+            return poller_late ? "poller_late" : "timeout";
+        }
+        return "network";
+    }
+    static const string status_prefix = "[bad http status code]:";
+    if (err.compare(0, status_prefix.size(), status_prefix) == 0 && err.size() >= status_prefix.size() + 3) {
+        return "http_" + err.substr(status_prefix.size(), 3);
+    }
+    if (err.compare(0, kHookBusy.size(), kHookBusy) == 0) {
+        return "busy";
+    }
+    if (err.compare(0, kHookQueueTimeout.size(), kHookQueueTimeout) == 0) {
+        return "queue_timeout";
+    }
+    return "other";
+}
+
+// Final result of a hook delivery (after retries) for the health monitor. An exception in the
+// caller's handler is reported a second time, not a delivery.
+static void noteHookResult(const string &url, const string &err, const SockException &ex = SockException(),
+                           bool poller_late = false) {
+    if (!isApiHook(url)) {
         return;
     }
     static const string invoker_failed = "[do hook invoker failed]";
     if (err.compare(0, invoker_failed.size(), invoker_failed) == 0) {
         return;
     }
-    HealthMonitor::Instance().onWebhookResult(err.empty() || isHookDenied(err));
+    HealthMonitor::Instance().onWebhookResult(hookFailureKind(ex, err, poller_late));
+}
+
+// Hooks to hook.api_url share hook.maxConcurrent slots, the others wait in a FIFO queue of at most
+// hook.maxQueue. `start(limited, timeout_sec, queued_ms)` sends the request; a limited hook calls
+// releaseHookSlot() once when its requester answers. `fail(err)` reports a hook that was never sent.
+using HookStart = function<void(bool limited, float timeout_sec, uint64_t queued_ms)>;
+using HookFail = function<void(const string &err)>;
+struct PendingHook {
+    uint64_t queued_at = getCurrentMillisecond();
+    float timeout_sec = 0;
+    HookStart start;
+    HookFail fail;
+};
+static mutex s_hook_mtx;
+static size_t s_hook_inflight = 0;
+static deque<PendingHook> s_hook_queue;
+
+// s_hook_mtx held.
+static void reportHookQueue() {
+    HealthMonitor::Instance().onWebhookQueue(s_hook_inflight, s_hook_queue.size());
+}
+
+static size_t hookInflight() {
+    lock_guard<mutex> lck(s_hook_mtx);
+    return s_hook_inflight;
+}
+
+static void scheduleHook(const string &url, float timeout_sec, const HookStart &start, const HookFail &fail) {
+    GET_CONFIG(uint32_t, max_concurrent, Hook::kMaxConcurrent);
+    GET_CONFIG(uint32_t, max_queue, Hook::kMaxQueue);
+    if (max_concurrent == 0 || !isApiHook(url)) {
+        start(false, timeout_sec, 0);
+        return;
+    }
+    {
+        lock_guard<mutex> lck(s_hook_mtx);
+        if (s_hook_inflight < max_concurrent && s_hook_queue.empty()) {
+            ++s_hook_inflight;
+            reportHookQueue();
+        } else if (s_hook_queue.size() < max_queue) {
+            PendingHook item;
+            item.timeout_sec = timeout_sec;
+            item.start = start;
+            item.fail = fail;
+            s_hook_queue.push_back(std::move(item));
+            reportHookQueue();
+            return;
+        } else {
+            // Never call back from inside the caller: it may hold its own locks.
+            EventPollerPool::Instance().getPoller()->async([fail]() { fail(kHookBusy); }, false);
+            return;
+        }
+    }
+    start(true, timeout_sec, 0);
+}
+
+// Frees a slot and starts the next queued hook on this thread. The queue time counts toward the
+// hook timeout: a hook that waited longer fails without being sent.
+static void releaseHookSlot() {
+    GET_CONFIG(uint32_t, max_concurrent, Hook::kMaxConcurrent);
+    vector<PendingHook> expired;
+    PendingHook next;
+    bool has_next = false;
+    {
+        lock_guard<mutex> lck(s_hook_mtx);
+        if (s_hook_inflight > 0) {
+            --s_hook_inflight;
+        }
+        while (!s_hook_queue.empty() && (max_concurrent == 0 || s_hook_inflight < max_concurrent)) {
+            PendingHook item = std::move(s_hook_queue.front());
+            s_hook_queue.pop_front();
+            if (getCurrentMillisecond() - item.queued_at >= item.timeout_sec * 1000) {
+                expired.push_back(std::move(item));
+                continue;
+            }
+            next = std::move(item);
+            ++s_hook_inflight;
+            has_next = true;
+            break;
+        }
+        reportHookQueue();
+    }
+    for (auto &item : expired) {
+        item.fail(StrPrinter << kHookQueueTimeout << ":queued=" << getCurrentMillisecond() - item.queued_at << "ms" << endl);
+    }
+    if (has_next) {
+        const uint64_t queued_ms = getCurrentMillisecond() - next.queued_at;
+        HealthMonitor::Instance().onWebhookQueueWait(queued_ms);
+        next.start(true, std::max(next.timeout_sec - queued_ms / 1000.0f, 1.0f), queued_ms);
+    }
+}
+
+// One delivery attempt of a hook through the limiter. `make` builds the request for `target`,
+// `resend(retry)` sends the hook again after hook.retry_delay, `log_body` is what the logs show.
+static void startHook(const string &url, const string &target, const string &log_body, float timeout_sec,
+                      const function<HttpRequester::Ptr()> &make, uint32_t retry,
+                      const function<void(uint32_t retry)> &resend,
+                      const function<void(const Value &, const string &)> &func) {
+    GET_CONFIG(float, hook_retry_delay, Hook::kRetryDelay);
+    const float retry_delay = hook_retry_delay;
+    HookFail fail = [url, log_body, func](const string &err) {
+        WarnL << "hook " << url << " not sent," << err << ":" << log_body;
+        noteHookResult(url, err);
+        if (func) {
+            func(Json::nullValue, err);
+        }
+    };
+    scheduleHook(url, timeout_sec, [url, target, log_body, make, retry, retry_delay, resend, func, fail](bool limited, float timeout, uint64_t queued_ms) {
+        auto requester = make();
+        Ticker ticker;
+        try {
+            uint32_t retry_left = retry;
+            requester->startRequester(target, [url, log_body, requester, ticker, timeout, retry_left, retry_delay, resend, func, limited, queued_ms](const SockException &ex, const Parser &res) mutable {
+                onceToken token(nullptr, [&]() mutable { requester.reset(); });
+                if (limited) {
+                    releaseHookSlot();
+                }
+                // The timeout is checked every 2 s by a timer on this requester's poller, and timers run
+                // before socket reads. A timeout seen well past that means the poller was blocked: the
+                // backend's answer may be sitting unread in the socket.
+                const uint64_t elapsed_ms = ticker.elapsedTime();
+                const int64_t late_ms = (int64_t)elapsed_ms - (int64_t)(timeout * 1000);
+                const bool timed_out = ex && ex.getErrCode() == Err_timeout;
+                const bool poller_late = timed_out && late_ms > kHookTimeoutCheckSlackMs;
+                parse_http_response(ex, res, [&](const Value &obj, const string &err, bool should_retry) {
+                    if (!err.empty()) {
+                        // Hook failed. queued/inflight tell a slow backend from a long wait for a slot,
+                        // late/poller_late a slow backend from our own blocked poller.
+                        WarnL << "hook " << url << " " << elapsed_ms << "ms,queued=" << queued_ms
+                              << "ms,inflight=" << hookInflight()
+                              << (timed_out ? (StrPrinter << ",late=" << late_ms << "ms") : string())
+                              << (poller_late ? ",poller_late" : "") << ",failed" << err << ":" << log_body;
+
+                        if (retry_left-- > 0 && should_retry) {
+                            const uint32_t retry = retry_left;
+                            requester->getPoller()->doDelayTask(MAX(retry_delay, 0.0) * 1000, [resend, retry] {
+                                resend(retry);
+                                return 0;
+                            });
+                            // Retry does not need to trigger callback
+                            return;
+                        }
+
+                    } else if (ticker.elapsedTime() > 500) {
+                        // Hook succeeded, but hook response exceeded 500ms, print warning log
+                        DebugL << "hook " << url << " " << ticker.elapsedTime() << "ms,success:" << log_body;
+                    }
+                    noteHookResult(url, err, ex, poller_late);
+
+                    if (func) {
+                        func(obj, err);
+                    }
+                });
+            }, timeout);
+        } catch (std::exception &e) {
+            // Bad URL: the request holds its own callback, break the cycle. Answer off this stack,
+            // which may be another hook's callback starting the queue.
+            requester->setOnResult(nullptr);
+            string err = StrPrinter << "[hook start failed]:" << e.what() << endl;
+            EventPollerPool::Instance().getPoller()->async([limited, fail, err]() {
+                if (limited) {
+                    releaseHookSlot();
+                }
+                fail(err);
+            }, false);
+        }
+    }, fail);
 }
 
 void do_http_hook(const string &url, const ArgsType &body, const HeaderType &header, const function<void(const Value &, const string &)> &func, uint32_t retry) {
     GET_CONFIG(string, mediaServerId, General::kMediaServerId);
     GET_CONFIG(float, hook_timeoutSec, Hook::kTimeoutSec);
-    GET_CONFIG(float, retry_delay, Hook::kRetryDelay);
 
     const_cast<ArgsType &>(body)["mediaServerId"] = mediaServerId;
     const_cast<ArgsType &>(body)["hook_index"] = (Json::UInt64)(s_hook_index++);
 
-    auto requester = std::make_shared<HttpRequester>();
-    requester->setMethod("POST");
     auto bodyStr = to_string(body);
-    requester->setBody(bodyStr);
-    for (const auto &it : header) {
-        requester->addHeader(it.first, it.second);
-    }
-    requester->addHeader("Content-Type", getContentType(body));
+    string content_type = getContentType(body);
     auto vhost = getVhost(body);
-    if (!vhost.empty()) {
-        requester->addHeader("X-VHOST", vhost);
-    }
-    Ticker ticker;
-    requester->startRequester(url, [url, func, bodyStr, body, header, requester, ticker, retry](const SockException &ex, const Parser &res) mutable {
-        onceToken token(nullptr, [&]() mutable { requester.reset(); });
-        parse_http_response(ex, res, [&](const Value &obj, const string &err, bool should_retry) {
-            if (!err.empty()) {
-                // Hook failed
-                WarnL << "hook " << url << " " << ticker.elapsedTime() << "ms,failed" << err << ":" << bodyStr;
-
-                if (retry-- > 0 && should_retry) {
-                    requester->getPoller()->doDelayTask(MAX(retry_delay, 0.0) * 1000, [url, body, header, func, retry] {
-                        do_http_hook(url, body, header, func, retry);
-                        return 0;
-                    });
-                    // Retry does not need to trigger callback
-                    return;
-                }
-
-            } else if (ticker.elapsedTime() > 500) {
-                // Hook succeeded, but hook response exceeded 500ms, print warning log
-                DebugL << "hook " << url << " " << ticker.elapsedTime() << "ms,success:" << bodyStr;
-            }
-            noteHookResult(url, err);
-
-            if (func) {
-                func(obj, err);
-            }
-        });
-    }, hook_timeoutSec);
+    auto make = [bodyStr, header, content_type, vhost]() {
+        auto requester = std::make_shared<HttpRequester>();
+        requester->setMethod("POST");
+        requester->setBody(bodyStr);
+        for (const auto &it : header) {
+            requester->addHeader(it.first, it.second);
+        }
+        requester->addHeader("Content-Type", content_type);
+        if (!vhost.empty()) {
+            requester->addHeader("X-VHOST", vhost);
+        }
+        return requester;
+    };
+    auto resend = [url, body, header, func](uint32_t retry) { do_http_hook(url, body, header, func, retry); };
+    startHook(url, url, bodyStr, hook_timeoutSec, make, retry, resend, func);
 }
 
 void do_http_hook(const string &url, const ArgsType &body, const function<void(const Value &, const string &)> &func) {
@@ -452,51 +641,28 @@ void upload_http_hook(const string &url,
 void do_http_hook(const string &url, const HttpArgs &param, const HeaderType &header, const function<void(const Value &, const string &)> &func, uint32_t retry) {
     GET_CONFIG(string, mediaServerId, General::kMediaServerId);
     GET_CONFIG(float, hook_timeoutSec, Hook::kTimeoutSec);
-    GET_CONFIG(float, retry_delay, Hook::kRetryDelay);
 
     const_cast<HttpArgs &>(param)["mediaServerId"] = mediaServerId;
     const_cast<HttpArgs &>(param)["hook_index"] = (Json::UInt64)(s_hook_index++);
 
-    auto requester = std::make_shared<HttpRequester>();
-    requester->setMethod("GET");
     auto paramStr = to_string(param);
     auto full_url = url + "?" + paramStr;
-    for (const auto &it : header) {
-        requester->addHeader(it.first, it.second);
-    }
-    requester->addHeader("Content-Type", getContentType(param));
+    string content_type = getContentType(param);
     auto vhost = getVhost(param);
-    if (!vhost.empty()) {
-        requester->addHeader("X-VHOST", vhost);
-    }
-    Ticker ticker;
-    requester->startRequester(full_url, [url, func, paramStr, param, header, requester, ticker, retry](const SockException &ex, const Parser &res) mutable {
-        onceToken token(nullptr, [&]() mutable { requester.reset(); });
-        parse_http_response(ex, res, [&](const Value &obj, const string &err, bool should_retry) {
-            if (!err.empty()) {
-                // Hook failed
-                WarnL << "hook " << url << " " << ticker.elapsedTime() << "ms,failed" << err << ":" << paramStr;
-
-                if (retry-- > 0 && should_retry) {
-                    requester->getPoller()->doDelayTask(MAX(retry_delay, 0.0) * 1000, [url, param, header, func, retry] {
-                        do_http_hook(url, param, header, func, retry);
-                        return 0;
-                    });
-                    // Retry does not need to trigger callback
-                    return;
-                }
-
-            } else if (ticker.elapsedTime() > 500) {
-                // Hook succeeded, but hook response exceeded 500ms, print warning log
-                DebugL << "hook " << url << " " << ticker.elapsedTime() << "ms,success:" << paramStr;
-            }
-            noteHookResult(url, err);
-
-            if (func) {
-                func(obj, err);
-            }
-        });
-    }, hook_timeoutSec);
+    auto make = [header, content_type, vhost]() {
+        auto requester = std::make_shared<HttpRequester>();
+        requester->setMethod("GET");
+        for (const auto &it : header) {
+            requester->addHeader(it.first, it.second);
+        }
+        requester->addHeader("Content-Type", content_type);
+        if (!vhost.empty()) {
+            requester->addHeader("X-VHOST", vhost);
+        }
+        return requester;
+    };
+    auto resend = [url, param, header, func](uint32_t retry) { do_http_hook(url, param, header, func, retry); };
+    startHook(url, full_url, paramStr, hook_timeoutSec, make, retry, resend, func);
 }
 
 void do_http_hook(const std::string &url, const HttpArgs &param, const function<void(const Json::Value &, const string &)> &func) {
@@ -537,7 +703,8 @@ void do_http_proxy(const string &url, const HttpArgs &param, const HeaderType &h
         bool hook_failed = ex || res.status() != "200";
         if (hook_failed) {
             // Hook failed
-            WarnL << "hook " << url << " " << ticker.elapsedTime() << "ms,failed" << ex.what() << ":" << paramStr;
+            WarnL << "hook " << url << " " << ticker.elapsedTime() << "ms,failed:"
+                  << (ex ? string(ex.what()) : "http status " + res.status()) << ":" << paramStr;
             if (retry-- > 0 && should_retry) {
                 requester->getPoller()->doDelayTask(MAX(retry_delay, 0.0) * 1000, [url, param, header, func, retry] {
                     do_http_proxy(url, param, header, func, retry);
@@ -1389,19 +1556,42 @@ void installWebHook() {
         body["port"] = sender.get_peer_port();
         body["id"] = sender.getIdentifier();
 #endif
+        // Sessions opening the same token/device at once (a grid, a mass reconnect) share one hook.
+        auto done = [reply, isStreamLimit, register_session](const string &err) {
+            if (!err.empty()) {
+                reply(err);
+                return;
+            }
+            register_session();
+            isStreamLimit();
+        };
+        if (!UserAuthorManager::Instance().joinPlayCheck(jwt_token, device_id, done)) {
+            return;
+        }
         ArgsType body;
         body["data"] = device_id;
         HeaderType header;
         header["Authorization"] = (StrPrinter << "Bearer " << jwt_token);
         // Execute hook
-        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, reply, isStreamLimit, register_session](const Value &obj, const string &err) mutable {
-            const bool cached = UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty());
-            if (!err.empty() || !cached) {
-                reply("Unauthorized");
-                return;
+        do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token](const Value &obj, const string &err) {
+            string result;
+            if (!err.empty() && !isHookDenied(err)) {
+                // Timeout, 5xx, network: the backend gave no answer. Caching a REJECT would block this
+                // camera for the grant lifetime; answer "retry later" (503) and ask again next time.
+                result = "ResourceUnavailable";
+            } else if (!err.empty()) {
+                UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, false);
+                result = "Unauthorized";
+            } else {
+                // 480-600 s: grants opened in one burst spread their refresh over 2-3 ticks of the
+                // 60 s timer; the 180 s lead time still leaves two attempts before expiry.
+                static thread_local std::mt19937 rng(std::random_device{}());
+                const uint64_t ttl = 600 - std::uniform_int_distribution<uint64_t>(0, 120)(rng);
+                if (!UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, true, ttl)) {
+                    result = "Unauthorized";
+                }
             }
-            register_session();
-            isStreamLimit();
+            UserAuthorManager::Instance().finishPlayCheck(jwt_token, device_id, result);
         });
     });
 
@@ -1440,7 +1630,8 @@ void installWebHook() {
         // Execute hook
         do_http_hook(hook_api_url + hook_play, body, header, [device_id, jwt_token, force_refresh, invoker](const Value &obj, const string &err) mutable {
             bool cached = true;
-            if (!force_refresh || err.empty()) {
+            // A transient failure (timeout, 5xx, network) is never cached as a REJECT.
+            if (err.empty() || (!force_refresh && isHookDenied(err))) {
                 cached = UserAuthorManager::Instance().addAuthorCache(device_id, jwt_token, err.empty(), 600, force_refresh);
             } else if (isHookDenied(err)) {
                 // The backend refused the refresh: close the sessions now instead of at the grant expiry.

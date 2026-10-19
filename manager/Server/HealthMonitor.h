@@ -245,8 +245,13 @@ public:
     void onRecordWritten(const std::string &camera_id, uint64_t bytes);
     // Result of a play authorization (kBroadcastMediaPlayed): empty = allowed. Any thread.
     void onPlayResult(const std::string &err);
-    // Final result of a webhook call to the VMS/ESC (after its retries). Any thread.
-    void onWebhookResult(bool ok);
+    // Final result of a webhook call to the VMS/ESC (after its retries): empty = ok, otherwise the
+    // failure kind (timeout, network, http_<code>, busy, queue_timeout, other). Any thread.
+    void onWebhookResult(const std::string &failure);
+    // State of the webhook concurrency limiter (hook.maxConcurrent). Any thread.
+    void onWebhookQueue(uint64_t inflight, uint64_t queued);
+    // A webhook waited `wait_ms` in the limiter queue before it was sent. Any thread.
+    void onWebhookQueueWait(uint64_t wait_ms);
 
     /**
      * Data of /media/monitor/history: health_metrics points and, unless `fields` leaves it out,
@@ -357,7 +362,13 @@ private:
         uint64_t failures = 0;
     };
     std::deque<PlayBucket> _play_buckets;   // one per cycle, newest last
-    std::deque<PlayBucket> _webhook_buckets;
+    struct WebhookBucket {
+        uint64_t requests = 0;
+        uint64_t failures = 0;
+        uint64_t queue_wait_max_ms = 0;
+        std::map<std::string, uint64_t> reasons; // failure kind -> count
+    };
+    std::deque<WebhookBucket> _webhook_buckets;
     int64_t _slow_started_at = 0;  // unix seconds of the last slowCollect() dispatch
     uint64_t _kafka_dropped = 0;   // EventBus drops at the previous cycle
     int64_t _kafka_dropped_at = 0; // unix seconds of the last increase
@@ -401,7 +412,9 @@ private:
     PlayBucket _play_current;
     std::map<std::string, uint64_t> _play_failure_reasons; // since start
     std::mutex _webhook_mtx;
-    PlayBucket _webhook_current;
+    WebhookBucket _webhook_current;
+    std::atomic<uint64_t> _webhook_inflight{0};
+    std::atomic<uint64_t> _webhook_queued{0};
 
     // Result of the last slowCollect(), written on the API pool.
     struct PoolView {

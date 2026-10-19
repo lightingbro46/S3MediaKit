@@ -321,6 +321,30 @@ bool UserAuthorManager::addAuthorCache(const string &resource_id, const string &
     return true;
 }
 
+bool UserAuthorManager::joinPlayCheck(const string &jwt_token, const string &device_id,
+                                      const function<void(const string &err)> &cb) {
+    lock_guard<recursive_mutex> lck(_mtx);
+    auto &waiters = _play_waiters[jwt_token + ":" + device_id];
+    waiters.push_back(cb);
+    return waiters.size() == 1;
+}
+
+void UserAuthorManager::finishPlayCheck(const string &jwt_token, const string &device_id, const string &err) {
+    vector<function<void(const string &err)>> waiters;
+    {
+        lock_guard<recursive_mutex> lck(_mtx);
+        auto it = _play_waiters.find(jwt_token + ":" + device_id);
+        if (it == _play_waiters.end()) {
+            return;
+        }
+        waiters.swap(it->second);
+        _play_waiters.erase(it);
+    }
+    for (auto &cb : waiters) {
+        cb(err);
+    }
+}
+
 UserAuthorPermit UserAuthorManager::getClusterAuthorCache(const std::string &author_id, const std::string &secret_key) {
     lock_guard<recursive_mutex> lck(_mtx);
     auto key = author_id + ":" + secret_key;
