@@ -341,6 +341,8 @@ static atomic<uint64_t> s_hook_index { 0 };
 
 static const string kHookBusy = "[hook busy]";
 static const string kHookQueueTimeout = "[hook queue timeout]";
+// TcpClient checks the HTTP timeout every 2 s; 1 s more for scheduling noise.
+static const int64_t kHookTimeoutCheckSlackMs = 3000;
 
 // Calls to the VMS/ESC. do_http_hook also carries peer calls (sync pulls, health checks), which the
 // monitor sees as peer reachability and which the concurrency limit leaves alone.
@@ -350,13 +352,16 @@ static bool isApiHook(const string &url) {
 }
 
 // Failure kind of a finished hook for the health monitor, empty = delivered. A 4xx refusal is the
-// backend's answer, not a delivery failure.
-static string hookFailureKind(const SockException &ex, const string &err) {
+// backend's answer, not a delivery failure. `poller_late`: a timeout caused by our own blocked poller.
+static string hookFailureKind(const SockException &ex, const string &err, bool poller_late) {
     if (err.empty() || isHookDenied(err)) {
         return string();
     }
     if (ex) {
-        return ex.getErrCode() == Err_timeout ? "timeout" : "network";
+        if (ex.getErrCode() == Err_timeout) {
+            return poller_late ? "poller_late" : "timeout";
+        }
+        return "network";
     }
     static const string status_prefix = "[bad http status code]:";
     if (err.compare(0, status_prefix.size(), status_prefix) == 0 && err.size() >= status_prefix.size() + 3) {
@@ -373,7 +378,8 @@ static string hookFailureKind(const SockException &ex, const string &err) {
 
 // Final result of a hook delivery (after retries) for the health monitor. An exception in the
 // caller's handler is reported a second time, not a delivery.
-static void noteHookResult(const string &url, const string &err, const SockException &ex = SockException()) {
+static void noteHookResult(const string &url, const string &err, const SockException &ex = SockException(),
+                           bool poller_late = false) {
     if (!isApiHook(url)) {
         return;
     }
@@ -381,7 +387,7 @@ static void noteHookResult(const string &url, const string &err, const SockExcep
     if (err.compare(0, invoker_failed.size(), invoker_failed) == 0) {
         return;
     }
-    HealthMonitor::Instance().onWebhookResult(hookFailureKind(ex, err));
+    HealthMonitor::Instance().onWebhookResult(hookFailureKind(ex, err, poller_late));
 }
 
 // Hooks to hook.api_url share hook.maxConcurrent slots, the others wait in a FIFO queue of at most
@@ -494,16 +500,26 @@ static void startHook(const string &url, const string &target, const string &log
         Ticker ticker;
         try {
             uint32_t retry_left = retry;
-            requester->startRequester(target, [url, log_body, requester, ticker, retry_left, retry_delay, resend, func, limited, queued_ms](const SockException &ex, const Parser &res) mutable {
+            requester->startRequester(target, [url, log_body, requester, ticker, timeout, retry_left, retry_delay, resend, func, limited, queued_ms](const SockException &ex, const Parser &res) mutable {
                 onceToken token(nullptr, [&]() mutable { requester.reset(); });
                 if (limited) {
                     releaseHookSlot();
                 }
+                // The timeout is checked every 2 s by a timer on this requester's poller, and timers run
+                // before socket reads. A timeout seen well past that means the poller was blocked: the
+                // backend's answer may be sitting unread in the socket.
+                const uint64_t elapsed_ms = ticker.elapsedTime();
+                const int64_t late_ms = (int64_t)elapsed_ms - (int64_t)(timeout * 1000);
+                const bool timed_out = ex && ex.getErrCode() == Err_timeout;
+                const bool poller_late = timed_out && late_ms > kHookTimeoutCheckSlackMs;
                 parse_http_response(ex, res, [&](const Value &obj, const string &err, bool should_retry) {
                     if (!err.empty()) {
-                        // Hook failed. queued/inflight tell a slow backend from a long wait for a slot.
-                        WarnL << "hook " << url << " " << ticker.elapsedTime() << "ms,queued=" << queued_ms
-                              << "ms,inflight=" << hookInflight() << ",failed" << err << ":" << log_body;
+                        // Hook failed. queued/inflight tell a slow backend from a long wait for a slot,
+                        // late/poller_late a slow backend from our own blocked poller.
+                        WarnL << "hook " << url << " " << elapsed_ms << "ms,queued=" << queued_ms
+                              << "ms,inflight=" << hookInflight()
+                              << (timed_out ? (StrPrinter << ",late=" << late_ms << "ms") : string())
+                              << (poller_late ? ",poller_late" : "") << ",failed" << err << ":" << log_body;
 
                         if (retry_left-- > 0 && should_retry) {
                             const uint32_t retry = retry_left;
@@ -519,7 +535,7 @@ static void startHook(const string &url, const string &target, const string &log
                         // Hook succeeded, but hook response exceeded 500ms, print warning log
                         DebugL << "hook " << url << " " << ticker.elapsedTime() << "ms,success:" << log_body;
                     }
-                    noteHookResult(url, err, ex);
+                    noteHookResult(url, err, ex, poller_late);
 
                     if (func) {
                         func(obj, err);
