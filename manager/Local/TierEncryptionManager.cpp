@@ -11,6 +11,8 @@
 #include "Util/File.h"
 #include "Common/config.h"
 #include "Common/BlockingExecutors.h"
+#include "Record/MP4Recorder.h"
+#include "Util/TimeTicker.h"
 
 #include "StorageTier.h"
 #include "TierEncryptionManager.h"
@@ -153,7 +155,13 @@ void TierEncryptionManager::initialize() {
 
     NoticeCenter::Instance().addListener(this, Broadcast::kBroadcastRecordMP4,
         [this](BroadcastRecordMP4Args) {
+#ifdef ENABLE_MP4
+            toolkit::Ticker ticker;
             onRecordMP4Finished(info);
+            MP4Recorder::addCloseStep("encryption", ticker.elapsedTime());
+#else
+            onRecordMP4Finished(info);
+#endif
         });
 
     // Deferred on purpose. This walks every segment of every encrypted pool and

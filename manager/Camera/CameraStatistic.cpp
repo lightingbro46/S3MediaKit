@@ -169,7 +169,7 @@ static StreamStorageStats getStreamStorageStats(const Json::Value &data) {
 }
 
 // StreamStatistic
-static Json::Value makeStreamStatisticJson(const unordered_map<int, StreamStatistic> stats_map, int stream_type) {
+static Json::Value makeStreamStatisticJson(const unordered_map<int, StreamStatistic> &stats_map, int stream_type) {
     Json::Value ret = Json::objectValue;
     auto it_statistic = stats_map.find(stream_type);
     if (it_statistic != stats_map.end()) {
@@ -919,7 +919,16 @@ CameraStatisticImp::CameraStatisticImp(const std::string &src_path, int sync_int
     setup(src_path);
 }
 
-CameraStatisticImp::~CameraStatisticImp() {}
+CameraStatisticImp::~CameraStatisticImp() {
+    // A coalesced write still queued would be dropped (its task only holds a weak_ptr).
+    if (_file_save_queued) {
+        try {
+            writeFile(static_cast<const CameraStatistic &>(*this), _file_seq);
+        } catch (const std::exception &e) {
+            WarnL << "Failed to save camera statistic " << tuple.shortUrl() << ": " << e.what();
+        }
+    }
+}
 
 void CameraStatisticImp::setup(const string &src_path) {
     auto file_path = src_path;
@@ -951,12 +960,29 @@ void CameraStatisticImp::load() {
     }
 }
 
-void CameraStatisticImp::save() {
+void CameraStatisticImp::save(SaveMode mode) {
     if (created_at == 0) {
         created_at = time(nullptr);
     }
     updated_at = time(nullptr);
-    _file->save(static_cast<const CameraStatistic &>(*this));
+    if (mode == SaveMode::Sync) {
+        writeFile(static_cast<const CameraStatistic &>(*this), ++_file_seq);
+    } else if (mode == SaveMode::Async) {
+        // Statistics arrive on the camera's event poller; a write that waits on a busy disk there
+        // stalls every stream of that poller. One queued write per camera takes the latest state
+        // when it runs, so a burst of updates becomes one write.
+        ++_file_seq;
+        if (!_file_save_queued) {
+            _file_save_queued = true;
+            std::weak_ptr<CameraStatisticImp> weak_self = shared_from_this();
+            postEscTask([weak_self]() {
+                auto self = weak_self.lock();
+                if (self) {
+                    self->flushQueuedSave();
+                }
+            });
+        }
+    }
     // Statistic-only saves do not push ESC on every call. Two exceptions keep ESC consistent:
     //  - retry a config sync that was not written yet (sync mode was off or the write failed);
     //  - a periodic refresh every _sync_interval_sec. It is a no-op when ESC already matches, and
@@ -970,6 +996,30 @@ void CameraStatisticImp::save() {
     }
 }
 
+void CameraStatisticImp::writeFile(const CameraStatistic &snapshot, uint64_t seq) {
+    std::lock_guard<std::mutex> lck(_file_mtx);
+    if (_file_removed || seq <= _file_written_seq) {
+        return;
+    }
+    _file->save(snapshot);
+    _file_written_seq = seq;
+}
+
+void CameraStatisticImp::flushQueuedSave() {
+    CameraStatistic snapshot;
+    uint64_t seq = 0;
+    {
+        std::lock_guard<std::mutex> lck(_mtx);
+        if (!_file_save_queued) {
+            return;
+        }
+        _file_save_queued = false;
+        snapshot = static_cast<const CameraStatistic &>(*this);
+        seq = _file_seq;
+    }
+    writeFile(snapshot, seq);
+}
+
 void CameraStatisticImp::markEscConfigChanged() {
     _esc_dirty = true;
     syncToEsc(true);
@@ -978,7 +1028,7 @@ void CameraStatisticImp::markEscConfigChanged() {
 void CameraStatisticImp::setDeviceTuple(const DeviceTuple &input_tuple) {
     std::lock_guard<std::mutex> lck(_mtx);
     tuple = input_tuple;
-    save();
+    save(SaveMode::Sync);
     markEscConfigChanged();
 }
 
@@ -1021,7 +1071,7 @@ void CameraStatisticImp::setStreamTuples(const std::unordered_map<int, StreamTup
     }
     
     stream_map = input_stream_map;
-    save();
+    save(SaveMode::Sync);
     markEscConfigChanged();
 }
 
@@ -1036,7 +1086,7 @@ void CameraStatisticImp::setCameraOption(const CameraOption &input_option) {
         // Camera is inactive but enable failover, also need to release resource
         assignResource(false);
     }
-    save();
+    save(SaveMode::Sync);
     markEscConfigChanged();
 }
 
@@ -1164,6 +1214,10 @@ void CameraStatisticImp::addStreamStatistic(int stream_type, bool live, string s
             return;
         }
         auto &sinfo = sinfo_map[stream_type];
+        // byte_speed is a measurement, not state to restore after a restart: an update that only
+        // changes it does not rewrite info.txt.
+        auto stats_before = makeStreamStatisticJson(sinfo_map, stream_type);
+        stats_before.removeMember("byte_speed");
         save_status_history = _status_history_initialized_streams.emplace(stream_type).second ||
                               sinfo.live != live || (!live && sinfo.status != status);
         if (!sinfo.last_change_status || sinfo.live != live) {
@@ -1198,7 +1252,9 @@ void CameraStatisticImp::addStreamStatistic(int stream_type, bool live, string s
             }
         }
         DebugL << "Stream " << stream_map[stream_type].shortUrl() << " statistic: Live=" << sinfo.live << ". Status=" << sinfo.status << ". Byte_speed=" << sinfo.byte_speed << " bytes/s";
-        save();
+        auto stats_after = makeStreamStatisticJson(sinfo_map, stream_type);
+        stats_after.removeMember("byte_speed");
+        save(stats_after == stats_before ? SaveMode::EscOnly : SaveMode::Async);
         syncResourceStatus();
         auto stream_it = stream_map.find(stream_type);
         if (stream_it != stream_map.end() && !stream_it->second.empty()) {
@@ -1216,6 +1272,8 @@ void CameraStatisticImp::remove(bool failover_active) {
     {
         std::lock_guard<std::mutex> lck(_mtx);
         if (_file) {
+            std::lock_guard<std::mutex> file_lck(_file_mtx);
+            _file_removed = true; // a write already queued must not recreate the file
             _file->remove();
             DebugL << "Removed file recorder success: " << tuple.shortUrl();
             removed = true;

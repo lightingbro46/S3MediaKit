@@ -74,6 +74,8 @@ TEST(FileRecorderTest, DoesNotLeakTheHandleOfANewlyCreatedFile) {
         recorder->save(written);
         EXPECT_FALSE(recorder->empty());
         EXPECT_EQ(0U, openHandlesOf(path)) << "save() left a stream open";
+        // Written through a temp file renamed over the record; the temp file does not stay behind.
+        EXPECT_FALSE(toolkit::File::fileExist((path + ".tmp").data()));
 
         Payload read;
         ASSERT_TRUE(recorder->load(read));

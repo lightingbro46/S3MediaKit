@@ -12,6 +12,8 @@
 #include "Common/MediaSource.h"
 #include "Record/Recorder.h"
 #include "Record/ReplayTimelinePlanner.h"
+#include "Record/MP4Recorder.h"
+#include "Util/TimeTicker.h"
 #include "Local/TimeRecorderManager.h"
 #include "Local/TimeQuery.h"
 #include "Storage/MigrationHistory.h"
@@ -248,9 +250,13 @@ void installManagerHook () {
         auto encoded_path = encodeBase64(info.file_path);
         block.set_file_path(encoded_path);
 
+        Ticker ticker;
         auto ret = TimeRecorderManager::Instance().addBlock(block);
+        MP4Recorder::addCloseStep("timefile", ticker.elapsedTime());
         if (ret) {
+            ticker.resetTime();
             StatisticRecorder::Instance().addArchiveSize(info.app, originStream, 1, info.file_size, info.start_time, info.start_time + info.time_len, true);
+            MP4Recorder::addCloseStep("archive_size", ticker.elapsedTime());
         }
     });
 

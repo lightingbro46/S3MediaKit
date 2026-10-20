@@ -64,12 +64,19 @@ private:
     }
 
     void save_string(const std::string &data) {
-        std::ofstream ofs(_file_path, std::ios::binary | std::ios::trunc);
+        // Write a temp file and rename it over the record: a crash mid-write leaves the old record
+        // instead of an empty one, and readers never see a half-written file.
+        const std::string tmp_path = _file_path + ".tmp";
+        std::ofstream ofs(tmp_path, std::ios::binary | std::ios::trunc);
         if (!ofs) {
-            throw std::runtime_error("Cannot open file for writing: " + _file_path);
+            throw std::runtime_error("Cannot open file for writing: " + tmp_path);
         }
         ofs.write(data.data(), data.size());
         ofs.close();
+        if (!ofs || std::rename(tmp_path.c_str(), _file_path.c_str()) != 0) {
+            std::remove(tmp_path.c_str());
+            throw std::runtime_error("Cannot write file record: " + _file_path);
+        }
         TraceL << "Saved file record success: " << _file_path;
     }
 

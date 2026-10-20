@@ -76,6 +76,9 @@ REPLAY_MAX_SHARE = 0.20
 TTFF_TIMEOUT = 15.0     # chưa có frame đầu sau chừng này thì tính là mở thất bại
 DATA_TIMEOUT = 10.0     # đang phát mà không nhận gì chừng này thì coi như đứt
 LONG_STALL = 2.0        # khựng dài hơn mức này là "khựng dài"
+# khựng từ mức này trở lên được ghi vào stall_events (có giờ), để đối chiếu cả khựng ngắn của replay
+# với lúc đóng segment
+STALL_EVENT_MIN = 0.3
 REPORT_SEC = 3.0
 
 
@@ -235,7 +238,7 @@ class Player(object):
                     self.long_stalls += 1
                 self.stall_count += 1
                 self.stall_max = max(self.stall_max, dur)
-                if dur > 1.0:
+                if dur >= STALL_EVENT_MIN:
                     self.stall_events.append({"at": round(self.wall_offset + self.stall_began, 3),
                                               "duration_sec": round(dur, 3)})
                 self.stalled = False
@@ -575,7 +578,7 @@ class Viewer(object):
                 "stall_events": self.stall_events + self.player.stall_events + (
                     [{"at": round(self.player.wall_offset + self.player.stall_began, 3),
                       "duration_sec": round(self.player.stall_now(t), 3)}]
-                    if self.player.stall_now(t) > 1.0 else [])}
+                    if self.player.stall_now(t) >= STALL_EVENT_MIN else [])}
 
     def media(self, start, end):
         t = now()
@@ -658,7 +661,7 @@ class Viewer(object):
             self._fold_player(now())
             self.stall_events.extend(self.player.stall_events)
             cur = self.player.stall_now(now())
-            if cur > 1.0:
+            if cur >= STALL_EVENT_MIN:
                 self.stall_events.append({"at": round(self.player.wall_offset + self.player.stall_began, 3),
                                           "duration_sec": round(cur, 3)})
             self.playing = False

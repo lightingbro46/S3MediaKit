@@ -39,8 +39,8 @@ Cột "Báo giả ở tải định mức" là nhận định trước khi đo, 
 
 | Chỉ số | W / C | Thường do | Kiểm tra / xử lý | Báo giả ở tải định mức |
 |---|---|---|---|---|
-| `pollers.delay_max_ms` | 50 / 200 | Một poller bị chặn bởi tác vụ nặng/blocking, hoặc CPU bão hoà | `/index/api/getThreadsLoad`; poller treo hẳn thì `delay_max_ms` tăng đều theo thời gian chờ ⇒ lấy `gstack`/`gdb -p` rồi gửi đội phát triển | Thấp; giá trị đỉnh lúc khởi động bị hysteresis lọc |
-| `pollers.load_max` | 80 / 95 | Poller nóng nhất: phân bổ luồng không đều, quá số luồng/người xem | So `load_max` với trung bình; lệch nhiều = vài luồng nặng dồn một poller. Tăng số poller (`-t`) hoặc giảm tải | **Cao nhất**: poller ở tải định mức có thể quanh 70–85 % |
+| `pollers.delay_max_ms` | 50 / 200 | Một poller bị chặn bởi tác vụ nặng/blocking, hoặc CPU bão hoà | `summary.process.pollers.delay_max_name` là thread chậm nhất; `/index/api/getThreadsLoad`; poller treo hẳn thì `delay_max_ms` tăng đều theo thời gian chờ ⇒ lấy `gstack`/`gdb -p` rồi gửi đội phát triển | Thấp; giá trị đỉnh lúc khởi động bị hysteresis lọc |
+| `pollers.cpu_max_pct` | 80 / 95 | CPU thật của event poller bận nhất (`cpu_max_name`): phân bổ luồng không đều, quá số luồng/người xem | Lệch nhiều so với các poller khác = vài luồng nặng dồn một poller. Tăng số poller (`-t`) hoặc giảm tải. `load_max` cao mà `cpu_max_pct` thấp = poller kẹt chờ IO, xem `delay_max_ms` | **Cao nhất**: poller ở tải định mức có thể quanh 70–85 % |
 | `work_pollers.delay_max_ms` | 100 / 500 | Hàng đợi tác vụ nền nghẽn | Như trên | Thấp |
 | `blocking.wait_max_ms` (theo pool) | 1000 / 5000 | Pool `api`/`device`/`discovery`/`ffmpeg` hết luồng: SQLite chậm, camera ONVIF chậm, ffmpeg kẹt | `summary.process.blocking[]` (`queued`, `busy_pct`); pool `device` nghẽn thường do vài camera không trả lời | Có thể với pool `device` khi nhiều camera chậm cùng lúc |
 | `blocking.busy_pct` (theo pool) | 80 / 95 | Như trên | Như trên | Có thể |
@@ -76,6 +76,7 @@ Cột "Báo giả ở tải định mức" là nhận định trước khi đo, 
 | Chỉ số | W / C | Thường do | Kiểm tra / xử lý | Báo giả ở tải định mức |
 |---|---|---|---|---|
 | `recording.stalled_pct` | > 0 / 5 | Camera lẽ ra ghi theo lịch mà không có segment mới: camera mất hình, đĩa lỗi, recorder lỗi | `summary.recording.stalled_cameras[]`; đi kèm `storage` lỗi thì sửa đĩa trước | Không |
+| `recording.close_oldest_queued_ms` | 30 s / 60 s | Đóng segment (ghi moov, rename, timefile, SQLite tier) không theo kịp: đĩa ghi hình quá tải, SQLite chậm | `summary.recording.close`; log `Slow MP4 close` ghi thời gian từng listener (`timefile_ms`, `archive_size_ms`, `tier_register_ms`, `encryption_ms`, `motion_ms`). Hàng đợi không có giới hạn (không bỏ segment), nên RSS/fd tăng theo | Không |
 | `recording.write_errors` | lỗi mới = W, 3 chu kỳ = C | Không mở/rename được file ghi | Như `storage_write.writable` | Không |
 | `recording.storage_writable` | critical | Thư mục bản ghi chính không ghi được | Như trên | Không |
 | `recording.coverage_low_pct` | > 0 / 5 | Bản ghi 24 h có lỗ (camera mất kết nối, node khởi động lại, đĩa đầy) | `/media/monitor/cameras` cột `coverage_pct_24h`, `gaps_24h`; chỉ là hệ quả, tìm nguyên nhân trong `history` | Không |

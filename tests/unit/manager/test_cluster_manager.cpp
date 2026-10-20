@@ -1,10 +1,15 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
+#include <thread>
+
 #include "Common/config.h"
 #include "Util/NoticeCenter.h"
 #include "Server/ClusterManager.h"
 #include "Server/HealthMonitor.h"
 #include "Server/HealthEvaluator.h"
+#include "Poller/EventPoller.h"
 #ifdef ENABLE_SYNC_CHANGES
 #include "Extension/SyncManager.h"
 #endif
@@ -61,6 +66,10 @@ public:
         HealthEvaluator ev(hysteresis, 1, time(nullptr));
         HealthMonitor::Instance().collectCluster(ev, summary, time(nullptr));
         return ev.finish();
+    }
+
+    static double sampleThreadCpu(const vector<string> &names, string &busiest) {
+        return HealthMonitor::Instance().sampleThreadCpu(names, busiest);
     }
 };
 
@@ -344,6 +353,44 @@ TEST(HealthMonitorClusterTest, StandaloneServerIsReportedWithoutReasons) {
     }
 }
 #endif
+
+// pollers.cpu_max_pct is the CPU the busiest poller thread used, read from /proc, not the time the
+// poller was awake (ThreadLoadCounter), which also counts the time it waits in a blocking syscall.
+TEST(HealthMonitorPollerTest, CpuOfThePollerThreadsComesFromProc) {
+    vector<string> names;
+    EventPollerPool::Instance().for_each([&](const TaskExecutor::Ptr &executor) {
+        names.emplace_back(std::static_pointer_cast<EventPoller>(executor)->getThreadName());
+    });
+    ASSERT_FALSE(names.empty());
+    string busiest;
+    HealthMonitorTestPeer::sampleThreadCpu(names, busiest); // baseline
+
+    auto poller = EventPollerPool::Instance().getPoller();
+    std::atomic<bool> done(false);
+    poller->async([&done]() {
+        auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(400);
+        while (std::chrono::steady_clock::now() < until) {
+        }
+        done = true;
+    });
+    while (!done) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    double pct = HealthMonitorTestPeer::sampleThreadCpu(names, busiest);
+    EXPECT_GT(pct, 40.0);
+    EXPECT_EQ(poller->getThreadName().substr(0, 15), busiest);
+
+    // A poller asleep in a blocking call uses no CPU.
+    done = false;
+    poller->async([&done]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        done = true;
+    });
+    while (!done) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_LT(HealthMonitorTestPeer::sampleThreadCpu(names, busiest), 20.0);
+}
 
 } // namespace
 } // namespace managerkit

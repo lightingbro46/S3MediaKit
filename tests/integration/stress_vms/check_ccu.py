@@ -69,6 +69,10 @@ THRESHOLDS = {
     "source_cpu_pct": 70.0,
     "source_late_p99_ms": 100.0,
     "source_late_max_ms": 1000.0,   # một lần treo vài giây đủ làm server timeout luồng kéo
+    # hàng đợi "rec close" (getBlockingExecutors.record_close): đoạn chờ đóng lâu nhất ở mẫu cuối
+    # cửa sổ, và mức tăng tối thiểu để coi là "tăng đều suốt cửa sổ" (đĩa/listener không theo kịp)
+    "record_close_oldest_ms": 60000.0,
+    "record_close_growth_min": 200,
 }
 LIVE_KINDS = ("fmp4-sub", "fmp4-main", "rtsp")
 # Khoá của /index/api/getStatistic dùng để phát hiện rò rỉ sau churn/soak
@@ -635,6 +639,16 @@ class Runner(object):
         row["ingest_timeouts_outside_window"] = max(0, logs1["rtp_timeout"] - new["rtp_timeout"])
         row["execution_threads"] = logs1.get("execution_threads", {})
         row["record_close_samples"] = getattr(smp, "record_close", [])
+        rc = record_close_trend(row["record_close_samples"], th)
+        if rc:
+            row["record_close"] = rc
+            if rc["oldest_last_ms"] > th["record_close_oldest_ms"]:
+                fails.append("hàng đợi rec close: đoạn chờ đóng lâu nhất %.0fs > %.0fs" % (
+                    rc["oldest_last_ms"] / 1000.0, th["record_close_oldest_ms"] / 1000.0))
+                cat.append("recording")
+            elif rc["growing"]:
+                fails.append("hàng đợi rec close tăng suốt cửa sổ %d → %d" % (rc["queued_first"], rc["queued_last"]))
+                cat.append("recording")
         row["network_delta"] = {k: max(0, v - s0.get("network", {}).get(k, v))
                                 for k, v in s1.get("network", {}).items()}
         if row["ingest_timeouts_total"]:
@@ -659,12 +673,21 @@ class Runner(object):
                 invalid.append("worker %s trễ vòng lặp p99 %.0fms" % (w["worker"], w["loop_lag_p99_ms"]))
         src = self.source_window
         row["source"] = src
+        source_late = []
         if (row["source"]["cpu_pct_max"] or 0) > th["source_cpu_pct"]:
             invalid.append("nguồn RTSP CPU %.0f%%" % row["source"]["cpu_pct_max"])
         if (row["source"]["tick_late_p99_ms"] or 0) > th["source_late_p99_ms"]:
-            invalid.append("nguồn RTSP tụt nhịp p99 %.0fms" % row["source"]["tick_late_p99_ms"])
+            source_late.append("nguồn RTSP tụt nhịp p99 %.0fms" % row["source"]["tick_late_p99_ms"])
         if (row["source"].get("tick_late_max_ms") or 0) > th["source_late_max_ms"]:
-            invalid.append("nguồn RTSP treo %.0fms" % row["source"]["tick_late_max_ms"])
+            source_late.append("nguồn RTSP treo %.0fms" % row["source"]["tick_late_max_ms"])
+        # Nguồn còn CPU mà trễ nhịp trong khi MediaServer đã sập hoặc đã timeout luồng kéo: server
+        # ngừng đọc thì nguồn bị chặn ở send(), trễ nhịp là hệ quả chứ không phải nguyên nhân.
+        # Bậc khi đó "trượt" theo yếu tố giới hạn của server, không "không hợp lệ".
+        server_failed = not self.s.alive() or new["crash"] or row["ingest_timeouts_total"]
+        if source_late and server_failed and not invalid:
+            warns.extend(x + " (hệ quả: server đã timeout/sập)" for x in source_late)
+        else:
+            invalid.extend(source_late)
         row["client"] = {"workers": len(fresh), "cpu_max": max([w.get("cpu_pct") or 0 for w in fresh] or [0]),
                          "loop_lag_max_ms": max([w.get("loop_lag_p99_ms") or 0 for w in fresh] or [0])}
 
@@ -1091,6 +1114,27 @@ def scenario_step(rn):
         # đều trượt theo — con số CCU vô nghĩa cho tới khi sửa nền.
         summary["NỀN KHÔNG ĐẠT ở bậc 0"] = "; ".join(base_row["invalid"] + base_row["failures"])
     return summary
+
+
+def record_close_trend(samples, th):
+    """Hàng đợi "rec close" trong cửa sổ: số đoạn chờ (cộng các shard) đầu/cuối, đoạn chờ lâu nhất
+    ở mẫu cuối, và growing = tăng gần như mọi mẫu, tổng mức tăng ≥ record_close_growth_min."""
+    series = []
+    for smp in samples or []:
+        shards = smp.get("shards") or []
+        if not shards:
+            continue
+        series.append((sum(int(x.get("queued") or 0) for x in shards),
+                       max(float(x.get("oldest_queued_ms") or 0) for x in shards)))
+    if not series:
+        return None
+    queued = [q for q, _ in series]
+    steps = list(zip(queued, queued[1:]))
+    rising = sum(1 for a, b in steps if b >= a)
+    growing = (len(steps) >= 3 and rising >= 0.8 * len(steps)
+               and queued[-1] - queued[0] >= th["record_close_growth_min"])
+    return {"queued_first": queued[0], "queued_last": queued[-1], "queued_max": max(queued),
+            "oldest_last_ms": round(series[-1][1]), "growing": growing}
 
 
 def judge_session(x, th, watch):
