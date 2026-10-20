@@ -644,7 +644,7 @@ Theo cách chia lõi của db3 (vCPU N và N+16 cùng lõi vật lý, NUMA node0
 |---|---|---|---|---|---|---|---|---|
 | G | 0-7,16-23 | 8-15,24-31 | 32 GB | SSD | `G_ssd_c16_m32` (2026-10-16 14:47): **chạy với `0-15`/`16-31`, giữ 60 s mỗi bậc**, cần chạy lại (mục 10.1) | `G_ssd_c16_m32_view`, N = 300 (2026-10-16 15:11, cũng chạy `0-15`/`16-31`): ≥ 2 000 đạt (mục 10.2) | `G_ssd_c16_m32_replay` (2026-10-16 16:12, `0-15`/`16-31`): **trượt**, replay 64/80 (mục 10.3) | 8 lõi vật lý / 16 luồng, node0; smoke 20/50 cam đạt (mục 4.1). **Đợt 2 (2026-10-19, binary `3388afc`)**: smoke đạt; a chạy đúng ghim lõi và giữ 600 s, ngưỡng 700, 800 sập vì đĩa (mục 10.6); b `G_ssd_c16_m32_view` (2026-10-20 08:11, N = 300): ≥ 2 000 đạt (mục 10.7); c `G_ssd_c16_m32_replay` (2026-10-20 08:57): **đạt**, replay 80/80 (mục 10.8). **G-a lần 3** `G_ssd_c16_m32_r2` (2026-10-20 09:24, sau G-c): ngưỡng 600 theo bundle, bền vững 500 vì đĩa chậm (mục 10.10). **Đợt 2 là kết quả G-r2** (tag giữ tên cũ, chỉ khác ngày giờ trong tên tarball; điều kiện đúng P7) |
 | C4 | 0-1,16-17 | 8-15,24-31 | 32 GB | SSD | `C4_ssd_c4_m32` (2026-10-20 11:57, binary `3388afc`): ngưỡng **200**, 300/400 trượt do `info.txt` ghi trên event poller (mục 10.11) | `C4_ssd_c4_m32_view` (N = 300): trượt ngay ở 0 viewer. `C4_ssd_c4_m32_view200` (N = 200): ≥ 2 000 đạt, bậc 200 viewer trượt vì khựng (mục 10.12) | — | 2 lõi / 4 luồng, `-t 4` |
-| C8 | 0-3,16-19 | 8-15,24-31 | 32 GB | SSD | | | — | 4 lõi / 8 luồng |
+| C8 | 0-3,16-19 | 8-15,24-31 | 32 GB | SSD | `C8_ssd_c8_m32` (2026-10-20 14:42, binary `3388afc`): ngưỡng **400**, 500 trượt healthcheck do `info.txt` (L8), 600 vượt trần đĩa, bundle gán nhầm "không hợp lệ" (mục 10.13) | `C8_ssd_c8_m32_view` (2026-10-20 13:54, N = 300): ≥ 2 000 đạt, bậc 100 và 600 viewer trượt lẻ vì khựng (mục 10.14) | — | 4 lõi / 8 luồng, `-t 8`; b chạy trước a |
 | C24 | 0-11,16-27 | 12-15,28-31 | 32 GB | SSD | | | — | 12 lõi / 24 luồng, trải 2 NUMA node; bộ sinh tải 4 lõi / 8 luồng |
 | M16 | 0-7,16-23 | 8-15,24-31 | 16 GB | SSD | | | — | |
 | M8 | 0-7,16-23 | 8-15,24-31 | 8 GB | SSD | | | — | |
@@ -660,7 +660,7 @@ Các cột tài nguyên lấy ở **bậc đạt cao nhất** trong bảng bậc
 | G đợt 2 (mục 10.6) | 700 theo bundle; **600** nếu giữ util SSD ≤ 70 % khi đĩa còn nhanh, **~450–500** khi đĩa ở trạng thái chậm của G-b đợt 2 (mục 10.7) | 800 (bundle ghi "không hợp lệ", thực chất trượt vì đĩa) | ghi cần ~410 MB/s > trần SSD ~350 MB/s → event poller kẹt chờ ghi, 11 849 timeout kéo, 11 550 khoảng hở | 800 (gán nhầm, xem mục 10.6) | 34,4 | 31,2 | 10 551 | 358,0 | – / wa 2,4 | 164,0 |
 | G lần 3, `G_ssd_c16_m32_r2` (mục 10.10) | 600 theo bundle; **500** nếu tính hàng đợi `rec close` (ở 600 tăng liên tục) | 700 | đĩa chỉ ghi ~303 MB/s (cần ~358): 10 507 timeout kéo, 10 179 khoảng hở, healthcheck p95 1 406 ms | 800 (gán nhầm như lần 2) | 30,9 (bậc 500) | 30,5 | 7 145 | 255,8 | – / wa 2,6 | 13,2 |
 | C4 (mục 10.11) | 200 | 300 | 352 timeout kéo + 364 khoảng hở + healthcheck p95 239 ms: event poller kẹt ~6 s khi ghi `info.txt` cho 150 luồng | – | 41,6 | 35,2 | 2 230 | 103,9 | – / wa 0,4 | 30,5 |
-| C8 | | | | | | | | | | |
+| C8 (mục 10.13) | 400 | 500 | healthcheck p95 233 ms: mỗi event poller kẹt 2,7–4,8 s mỗi phút khi ghi `info.txt` (~125 luồng/poller), util SSD 80 % | 600 (gán nhầm: nguồn trễ vì MediaServer ngừng đọc; thực chất vượt trần đĩa ~270 MB/s, 5 465 timeout kéo, 4 988 khoảng hở) | 36,5 | 32,5 | 5 006 | 205,2 | – / wa 2,1 | 15,9 |
 | C24 | | | | | | | | | | |
 | M16 | | | | | | | | | | |
 | M8 | | | | | | | | | | |
@@ -675,7 +675,7 @@ Các cột tài nguyên lấy ở **bậc CCU đạt**.
 | G (sơ bộ, mục 10.2) | 300 | ≥ 2 000 (mọi bậc đạt) | chưa chạm (trên db3: NIC TX ~1 100 viewer, mục 10.2) | – | 26,9 | 26,7 | 4 259 | 4 199,5 | 159 (hls-sub) | 0,006 | OK |
 | G đợt 2 (mục 10.7) | 300 | ≥ 2 000 (mọi bậc đạt) | chưa chạm (trên db3: NIC TX ~1 100 viewer) | – | 27,1 | 24,5 | 4 706 | 4 203,5 | 86 (hls-main, bậc 400) | 0,002 | OK |
 | C4 (mục 10.12) | 200 (300: nền trượt) | ≥ 2 000 (bậc 200 viewer trượt lẻ) | chưa chạm theo CPU; khựng theo nhịp ghi `info.txt` (L8) | 200 viewer: 26/200 phiên khựng > 2 s | 57,8 | 49,0 | 2 328 | 3 701,0 | 334 (fmp4-sub, bậc 2 000) | 0,121 | OK |
-| C8 | | | | | | | | | | | |
+| C8 (mục 10.14) | 300 | ≥ 2 000 (bậc 100 và 600 viewer trượt lẻ) | chưa chạm theo CPU; khựng theo nhịp ghi `info.txt` (L8) | 100 viewer: 5/100 phiên khựng > 2 s; 600 viewer: 15/600 | 43,4 | 37,8 | 3 720 | 4 202,4 | 199 (hls-sub, bậc 2 000) | 0,011 | OK |
 | C24 | | | | | | | | | | | |
 | M16 | | | | | | | | | | | |
 | M8 | | | | | | | | | | | |
@@ -1585,3 +1585,102 @@ nhưng chất lượng xem không ổn định: theo nhịp ghi `info.txt` trên
 viewer khựng 1–3 s. Trên 300 camera, C4 không đạt ngay cả khi không có viewer. Sau khi sửa L8 trong
 [capacity-followup-plan.md](capacity-followup-plan.md), cần chạy lại C4-a và C4-b. Kỳ vọng bậc 200 viewer
 hết trượt, và có thể chạy C4-b trên 300 camera nếu C4-a mới đạt 300.
+
+### 10.13 Lượt C8, bước a — ngưỡng camera với 8 vCPU (2026-10-20)
+
+Tarball `result_C8_a.tar.gz` (`result_db3_C8_ssd_c8_m32_20261020_144254`): binary/bundle `3388afc`
+(chưa có L8), MediaServer `0-3,16-19` (4 lõi vật lý / 8 luồng HT, `-t 8` nên có **8 event poller**), bộ
+sinh tải `8-15,24-31`, giữ 600 s mỗi bậc, profile full, 0 viewer. Chạy sau C8-b (mục 10.14). Dừng ở
+bậc 600, tổng 81 phút.
+
+**Kết quả: ngưỡng 400 camera.**
+
+| camera | CPU % (8 vCPU) | event poller (% 1 lõi) | poller max % | RSS MB | ghi MB/s | util / `w_await` | healthcheck p95 / max ms | hàng đợi `rec close` max / chờ lâu nhất | timeout / khoảng hở | kết luận |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 100 | 16,5 | 110 | 16,4 | 1 250 | 53 | 15 % / 32 ms | 2,5 / 109 | – | 0 / 0 | đạt |
+| 200 | 25,3 | 181 | 24,4 | 2 477 | 104 | 30 % / 45 ms | 3,8 / 2 250 | – | 0 / 0 | đạt |
+| 300 | 29,9 | 217 | 25,1 | 3 655 | 155 | 47 % / 56 ms | 3,0 / 3 243 | 142 / 7 s | 0 / 0 | đạt |
+| 400 | 36,5 | 268 | 32,5 | 5 006 | 205 | 64 % / 72 ms | 15,9 / 5 000 | 179 / 6 s | 0 / 0 | đạt |
+| 500 | 46,5 | 343 | 44,0 | 6 094 | 256 | **80 %** / 77 ms | **233** / 5 000 | 428 / 13 s | 0 / 0 | trượt |
+| 600 | 41,9 | 307 | 66,0 | 10 026 | **235** | **99 %** / 103 ms | **2 627** / 8 469 | **12 785 / 387 s** | **5 465 / 4 988** | sập (harness chấm "không hợp lệ", sai) |
+
+**CPU không phải giới hạn.** Ở 500 camera MediaServer dùng 3,7 vCPU, ~0,0074 vCPU mỗi camera, như G
+và C4. Theo CPU, 8 vCPU (HT) còn đủ cho khoảng 800 camera trước khi chạm 80 %.
+
+**Bậc 500 trượt healthcheck vì lỗi L8, không phải vì tải.** Đo thời gian `save()` của
+`CameraStatisticImp` như mục 10.11 (mỗi poller ~125 luồng ở 500 camera):
+
+| Bậc | `save()` p50 / p90 / p99 / max ms | Tổng thời gian kẹt mỗi poller mỗi phút p50 / p99 / max |
+|---|---|---|
+| 300 camera | 1 / 76 / 117 / 149 | 0,27 / 3,2 / 3,3 s |
+| 500 camera | 1 / 82 / 117 / 147 | **2,7 / 4,8 / 4,8 s** |
+
+Ở 500 camera, đĩa đã bận 80 % nên gần như phút nào cũng là phút kẹt: mỗi poller mất 2,7–4,8 s mỗi
+phút. Đó là healthcheck p95 233 ms. Hàng đợi `rec close` vẫn xả hết sau mỗi đợt đóng segment, không
+có timeout hay khoảng hở.
+
+**Bậc 600 vượt trần đĩa.** 600 camera cần ~307 MB/s; SSD lúc này chỉ ghi được ~270 MB/s (giống G-a
+lần 3, mục 10.10). Đĩa bão hoà (util 99 %), lượng ghi còn tụt xuống 235 MB/s, iowait 12,8 %:
+
+- hàng đợi `rec close` tăng suốt cửa sổ, 1 321 → 12 785 việc, việc chờ lâu nhất 387 s. Thread `rec close`
+  chỉ dùng 5,5 % CPU: kẹt chờ IO, không thiếu CPU. Phần IO của mỗi lần đóng p99 93 ms (300–500
+  camera: 10–51 ms), listener p99 2,2 s (300–500 camera: ~1,4 s);
+- RSS 10 GB, fd 15 146 (từ 4 108 ở 500 camera), tăng theo hàng đợi;
+- 5 465 `receive rtp timeout`, 4 988 khoảng hở, cả 1 200 luồng ngừng ghi; monitor 45 cảnh báo cùng lúc,
+  `api worker` bận 120 %.
+
+**Harness chấm sai bậc 600.** Bậc bị gán "không hợp lệ (bộ sinh tải quá tải)" vì nguồn RTSP tụt nhịp
+p99 1,2 s, treo 2,6 s, và runner dừng với gợi ý "cần thêm lõi cho --gen-cpus". Nhưng CPU nguồn chỉ
+19,5 %; nguồn trễ vì MediaServer đã ngừng đọc (cuối cửa sổ nguồn chỉ còn gửi được 20 Mbps). Đây là
+trường hợp L7. Bundle có L7 và L9 (commit `ad18e24a`) chấm bậc này "trượt", yếu tố giới hạn `disk`.
+
+**Kết luận C8-a:** với binary `3388afc`, 8 vCPU nhận **400 camera** (800 luồng, ghi 24/7), bằng G
+16 vCPU lúc SSD chậm (mục 10.10). Cả hai lượt chạm cùng trần đĩa ~270 MB/s, nên số vCPU từ 8 trở lên
+không đổi ngưỡng trên db3. Sửa L8 có thể đưa C8 lên 500 (đĩa 80 %, chưa có timeout), nhưng không qua
+được 600. Cần chạy lại C8-a với binary và bundle có L8, L7, L9.
+
+### 10.14 Lượt C8, bước b — luồng xem với 8 vCPU (2026-10-20)
+
+Tarball `result_C8_b.tar.gz` (`result_db3_C8_ssd_c8_m32_view_20261020_135457`): binary/bundle `3388afc`,
+MediaServer `0-3,16-19` (`-t 8`), **300 camera nền** (chạy trước C8-a nên dùng mặc định; C8-a sau đó ra
+400 ≥ 300, nên chọn này vẫn đúng), mix `live`, viewer 0 → 2 000, bậc 500 đo 270 s, các bậc khác 120 s, 39
+phút.
+
+**Kết quả: CCU ≥ 2 000, chưa chạm trần. Nghiệm thu A1 (bậc 500) đạt. Có hai bậc trượt lẻ (100, 600).**
+
+| viewer | CPU % (8 vCPU) | event poller (% 1 lõi) | RSS MB | TX loopback Mbps | TTFF max ms | khựng % | phiên khựng > 2 s | healthcheck p95 / max ms | phút kẹt `save()` lâu nhất | kết luận |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | 31,1 | 225 | 3 533 | 1 245 | – | – | – | 4,0 / 128 | 3,3 s | đạt |
+| 100 | 32,7 | 239 | 3 543 | 1 399 | 142 | 0,855 | **5/100** | 5,0 / 2 572 | 3,1 s | **trượt** |
+| 200 | 33,6 | 244 | 3 591 | 1 572 | 140 | 0,198 | 0 | 10,9 / 1 956 | 3,0 s | đạt |
+| 300 | 34,4 | 253 | 3 623 | 1 717 | 11 | 0,019 | 0 | 4,2 / 120 | 1,7 s | đạt |
+| 400 | 35,0 | 256 | 3 677 | 1 855 | 13 | 0,005 | 0 | 4,6 / 291 | 3,1 s | đạt |
+| 500 | 35,6 | 262 | 3 700 | 2 001 | 88 | 0 | 0 | 4,1 / 1 004 | 3,1 s | đạt |
+| 600 | 36,1 | 264 | 3 638 | 2 146 | 118 | 0,467 | **15/600** | 4,6 / 3 806 | 3,4 s | **trượt** |
+| 750 | 36,7 | 267 | 3 726 | 2 362 | 656 | 0,127 | 0 | 9,5 / 2 129 | 3,1 s | đạt |
+| 1 000 | 38,4 | 283 | 3 685 | 2 709 | 105 | 0,001 | 0 | 6,8 / 229 | 0,3 s | đạt |
+| 1 250 | 39,7 | 293 | 3 744 | 3 092 | 157 | 0,001 | 0 | 5,4 / 544 | 1,4 s | đạt |
+| 1 500 | 41,4 | 306 | 3 714 | 3 479 | 189 | 0,006 | 0 | 7,3 / 809 | 2,9 s | đạt |
+| 2 000 | 43,4 | 325 | 3 720 | 4 202 | 199 | 0,011 | 0 | 9,0 / 264 | 1,2 s | đạt |
+
+"Phút kẹt `save()` lâu nhất": trong cửa sổ đo của bậc, phút có tổng thời gian ghi `info.txt` lớn nhất
+trên một poller (cách đo như mục 10.11).
+
+- **Tài nguyên còn dư nhiều**: từ 0 lên 2 000 viewer, CPU 31,1 → 43,4 % của 8 vCPU (~1 vCPU cho 2 000
+  viewer, ~0,05 % một lõi mỗi viewer), RSS gần như không đổi. 2 000 lượt mở, 0 lỗi, 0 phiên đứt bất
+  thường, 0 `receive rtp timeout`, ghi hình 600 luồng không hở. Bộ sinh tải hợp lệ (client CPU ≤ 57 %,
+  loop lag ≤ 11 ms).
+- **Hai bậc trượt lẻ do L8, giống C4-b (mục 10.12).** Cả bậc 100 và 600 đều rơi vào phút poller kẹt ghi
+  `info.txt` 3,1–3,4 s, healthcheck max 2,6 s và 3,8 s. Kẹt lâu là điều kiện cần, chưa đủ: bậc 400, 500,
+  750 cũng có phút kẹt ~3 s mà không trượt. Viewer chỉ khựng khi luồng nó xem nằm trên đúng poller đang
+  kẹt và bộ đệm của player không đủ che.
+- **Summary của bundle ghi "mọi bậc đều đạt, chưa chạm trần"**, dù có hai bậc trượt. Bundle cố ý bỏ
+  qua bậc trượt lẻ (chỉ dừng khi 2 bậc liên tiếp trượt), nhưng câu chữ làm mất thông tin này (L13 trong
+  [capacity-followup-plan.md](capacity-followup-plan.md)).
+- **Monitor** báo critical `pollers.delay_max_ms` (576–651 ms) và `pollers.load_max` (100 %) ở mọi bậc,
+  warning `db.write_ms` (đến 666 ms) và `disk_io` `/work`. `delay_max_ms` là thật (do L8); `load_max`
+  là báo giả (L6, đã thay bằng `pollers.cpu_max_pct`).
+
+**Kết luận C8-b:** với 8 vCPU và 300 camera, MediaServer phục vụ **≥ 2 000 viewer** theo CPU và RAM.
+Chất lượng xem không ổn định theo nhịp ghi `info.txt` trên event poller, như C4-b nhưng nhẹ hơn (8
+poller thay vì 4). Cần chạy lại cùng C8-a với binary có L8. Kỳ vọng hết các bậc trượt lẻ.

@@ -1,14 +1,14 @@
 # Plan nâng cấp sau các lượt đo đợt 2 trên db3
 
-Nguồn: [recording-server-capacity-test.md](recording-server-capacity-test.md), mục 10.6–10.11. Đó là
-các lượt smoke, G-a (lần 2, lần 3), G-b, G-c, C4-a, chạy ngày 2026-10-19/20 với binary và bundle
+Nguồn: [recording-server-capacity-test.md](recording-server-capacity-test.md), mục 10.6–10.14. Đó là
+các lượt smoke, G-a (lần 2, lần 3), G-b, G-c, C4-a, C4-b, C8-a, C8-b, chạy ngày 2026-10-19/20 với binary và bundle
 `3388afc`. Plan trước, [capacity-g-fix-plan.md](capacity-g-fix-plan.md) (K1–K7, P1–P7), đã xong và
 được kiểm trên db3. Plan này gom những việc **còn mở** sau các lượt đó.
 
 Mã L1–L8 giữ nguyên như trong báo cáo. Các mục mới đánh tiếp từ L9.
 
 **Trạng thái (2026-10-20, nhánh `feature/capacity-followup`):** đã code L8, L1 bước 1 (đo), L3 bước 1,
-L6 bước 1–2, L7, L9, L10, L11 (sửa Dockerfile trong báo cáo mục 3.2), L12. Còn: L1 bước 2 (chờ số đo),
+L6 bước 1–2, L7, L9, L10, L11 (sửa Dockerfile trong báo cáo mục 3.2), L12, L13. Còn: L1 bước 2 (chờ số đo),
 L3 bước 2 (giới hạn cứng, chưa làm: cảnh báo + log lỗi thay thế), L6 bước 3, và L2, L4, L5, các lượt đo
 mục 4 trên db3.
 
@@ -129,8 +129,9 @@ vì listener chậm đang là phần lớn thời gian của mỗi lần đóng.
 | L10 | Dòng `live_replay` trong bảng kịch bản đầu `SUMMARY.md` ghi `chua chay / khong co bao cao` dù có báo cáo `ccu_replay` | `ccu_runner.sh` (phần dựng SUMMARY) | 3 |
 | L11 | Thêm `linux-tools` vào image `s3mk-captest` để có mục hàm nóng (`perf`) | Dockerfile captest (báo cáo mục 3.2) | 3 |
 | L12 | Ghi `stall_events` cho mọi lần khựng ≥ 0,3 s (hiện chỉ > 1 s), để đối chiếu khựng ngắn của replay với lúc đóng segment | `viewer_load.py` | 3 |
+| L13 | Summary của `live_step` ghi "mọi bậc đều đạt, chưa chạm trần" khi có bậc trượt lẻ (C8-b: bậc 100 và 600 trượt, mục 10.14). Ghi thêm số bậc trượt lẻ và danh sách bậc vào summary và dòng tổng của SUMMARY | `check_ccu.py` (`scenario_step`) | 2 |
 
-Kiểm tra: regression Python của harness (`test_capacity.py`) thêm case cho L7, L9; dựng lại bundle
+Kiểm tra: regression Python của harness (`test_capacity.py`) thêm case cho L7, L9, L13; dựng lại bundle
 bằng `make_ccu_bundle.sh`.
 
 ## 4. Đo tiếp trên db3
@@ -141,9 +142,11 @@ Theo thứ tự. Mỗi lượt dùng binary và bundle cùng commit.
 2. **Baseline A/B** (báo cáo mục 5.6.2): `Gc_base`/`Gc_new`, `Ga_base`/`Ga_new`, chạy liền nhau.
    Dùng được binary `3388afc`.
 3. **Build binary mới có L8** (và L1 nếu kịp), bundle có L7, L9. Chạy lại **C4-a**, rồi **C4-b**
-   (`--cameras` theo ngưỡng mới, hoặc 200 nếu vẫn ≤ 200).
+   (`--cameras` theo ngưỡng mới, hoặc 200 nếu vẫn ≤ 200). Chạy lại cả **C8-a**, **C8-b**: với `3388afc`,
+   C8-a ra 400 (bậc 500 trượt healthcheck do L8, 600 vượt trần đĩa), C8-b có 2 bậc trượt lẻ do L8
+   (báo cáo mục 10.13, 10.14).
 4. **L5 bước 3** (`Ga_dirty`) và **L2** (`Ga_close4`, `Ga_close8`) với binary mới.
-5. Các lượt còn lại của ma trận: C8, C24, M16, M8, H (báo cáo Bảng 1).
+5. Các lượt còn lại của ma trận: C24, M16, M8, H (báo cáo Bảng 1).
 6. Bổ sung, ưu tiên thấp:
    - Replay đọc lạnh từ đĩa: bản ghi cũ hơn 1 giờ, page cache đã bị đẩy ra, khi SSD đang ghi ở mức
      gần ngưỡng (G-c đợt 2 chủ yếu đọc từ page cache).
