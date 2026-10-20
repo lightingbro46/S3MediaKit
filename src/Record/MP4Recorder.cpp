@@ -129,6 +129,14 @@ private:
 
 mutex s_close_pools_mutex;
 vector<weak_ptr<ClosePool>> s_close_pools;
+// Set while a close task emits kBroadcastRecordMP4 on this thread.
+thread_local vector<pair<const char *, uint64_t>> *s_close_steps = nullptr;
+}
+
+void MP4Recorder::addCloseStep(const char *name, uint64_t ms) {
+    if (s_close_steps) {
+        s_close_steps->emplace_back(name, ms);
+    }
 }
 
 vector<MP4Recorder::ClosePoolStats> MP4Recorder::closePoolStats() {
@@ -294,11 +302,19 @@ void MP4Recorder::asyncClose(bool drop_short_segment) {
         close_ticker.resetTime();
         TraceL << "Emit mp4 record event: " << info.file_path;
         // Trigger mp4 recording slice generation event
+        vector<pair<const char *, uint64_t>> steps;
+        s_close_steps = &steps;
+        onceToken clear_steps(nullptr, []() { s_close_steps = nullptr; });
         NOTICE_EMIT(BroadcastRecordMP4Args, Broadcast::kBroadcastRecordMP4, info);
         const auto listeners_ms = close_ticker.elapsedTime();
-        DebugL << "MP4 close timing: io_ms=" << io_ms << ", listeners_ms=" << listeners_ms;
+        _StrPrinter steps_str;
+        for (const auto &step : steps) {
+            steps_str << ", " << step.first << "_ms=" << step.second;
+        }
+        DebugL << "MP4 close timing: io_ms=" << io_ms << ", listeners_ms=" << listeners_ms << steps_str;
         if (io_ms > 1000 || listeners_ms > 1000) {
-            WarnL << "Slow MP4 close: io_ms=" << io_ms << ", listeners_ms=" << listeners_ms;
+            WarnL << "Slow MP4 close: io_ms=" << io_ms << ", listeners_ms=" << listeners_ms << steps_str
+                  << ", path=" << info.file_path;
         }
     });
 }

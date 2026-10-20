@@ -3,6 +3,8 @@
 #include "MotionMuxer.h"
 
 #include "Common/config.h"
+#include "Record/MP4Recorder.h"
+#include "Util/TimeTicker.h"
 #include "Util/File.h"
 #include "Util/logger.h"
 #include "Util/NoticeCenter.h"
@@ -43,7 +45,15 @@ void MotionMuxer::setMediaSourceListener() {
         this, Broadcast::kBroadcastRecordMP4,
         [weak_self, my_app, record_stream](BroadcastRecordMP4Args) {
             if (info.app != my_app || info.stream != record_stream) return;
-            if (auto self = weak_self.lock()) self->onSegmentCommit(info);
+            if (auto self = weak_self.lock()) {
+#ifdef ENABLE_MP4
+                Ticker ticker;
+                self->onSegmentCommit(info);
+                MP4Recorder::addCloseStep("motion", ticker.elapsedTime());
+#else
+                self->onSegmentCommit(info);
+#endif
+            }
         });
 }
 

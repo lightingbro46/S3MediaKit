@@ -341,6 +341,68 @@ TEST_F(CameraStatisticSyncTest, StreamStatusHistoryIsWrittenFromEscQueue) {
     EXPECT_LE(gaps[0].disconnect_time, after);
 }
 
+// Statistics no longer write info.txt on the caller's thread (the camera poller): a burst of
+// updates is coalesced into one write on the ESC queue that carries the latest state.
+TEST_F(CameraStatisticSyncTest, StatisticSaveIsCoalescedOffTheCallerThread) {
+    const std::string guid = "cam-stat-async-save";
+    const std::string path = _dir + "/" + guid;
+    auto stats = makeCamera(guid, false);
+    for (uint64_t i = 1; i <= 200; ++i) {
+        stats->addMotionKeepThreshold(true, i);
+    }
+    ASSERT_TRUE(waitFor([&] {
+        return std::make_shared<CameraStatisticImp>(path)->getParams().motion_stats.archiveStartTime == 200u;
+    }));
+}
+
+// A write still queued when the camera is removed must not recreate info.txt afterwards.
+TEST_F(CameraStatisticSyncTest, QueuedSaveDoesNotRecreateRemovedFile) {
+    const std::string guid = "cam-stat-remove-queued";
+    const std::string path = _dir + "/" + guid + "/info.txt";
+    auto stats = makeCamera(guid, false);
+    stats->addMotionKeepThreshold(true, 42);
+    stats->remove(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_FALSE(File::fileExist(path));
+    stats.reset(); // the destructor does not write it either
+    EXPECT_FALSE(File::fileExist(path));
+}
+
+// A queued write is not lost when the camera object goes away first.
+TEST_F(CameraStatisticSyncTest, DestructorFlushesQueuedSave) {
+    const std::string guid = "cam-stat-flush-on-destroy";
+    {
+        auto stats = makeCamera(guid, false);
+        stats->addMotionKeepThreshold(false, 77);
+    }
+    auto reloaded = std::make_shared<CameraStatisticImp>(_dir + "/" + guid);
+    EXPECT_EQ(77u, reloaded->getParams().motion_stats.archiveEndTime);
+}
+
+// byte_speed is a measurement: an update that only changes it does not rewrite info.txt.
+TEST_F(CameraStatisticSyncTest, ByteSpeedOnlyUpdateDoesNotRewriteFile) {
+    const std::string guid = "cam-stat-byte-speed";
+    const std::string path = _dir + "/" + guid;
+    auto stats = makeCamera(guid, false);
+    mediakit::TranslationInfo info;
+    info.byte_speed = 1000;
+    stats->addStreamStatistic(PrimaryStream, true, "ok", &info);
+    ASSERT_TRUE(waitFor([&] {
+        return std::make_shared<CameraStatisticImp>(path)->getParams().sinfo_map[PrimaryStream].byte_speed == 1000;
+    }));
+
+    info.byte_speed = 2000;
+    stats->addStreamStatistic(PrimaryStream, true, "ok", &info);
+    EXPECT_EQ(2000, stats->getParams().sinfo_map[PrimaryStream].byte_speed);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_EQ(1000, std::make_shared<CameraStatisticImp>(path)->getParams().sinfo_map[PrimaryStream].byte_speed);
+
+    stats->addStreamStatistic(PrimaryStream, false, "timeout", &info);
+    ASSERT_TRUE(waitFor([&] {
+        return std::make_shared<CameraStatisticImp>(path)->getParams().sinfo_map[PrimaryStream].status == "timeout";
+    }));
+}
+
 #ifdef ENABLE_FFMPEG
 TEST(ReduceQualityCapabilityTest, BuildsStableProfilesFromTwoStreams) {
     CameraOption option;

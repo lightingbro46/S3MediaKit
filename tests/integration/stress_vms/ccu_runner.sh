@@ -560,7 +560,8 @@ finish() {
         for s in $RAN; do
             local line=""
             if [ -f "$OUT/$s/ccu_report.md" ] || ls "$OUT/$s"/ccu_*_report.md > /dev/null 2>&1; then
-                line=$(grep -hE "^\- \*\*(CCU đạt|Nghiệm thu|Yếu tố|Monitor)|^\- \*\*[0-9A]" "$OUT/$s"/ccu*_report.md 2>/dev/null \
+                # live_replay (ccu_replay_report.md) tom tat bang "Replay N% o bac M" / "Phien xem lai dat"
+                line=$(grep -hE "^\- \*\*(CCU đạt|Nghiệm thu|Yếu tố|Monitor|Replay|Phiên xem lại)|^\- \*\*[0-9A]" "$OUT/$s"/ccu*_report.md 2>/dev/null \
                        | sed 's/^- //; s/\*\*//g' | tr '\n' ';' | sed 's/;$//')
             fi
             [ -f "$OUT/$s/DISK_ABORT" ] && line="DUNG VI HET DIA; $line"

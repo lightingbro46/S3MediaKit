@@ -272,6 +272,7 @@ private:
         int delay_max_ms = 0;
         double delay_avg_ms = 0;
         int load_max = 0;
+        size_t delay_max_index = 0; // poller with delay_max_ms, in the pool's order
         size_t count = 0;
     };
     void requestPollerDelays();
@@ -280,6 +281,10 @@ private:
     // Delay to evaluate: the measured one, or the waiting time when the answer is overdue
     // (a poller stuck in a task never answers).
     static double effectiveDelayMs(const PollerDelay &d, int64_t now_ms);
+    // CPU % of the busiest thread named in `names` since the previous call (monitor poller only).
+    // ThreadLoadCounter (load_max) counts the time a poller is awake, including the time it is
+    // blocked in a syscall, so it reads 95-100 % while the thread uses 10-30 % CPU.
+    double sampleThreadCpu(const std::vector<std::string> &names, std::string &busiest);
 
     void collectHost(HealthEvaluator &ev, Json::Value &summary, int64_t now);
     void collectProcess(HealthEvaluator &ev, Json::Value &summary, int64_t now);
@@ -355,6 +360,8 @@ private:
     uint64_t _gpu_fallbacks = 0;
     int64_t _gpu_fallback_at = 0; // unix seconds of the last increase
     uint64_t _write_errors = 0;   // MP4Recorder::writeErrorCount() at the previous cycle
+    std::map<int, uint64_t> _thread_ticks; // tid -> utime+stime at the previous sampleThreadCpu()
+    int64_t _thread_ticks_ms = 0;
     int _write_error_cycles = 0;  // consecutive cycles with new write errors
     std::map<std::string, RecordingState> _recording_states; // camera -> state of the previous cycle
     struct PlayBucket {

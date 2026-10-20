@@ -146,7 +146,7 @@ VMS gửi 0 hoặc không gửi `serverGroupId` đều ra 0. `/media/mserver/hea
 | `host.fd` | `used`, `limit`, `used_pct` |
 | `host.threads` | số thread của tiến trình |
 | `process` | `uptimeSec`, `startedAt` |
-| `process.pollers`, `process.work_pollers` | `count`, `delay_max_ms`, `delay_avg_ms`, `load_max` (%), `sampled_age_ms` |
+| `process.pollers`, `process.work_pollers` | `count`, `delay_max_ms`, `delay_max_name` (tên thread có `delay_max_ms`), `delay_avg_ms`, `load_max` (%, thời gian poller thức, kể cả lúc kẹt trong syscall: chỉ để tham khảo, không có ngưỡng), `sampled_age_ms`. Riêng `process.pollers`: `cpu_max_pct` (CPU thật của event poller bận nhất từ chu kỳ trước, % một lõi, đọc `/proc/self/task`), `cpu_max_name` |
 | `process.monitor` | `collect_ms` (thời gian thu thập + đánh giá của chu kỳ này trên luồng `monitor poller`), `collect_max_ms` (lớn nhất từ lúc khởi động), `total_ms_prev` (trọn chu kỳ **trước**: thu thập + ghép JSON + `recordHistory` + công bố snapshot, vì chu kỳ hiện tại chưa xong lúc ghép JSON; `null` ở chu kỳ đầu, luôn ≥ `collect_ms` của chu kỳ đó), `total_max_ms` (lớn nhất từ lúc khởi động), `cycle`, `lag_ms` (chu kỳ này bắt đầu trễ bao nhiêu so với lịch, tức luồng bận việc khác hoặc chu kỳ trước chạy quá; `null` ở chu kỳ đầu), `queue_delay_ms` (một task thăm dò đặt ở giữa hai chu kỳ phải chờ bao lâu; đang chờ quá hạn thì là thời gian đã quá hạn), `lag_max_ms` / `queue_delay_max_ms` (lớn nhất từ lúc khởi động). Chỉ là số đo, chưa đánh giá ngưỡng |
 | `process.blocking[]` | theo pool: `name`, `threads`, `queued`, `running`, `completed`, `window_tasks`, `wait_avg_ms`, `wait_max_ms`, `busy_pct` (cửa sổ = 1 chu kỳ) |
 | `transcode` | `streams`, `decoders`, `encoders`, `motion`, `mjpeg_ingest` |
@@ -155,7 +155,7 @@ VMS gửi 0 hoặc không gửi `serverGroupId` đều ra 0. `/media/mserver/hea
 | `storage.disk_io` | `valid`, `iowait_pct`, `psi_io_full_pct`, `state` (`normal`/`warning`/`critical`) |
 | `storage.storage_write[]` | kết quả thử ghi từng thư mục (như `storage_write` của `systemStatistic`) |
 | `storage.record_write` | tốc độ ghi hình và dự báo retention, cùng object `record_write` của `systemStatistic` ([api-system-alert-events.md](api-system-alert-events.md), mục dự báo dung lượng): tắt tier `mode=record_dir`, `path`, `mount_point`, `ingest_mbps`, `recording_cameras`, `retention_days_estimate`, `estimated_remaining_days`, `required_days`, `state`, ...; bật tier `mode=hot_tier`, `ingest_mbps`, `recording_cameras`, `state`, `pools[]` (`pool_id`, `pool_name`, `ingest_mbps`, `recording_cameras`, `retention_forecast`) |
-| `recording` | `cameras` (đang bật), `expected`, `active`, `starting`, `stalled`, `stalled_pct`, `stale_sec`, `write_errors` (từ lúc khởi động), `write_errors_cycle`, `stalled_cameras[]` (tối đa 100: `cameraId`, `name`, `ip`, `recordMode`, `lastWriteAt`, `expectedSince`) |
+| `recording` | `cameras` (đang bật), `expected`, `active`, `starting`, `stalled`, `stalled_pct`, `stale_sec`, `write_errors` (từ lúc khởi động), `write_errors_cycle`, `close` (hàng đợi đóng segment `rec close`: `queued` tổng số đoạn đang chờ, `oldest_queued_ms` đoạn chờ lâu nhất, `oldest_pool` shard của nó), `stalled_cameras[]` (tối đa 100: `cameraId`, `name`, `ip`, `recordMode`, `lastWriteAt`, `expectedSince`) |
 | `delivery.viewers` | `live`, `playback`, `total`, `cameras_viewed` (số camera có ≥ 1 người xem), `limit` (giới hạn license, null = không giới hạn), `limit_used_pct` |
 | `delivery.play` | `window_sec`, `requests`, `failures`, `failure_pct` (trong cửa sổ), `failures_by_reason` (từ lúc khởi động: `Unauthorized`, `MaxRequest`, `ResourceUnavailable`, `OverlayForbidden`, `TranscodeDisabled`, ...) |
 | `alerts` | `active`, `critical`: số cảnh báo đang mở |
@@ -207,7 +207,7 @@ Poller không trả lời lệnh đo độ trễ sau 1 s (bị kẹt trong một
 | `net.drops_per_sec` | host | 10 / 100 | `monitor.netDropsPerSecWarn` / `Crit` |
 | `proc.fd_used_pct` | host | 70 / 90 | `monitor.fdUsedPctWarn` / `Crit` |
 | `pollers.delay_max_ms` | process | 50 / 200 | `monitor.pollerDelayMsWarn` / `Crit` |
-| `pollers.load_max` | process | 80 / 95 | `monitor.pollerLoadPctWarn` / `Crit` |
+| `pollers.cpu_max_pct` | process | 80 / 95 | `monitor.pollerLoadPctWarn` / `Crit` |
 | `work_pollers.delay_max_ms` | process | 100 / 500 | `monitor.workPollerDelayMsWarn` / `Crit` |
 | `blocking.wait_max_ms` (theo pool) | process | 1000 / 5000 | `monitor.blockingWaitMsWarn` / `Crit` |
 | `blocking.busy_pct` (theo pool) | process | 80 / 95 | `monitor.blockingBusyPctWarn` / `Crit` |
@@ -216,6 +216,7 @@ Poller không trả lời lệnh đo độ trễ sau 1 s (bị kẹt trong một
 | `disk_io.mount`, `disk_io.host` | storage | theo `globalmonitor.disk_io_*`, `iowait_*` | mức đã sustain của DiskIoMonitor |
 | `storage_write.writable` (theo thư mục) | storage | không ghi được = critical | |
 | `recording.stalled_pct` | recording | > 0 / 5 (% camera lẽ ra ghi) | `monitor.recordStalledPctWarn` / `Crit` |
+| `recording.close_oldest_queued_ms` | recording | 30 000 / 60 000 | `monitor.recordCloseQueuedMsWarn` / `Crit` |
 | `recording.write_errors` | recording | lỗi mới trong chu kỳ = warning, 3 chu kỳ liên tiếp = critical | |
 | `recording.storage_writable` | recording | thư mục bản ghi chính không ghi được = critical | |
 | `viewers.limit_used_pct` | delivery | 80 / 95 (chỉ khi license có giới hạn) | `monitor.viewerLimitPctWarn` / `Crit` |

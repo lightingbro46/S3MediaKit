@@ -176,8 +176,21 @@ private:
 
     void load();
 
+    enum class SaveMode {
+        Async,   // statistics: info.txt is written later on the ESC queue, coalesced per camera
+        Sync,    // config changes: info.txt is written before returning
+        EscOnly, // nothing to persist (only a measurement changed); only the ESC part below runs
+    };
+
     // Persist info.txt. Also retries a pending ESC sync (throttled) if the last one failed.
-    void save();
+    // Caller must hold _mtx.
+    void save(SaveMode mode = SaveMode::Async);
+
+    // Writes `snapshot` unless the file was removed or a newer snapshot is already on disk.
+    void writeFile(const CameraStatistic &snapshot, uint64_t seq);
+
+    // Runs on the ESC queue: writes the latest state if a save is still queued.
+    void flushQueuedSave();
 
     // Called by config setters (tuple / stream urls / option): pushes the ESC resource now,
     // bypassing the throttle, so config changes are never delayed or dropped.
@@ -206,6 +219,11 @@ private:
 private:
     std::mutex _mtx;
     FileRecorder<CameraStatistic, CameraStatisticHelper>::Ptr _file;
+    uint64_t _file_seq = 0;            // bumped by every save() (guarded by _mtx)
+    bool _file_save_queued = false;    // an async write is waiting on the ESC queue (guarded by _mtx)
+    std::mutex _file_mtx;              // serializes info.txt writes and remove(); taken after _mtx
+    uint64_t _file_written_seq = 0;    // guarded by _file_mtx
+    bool _file_removed = false;        // guarded by _file_mtx
     std::function<void(const std::string&)> _on_remove;
     int _sync_interval_sec = 30;
     bool _sync_mode = false;

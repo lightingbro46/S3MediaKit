@@ -3,6 +3,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
+#include <unistd.h>
 #include <set>
 #include <thread>
 #include "Common/config.h"
@@ -17,6 +19,7 @@
 #endif
 #include "AlertRegistry.h"
 #include "Thread/WorkThreadPool.h"
+#include "Util/util.h"
 #include "Util/onceToken.h"
 #include "Util/File.h"
 #include "GlobalMonitor.h"
@@ -78,7 +81,7 @@ const vector<ThresholdDef> &thresholdDefs() {
         { "rssGrowthMbPerH", "ram.proc_rss_growth_mb_per_h", 200, 500, true },
         // process (4.2)
         { "pollerDelayMs", "pollers.delay_max_ms", 50, 200, true },
-        { "pollerLoadPct", "pollers.load_max", 80, 95, true },
+        { "pollerLoadPct", "pollers.cpu_max_pct", 80, 95, true },
         { "workPollerDelayMs", "work_pollers.delay_max_ms", 100, 500, true },
         { "blockingWaitMs", "blocking.wait_max_ms", 1000, 5000, true },
         { "blockingBusyPct", "blocking.busy_pct", 80, 95, true },
@@ -86,6 +89,8 @@ const vector<ThresholdDef> &thresholdDefs() {
         { "restarts24h", "process.unclean_restarts_24h", 1, 3, true },
         // recording (4.4): any stalled camera is a warning, 5 % of the expected ones critical
         { "recordStalledPct", "recording.stalled_pct", 0.01, 5, true },
+        // oldest segment waiting in a "rec close" queue: closes (and their timeline entry) lag
+        { "recordCloseQueuedMs", "recording.close_oldest_queued_ms", 30000, 60000, true },
         // share of the cameras with expected time whose 24 h coverage is below coveragePct24hCrit
         { "recordCoverageLowPct", "recording.coverage_low_pct", 0.01, 5, true },
         // delivery (4.5)
@@ -659,9 +664,12 @@ void HealthMonitor::onPollerDelay(bool work_pool, const vector<int> &delays, con
     d.valid = !delays.empty();
     d.count = delays.size();
     long sum = 0;
-    for (auto v : delays) {
-        d.delay_max_ms = std::max(d.delay_max_ms, v);
-        sum += v;
+    for (size_t i = 0; i < delays.size(); ++i) {
+        if (delays[i] > d.delay_max_ms) {
+            d.delay_max_ms = delays[i];
+            d.delay_max_index = i;
+        }
+        sum += delays[i];
     }
     d.delay_avg_ms = delays.empty() ? 0 : (double)sum / delays.size();
     for (auto v : loads) {
@@ -689,6 +697,58 @@ void HealthMonitor::probeQueueDelay() {
         self._probe_due_ms = 0;
         return 0;
     });
+}
+
+double HealthMonitor::sampleThreadCpu(const vector<string> &names, string &busiest) {
+    // /proc/<tid>/comm holds at most 15 characters of the name given to setThreadName().
+    std::set<string> wanted;
+    for (const auto &name : names) {
+        wanted.emplace(name.substr(0, 15));
+    }
+    const int64_t now_ms = steadyNowMs();
+    const double elapsed_sec = _thread_ticks_ms > 0 ? (now_ms - _thread_ticks_ms) / 1000.0 : 0;
+    static const double ticks_per_sec = (double)sysconf(_SC_CLK_TCK);
+    std::map<int, uint64_t> ticks;
+    double max_pct = NAN;
+    File::scanDir("/proc/self/task", [&](const string &path, bool is_dir) {
+        if (!is_dir) {
+            return true;
+        }
+        std::ifstream in(path + "/stat");
+        string stat;
+        if (!std::getline(in, stat)) {
+            return true;
+        }
+        auto open = stat.find('(');
+        auto close = stat.rfind(')');
+        if (open == string::npos || close == string::npos || close < open) {
+            return true;
+        }
+        string comm = stat.substr(open + 1, close - open - 1);
+        if (!wanted.count(comm)) {
+            return true;
+        }
+        // Fields after "(comm)": state is the 1st, utime the 12th, stime the 13th.
+        auto fields = split(stat.substr(close + 2), " ");
+        if (fields.size() < 13) {
+            return true;
+        }
+        int tid = atoi(path.substr(path.rfind('/') + 1).c_str());
+        uint64_t total = strtoull(fields[11].c_str(), nullptr, 10) + strtoull(fields[12].c_str(), nullptr, 10);
+        ticks[tid] = total;
+        auto prev = _thread_ticks.find(tid);
+        if (elapsed_sec > 0 && prev != _thread_ticks.end() && total >= prev->second) {
+            double pct = 100.0 * (total - prev->second) / ticks_per_sec / elapsed_sec;
+            if (std::isnan(max_pct) || pct > max_pct) {
+                max_pct = pct;
+                busiest = comm;
+            }
+        }
+        return true;
+    }, false);
+    _thread_ticks.swap(ticks);
+    _thread_ticks_ms = now_ms;
+    return max_pct;
 }
 
 double HealthMonitor::effectiveDelayMs(const PollerDelay &d, int64_t now_ms) {
@@ -950,19 +1010,37 @@ void HealthMonitor::collectProcess(HealthEvaluator &ev, Json::Value &summary, in
         work_pollers = _work_pollers;
     }
     int64_t now_ms = steadyNowMs();
-    auto fill = [&](const char *group, const char *metric, const char *th_name, const PollerDelay &d) {
+    // Thread names in the pool's order, the order of the delay/load vectors.
+    auto names_of = [](TaskExecutorGetterImp &pool) {
+        vector<string> names;
+        pool.for_each([&](const TaskExecutor::Ptr &executor) {
+            auto poller = std::dynamic_pointer_cast<EventPoller>(executor);
+            names.emplace_back(poller ? poller->getThreadName() : string());
+        });
+        return names;
+    };
+    const auto poller_names = names_of(EventPollerPool::Instance());
+    const auto work_names = names_of(WorkThreadPool::Instance());
+    auto fill = [&](const char *group, const char *metric, const char *th_name, const PollerDelay &d,
+                    const vector<string> &names) {
         double delay = effectiveDelayMs(d, now_ms);
         ev.addValue("process", metric, delay, threshold(th_name));
         Json::Value &g = proc[group];
         g["count"] = (Json::UInt64)d.count;
         g["delay_max_ms"] = num(delay);
+        g["delay_max_name"] = d.valid && d.delay_max_index < names.size() ? Json::Value(names[d.delay_max_index])
+                                                                         : Json::Value(Json::nullValue);
         g["delay_avg_ms"] = d.valid ? num(d.delay_avg_ms) : Json::Value(Json::nullValue);
         g["load_max"] = d.valid ? Json::Value(d.load_max) : Json::Value(Json::nullValue);
         g["sampled_age_ms"] = d.valid ? Json::Value((Json::Int64)(now_ms - d.sampled_ms)) : Json::Value(Json::nullValue);
     };
-    fill("pollers", "pollers.delay_max_ms", "pollerDelayMs", pollers);
-    fill("work_pollers", "work_pollers.delay_max_ms", "workPollerDelayMs", work_pollers);
-    ev.addValue("process", "pollers.load_max", pollers.valid ? (double)pollers.load_max : NAN, threshold("pollerLoadPct"));
+    fill("pollers", "pollers.delay_max_ms", "pollerDelayMs", pollers, poller_names);
+    fill("work_pollers", "work_pollers.delay_max_ms", "workPollerDelayMs", work_pollers, work_names);
+    string busiest;
+    double cpu_max = sampleThreadCpu(poller_names, busiest);
+    proc["pollers"]["cpu_max_pct"] = num(cpu_max);
+    proc["pollers"]["cpu_max_name"] = busiest.empty() ? Json::Value(Json::nullValue) : Json::Value(busiest);
+    ev.addValue("process", "pollers.cpu_max_pct", cpu_max, threshold("pollerLoadPct"));
 
     auto stats = BlockingExecutors::stats();
     proc["blocking"] = Json::arrayValue;
@@ -1263,6 +1341,32 @@ void HealthMonitor::collectRecording(HealthEvaluator &ev, Json::Value &summary, 
     HealthLevel err_level = _write_error_cycles >= 3 ? HealthLevel::CRITICAL
                           : (_write_error_cycles > 0 ? HealthLevel::WARNING : HealthLevel::OK);
     ev.addLevel("recording", "recording.write_errors", err_level, (double)new_errors, 0, std::string(), true);
+
+#ifdef ENABLE_MP4
+    // Segments waiting to be closed. The queue has no hard limit (a segment is never dropped), so
+    // a disk that cannot keep up shows here first, before RSS and open files grow.
+    {
+        Json::Value &close = rec["close"];
+        uint64_t queued = 0;
+        double oldest_ms = 0;
+        string oldest_pool;
+        for (const auto &st : mediakit::MP4Recorder::closePoolStats()) {
+            queued += st.queued;
+            if (st.oldest_queued_ms > oldest_ms) {
+                oldest_ms = st.oldest_queued_ms;
+                oldest_pool = st.name;
+            }
+        }
+        close["queued"] = (Json::UInt64)queued;
+        close["oldest_queued_ms"] = num(oldest_ms);
+        close["oldest_pool"] = oldest_pool;
+        auto level = ev.addValue("recording", "recording.close_oldest_queued_ms", oldest_ms, threshold("recordCloseQueuedMs"));
+        if (level == HealthLevel::CRITICAL) {
+            ErrorL << "MP4 close queue is falling behind: " << queued << " segments queued, oldest "
+                   << (int64_t)oldest_ms << " ms in " << oldest_pool;
+        }
+    }
+#endif
 
     // The record directory must accept writes (the storage component shows every directory).
     for (const auto &w : GlobalMonitor::Instance().getStorageWriteStatus()) {
