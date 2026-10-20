@@ -1084,9 +1084,13 @@ def scenario_step(rn):
     limit_row = next((r for r in rn.rows if not r["ok"] and r["level"] > (last_ok or -1)), None)
     ceiling_hit = limit_row is not None
     accept_row = next((r for r in rn.rows if r["level"] == a.accept and r["label"] == str(a.accept)), None)
+    # bậc > 0 trượt nằm dưới bậc đạt cuối: không chặn CCU nhưng phải hiện ra (C8-b: 100 và 600)
+    isolated = [r["label"] for r in rn.rows if not r["ok"] and 0 < r["level"] < (last_ok or 0)]
+    isolated_note = ("%d bậc trượt lẻ: %s" % (len(isolated), ", ".join(isolated))) if isolated else ""
     summary = {
         "CCU đạt": ("chưa có bậc > 0 đạt" if not last_ok else
-                    "%d" % round_down(last_ok) if ceiling_hit else
+                    "%d%s" % (round_down(last_ok), " (%s)" % isolated_note if isolated else "") if ceiling_hit else
+                    ">= %d (chưa chạm trần, %s)" % (last_ok, isolated_note) if isolated else
                     ">= %d (mọi bậc đều đạt, chưa chạm trần)" % last_ok),
         "Yếu tố giới hạn": (limit_row["limit"] or limit_row["verdict"]) if limit_row else "chưa chạm",
         "Nghiệm thu A1 (bậc %d)" % a.accept: ("ĐẠT" if accept_row and accept_row["ok"] else

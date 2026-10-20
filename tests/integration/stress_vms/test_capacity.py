@@ -39,6 +39,22 @@ def close_samples(*queued, oldest_ms=1000):
             for i, q in enumerate(queued)]
 
 
+def run_step(steps, failing, accept=500, bisect=0):
+    """scenario_step với measure giả: bậc trong failing trượt, còn lại đạt."""
+    rn = SimpleNamespace(rows=[], baseline=True,
+                         args=SimpleNamespace(steps=",".join(map(str, steps)), accept=accept, hold=60,
+                                              accept_hold=60, bisect=bisect))
+
+    def measure(level, hold, label=None):
+        ok = level not in failing
+        row = {"level": level, "label": label or str(level), "ok": ok, "invalid": [], "failures": [],
+               "limit": "" if ok else "recording", "verdict": "đạt" if ok else "trượt"}
+        rn.rows.append(row)
+        return row
+    rn.measure = measure
+    return cc.scenario_step(rn)
+
+
 class CapacityEvidenceTest(unittest.TestCase):
     def test_ramp_timeout_fails_even_when_measurement_window_is_clean(self):
         row = evaluate_row(logs0={"rtp_timeout": 1}, logs1={"rtp_timeout": 1})
@@ -101,6 +117,20 @@ class CapacityEvidenceTest(unittest.TestCase):
                                     {"stream/first.mp4": 160})
         self.assertEqual(result["gaps"], 1)
         self.assertEqual(result["stale"], 0)
+
+    # L13: C8-b bậc 100 và 600 trượt lẻ, summary từng ghi "mọi bậc đều đạt".
+    def test_step_summary_lists_isolated_failures_without_ceiling(self):
+        summary = run_step([0, 100, 200, 400, 600, 800], failing={100, 600})
+        self.assertEqual(summary["CCU đạt"], ">= 800 (chưa chạm trần, 2 bậc trượt lẻ: 100, 600)")
+
+    def test_step_summary_lists_isolated_failures_below_ceiling(self):
+        summary = run_step([0, 100, 200, 400, 600, 800], failing={100, 600, 800})
+        self.assertEqual(summary["CCU đạt"], "400 (1 bậc trượt lẻ: 100)")
+
+    def test_step_summary_without_isolated_failures(self):
+        self.assertEqual(run_step([0, 100, 200], failing=set())["CCU đạt"],
+                         ">= 200 (mọi bậc đều đạt, chưa chạm trần)")
+        self.assertEqual(run_step([0, 100, 200, 400], failing={400})["CCU đạt"], "200")
 
     def test_stall_event_has_wall_clock_and_duration(self):
         p = Player(0)
