@@ -170,6 +170,8 @@ private:
         std::function<void(const std::string &reason)> close;
     };
     std::unordered_map<std::string /*token*/, std::vector<MediaSessionInfo>> _map_token_sessions;
+    // token:device whose background refresh hook is in flight; revoke clears it, and
+    // cleanExpiredAuthorCache() keeps such a grant until the hook answers
     std::unordered_set<std::string /*token:device*/> _token_checks;
     // token:device -> callbacks waiting for the in-flight on_play hook
     std::unordered_map<std::string, std::vector<std::function<void(const std::string &err)>>> _play_waiters;
