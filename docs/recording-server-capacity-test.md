@@ -646,8 +646,8 @@ Theo cách chia lõi của db3 (vCPU N và N+16 cùng lõi vật lý, NUMA node0
 | C4 | 0-1,16-17 | 8-15,24-31 | 32 GB | SSD | `C4_ssd_c4_m32` (2026-10-20 11:57, binary `3388afc`): ngưỡng **200**, 300/400 trượt do `info.txt` ghi trên event poller (mục 10.11) | `C4_ssd_c4_m32_view` (N = 300): trượt ngay ở 0 viewer. `C4_ssd_c4_m32_view200` (N = 200): ≥ 2 000 đạt, bậc 200 viewer trượt vì khựng (mục 10.12) | — | 2 lõi / 4 luồng, `-t 4` |
 | C8 | 0-3,16-19 | 8-15,24-31 | 32 GB | SSD | `C8_ssd_c8_m32` (2026-10-20 14:42, binary `3388afc`): ngưỡng **400**, 500 trượt healthcheck do `info.txt` (L8), 600 vượt trần đĩa, bundle gán nhầm "không hợp lệ" (mục 10.13) | `C8_ssd_c8_m32_view` (2026-10-20 13:54, N = 300): ≥ 2 000 đạt, bậc 100 và 600 viewer trượt lẻ vì khựng (mục 10.14) | — | 4 lõi / 8 luồng, `-t 8`; b chạy trước a |
 | C24 | 0-11,16-27 | 12-15,28-31 | 32 GB | SSD | `C24_ssd_c24_m32` (2026-10-20 16:21, binary `3388afc`): ngưỡng **500**, 600 trượt vì trần đĩa, rồi MediaServer tự restart (watchdog statistic) và crash lúc thoát, 700 vượt trần đĩa, bundle gán nhầm "không hợp lệ" (mục 10.15) | `C24_ssd_c24_m32_view` (2026-10-21 08:25, N = 300): 1 500 đạt, 2 000 không hợp lệ vì bộ sinh tải 8 vCPU hết CPU (mục 10.16) | — | 12 lõi / 24 luồng, trải 2 NUMA node; bộ sinh tải 4 lõi / 8 luồng, `-t 24` |
-| M16 | 0-7,16-23 | 8-15,24-31 | 16 GB | SSD | | | — | |
-| M8 | 0-7,16-23 | 8-15,24-31 | 8 GB | SSD | | | — | |
+| M16 | 0-7,16-23 | 8-15,24-31 | 16 GB | SSD | `M16_ssd_c16_m16` (2026-10-21 09:34, binary `3388afc`): ngưỡng **500** (sát trần RAM), 600 và 700 bị **OOM kill** trong cgroup 16 GB (mục 10.17) | `M16_ssd_c16_m16_view` (2026-10-21 11:04, N = 300): ≥ 2 000 đạt (mục 10.18) | — | `--memory 16g --memory-swap 16g`, `-t 16` |
+| M8 | 0-7,16-23 | 8-15,24-31 | 8 GB | SSD | `M8_ssd_c16_m8` (2026-10-21 11:56, binary `3388afc`): ngưỡng **200**, 300 bị **OOM kill** trong ramp (mục 10.19) | `M8_ssd_c16_m8_view` (2026-10-21 12:33, N = 300): **không đo được**, nền 300 camera bị OOM kill trong ramp (mục 10.20) | — | `--memory 8g --memory-swap 8g --shm-size=6g` (container vẫn báo `/dev/shm` 20G), `-t 16`; chạy bậc mặc định, không dùng bậc 100–300 như mục 10.17 đề xuất |
 | H | 0-7,16-23 | 8-15,24-31 | 32 GB | HDD (`sdb`) | | | | |
 
 ### Bảng 2 — Ngưỡng camera (bước a, 0 người xem, ghi 24/7 cả hai luồng)
@@ -662,8 +662,8 @@ Các cột tài nguyên lấy ở **bậc đạt cao nhất** trong bảng bậc
 | C4 (mục 10.11) | 200 | 300 | 352 timeout kéo + 364 khoảng hở + healthcheck p95 239 ms: event poller kẹt ~6 s khi ghi `info.txt` cho 150 luồng | – | 41,6 | 35,2 | 2 230 | 103,9 | – / wa 0,4 | 30,5 |
 | C8 (mục 10.13) | 400 | 500 | healthcheck p95 233 ms: mỗi event poller kẹt 2,7–4,8 s mỗi phút khi ghi `info.txt` (~125 luồng/poller), util SSD 80 % | 600 (gán nhầm: nguồn trễ vì MediaServer ngừng đọc; thực chất vượt trần đĩa ~270 MB/s, 5 465 timeout kéo, 4 988 khoảng hở) | 36,5 | 32,5 | 5 006 | 205,2 | – / wa 2,1 | 15,9 |
 | C24 (mục 10.15) | 500 | 600 | trần đĩa: cần ~307 MB/s, SSD chỉ ghi ~276 MB/s (util 98 %), 351 timeout kéo, 349 khoảng hở, hàng đợi `rec close` chờ 316 s; sau đó MediaServer tự restart (watchdog statistic) và crash lúc thoát vì `exit(0)` chạy giữa lúc tắt | 700 (gán nhầm: nguồn trễ vì MediaServer ngừng đọc; thực chất vượt trần đĩa, 11 370 timeout kéo, 11 053 khoảng hở) | 19,5 | 15,8 | 8 079 | 255,8 | – / wa 3,4 | 2,8 |
-| M16 | | | | | | | | | | |
-| M8 | | | | | | | | | | |
+| M16 (mục 10.17) | 500 (RSS + HLS `/dev/shm` ~15 GB / 16 GB) | 600 | MediaServer bị SIGKILL (OOM cgroup): RSS 7,9 GB đang tăng + HLS ~9,4 GB > 16 GB; trước đó đĩa đã bão hoà (util 98 %, 275 timeout kéo) | 700 (bị OOM kill ngay trong ramp, harness chấm "không hợp lệ") | 27,8 | 35,6 | 7 063 | 255,8 | – / wa 5,4 | 18,1 |
+| M8 (mục 10.19) | 200 | – (300 bị giết trước cửa sổ đo) | – | 300 (OOM kill lúc 12:24:49, 1,5 phút sau khi ramp: RSS 3,9 GB + HLS ~4,7 GB > 8 GB; harness chấm "không hợp lệ") | 16,4 | 16,9 | 2 900 | 104,0 | – / wa 1,1 | 3,1 |
 | H | | | | | | | | | | |
 
 ### Bảng 3 — Ngưỡng luồng xem (bước b)
@@ -677,8 +677,8 @@ Các cột tài nguyên lấy ở **bậc CCU đạt**.
 | C4 (mục 10.12) | 200 (300: nền trượt) | ≥ 2 000 (bậc 200 viewer trượt lẻ) | chưa chạm theo CPU; khựng theo nhịp ghi `info.txt` (L8) | 200 viewer: 26/200 phiên khựng > 2 s | 57,8 | 49,0 | 2 328 | 3 701,0 | 334 (fmp4-sub, bậc 2 000) | 0,121 | OK |
 | C8 (mục 10.14) | 300 | ≥ 2 000 (bậc 100 và 600 viewer trượt lẻ) | chưa chạm theo CPU; khựng theo nhịp ghi `info.txt` (L8) | 100 viewer: 5/100 phiên khựng > 2 s; 600 viewer: 15/600 | 43,4 | 37,8 | 3 720 | 4 202,4 | 199 (hls-sub, bậc 2 000) | 0,011 | OK |
 | C24 (mục 10.16) | 300 | 1 500 (2 000 không hợp lệ) | bộ sinh tải 8 vCPU: 4 worker 99–100 % CPU ở bậc 2 000; MediaServer chưa chạm | – | 17,6 | 26,1 | 4 927 | 3 498,5 | 780 (hls-main, bậc 1 500) | 0,0 | OK |
-| M16 | | | | | | | | | | | |
-| M8 | | | | | | | | | | | |
+| M16 (mục 10.18) | 300 | ≥ 2 000 (mọi bậc đạt) | chưa chạm; RSS ~4,4 GB + HLS ~4,7 GB còn dư so với 16 GB | – | 28,4 | 26,1 | 4 434 | 4 203,4 | 1 177 (hls-main, bậc 1 500) | 0,001 | OK |
+| M8 (mục 10.20) | 300 (nền bị OOM kill) | không đo được | RAM: nền 300 camera vượt 8 GB | 0 viewer: MediaServer bị OOM kill lúc 12:36:19, harness chấm "không hợp lệ" | – | – | – | – | – | – | – |
 | H | | | | | | | | | | | |
 
 ### Bảng 4 — Chi tiết bậc camera (một bảng cho mỗi lượt)
@@ -753,6 +753,10 @@ thời gian chờ lâu nhất của việc đóng segment trong hàng đợi `re
 | C4-b (2026-10-20 12:57 và 13:38) | N = 300: nền trượt (healthcheck p95 226 ms), 100 viewer có 8 phiên khựng > 2 s, dừng sau 2 bậc. N = 200: ≥ 2 000 viewer, 0 lỗi join, 0 timeout, 0 khoảng hở; bậc 200 viewer có 26/200 phiên khựng > 2 s, trùng phút một poller kẹt 2,9 s ghi `info.txt`. Khựng nhỏ ở bậc 100/600/1 000/2 000 (0,12–0,27 %) cũng trùng các phút kẹt 1,3–2,0 s (mục 10.12) |
 | C24-a (2026-10-20 16:21) | 100–500 camera: 0 `receive rtp timeout`, 0 khoảng hở; 1–2 dòng `database is locked` ở bậc 200, 300, 500 (cảnh báo). Bậc 600: đĩa bão hoà (util 98 %), lúc 17:37–17:38 có 351 `receive rtp timeout` và 349 khoảng hở; lúc 17:40:02 **watchdog statistic tự restart MediaServer** (`Report statistic failed`, kích hoạt nhầm vì `report_interval=10` làm báo cáo statistic gần như không chạy), `restartServer` gửi SIGINT lúc 17:40:04 rồi `exit(0)` trên event poller 9 lúc 17:40:08 khi thread chính còn đang tắt: destructor tĩnh chạy song song thread còn sống, libc báo `corrupted double-linked list`, **SIGABRT trong `free()`**; tiến trình treo trong crash handler ~70 s. Đã sửa cả hai lỗi (mục 10.15). Bậc 700: util 100 %, iowait 34,7 %, hàng đợi `rec close` 25 424 việc (chờ 623 s), fd 30 913; bundle gán "không hợp lệ" (mục 10.15) |
 | C24-b (2026-10-21 08:25) | Không crash, 0 lỗi join, 0 phiên khựng dài, 0 phiên đứt, 0 `receive rtp timeout`, 0 khoảng hở. Bậc của bundle là 0, 100, 1 000, 1 250, 1 500, 2 000, giữ 150 s, nên bậc nghiệm thu 500 không được chạy. TTFF tăng từ bậc 1 500 (hls-main 780 ms) khi CPU bộ sinh tải đã lên 79 % (mục 10.16) |
+| M16-a (2026-10-21 09:34) | 100–500 camera: 0 `receive rtp timeout`, 0 khoảng hở. Bậc 600: đĩa bão hoà (util 98 %, iowait ~28 %), 275 `receive rtp timeout` lúc 10:47–10:50, hàng đợi `rec close` 6 030 việc (chờ 306 s), RSS tăng ~30 MB/s; **10:50:25 MediaServer bị SIGKILL** (log dừng giữa chừng, không `## signal`, không SIGINT, host còn ~13 GB trống → OOM của cgroup 16 GB, không có `--memory-swap` dư). Bậc 700: bị SIGKILL lúc 10:53:30, chưa xong ramp (RSS 8,5 GB). Không có `Report statistic failed` (lỗi tự restart của C24 không xảy ra). Bundle không thu `dmesg` / `memory.stat` nên OOM là suy ra (mục 10.17) |
+| M16-b (2026-10-21 11:04) | Không crash, 0 lỗi join, 0 phiên khựng dài, 0 `receive rtp timeout`, 0 khoảng hở; RSS đứng ~4,4 GB từ 0 tới 2 000 viewer. Bậc 1 500 có TTFF max 1,1–1,2 s ở cả bốn loại luồng, bậc 2 000 lại ≤ 148 ms (mục 10.18) |
+| M8-a (2026-10-21 11:56) | 100–200 camera: 0 `receive rtp timeout`, 0 khoảng hở, đĩa util ≤ 35 %. Bậc 300: **12:24:49 MediaServer bị SIGKILL**, 1,5 phút sau khi bắt đầu ramp, RSS 3,9 GB, chưa có dấu hiệu nghẽn đĩa; không `## signal`, không SIGINT, không `Report statistic failed` → OOM của cgroup 8 GB (suy ra như M16). Còn 68/600 luồng phát lúc kết thúc là luồng nguồn, không phải MediaServer. Container báo `/dev/shm` 20G dù chạy `--shm-size=6g`, nhưng shm vẫn tính vào cgroup nên không đổi kết luận (mục 10.19) |
+| M8-b (2026-10-21 12:33) | 300 camera nền: MediaServer bị SIGKILL lúc 12:36:19, 2,5 phút sau khi ramp, RSS 3,9 GB; dừng ở bậc 0 viewer. Harness chấm "không hợp lệ (bộ sinh tải quá tải)" vì 0/8 worker báo số liệu, nhưng nguyên nhân là MediaServer chết (mục 10.20) |
 
 ### Bảng 7 — Dung lượng lưu trữ (tính, không đo)
 
@@ -1806,3 +1810,125 @@ Tarball `result_C24_b.tar.gz` (`result_db3_C24_ssd_c24_m32_view_20261021_082501`
 **Kết luận C24-b:** với 24 vCPU và 300 camera, MediaServer phục vụ **≥ 1 500 viewer** trong giới hạn
 của bộ sinh tải 8 vCPU; theo CPU và RAM còn dư xa so với 2 000. Muốn đo trần thật cần bộ sinh tải trên
 máy thứ hai (mục 5.4).
+
+### 10.17 Lượt M16, bước a — ngưỡng camera với RAM 16 GB (2026-10-21)
+
+Tarball `result_M16_a.tar.gz` (`result_db3_M16_ssd_c16_m16_20261021_093409`): binary/bundle `3388afc`,
+MediaServer `0-7,16-23` (`-t 16`), bộ sinh tải `8-15,24-31`, container `--memory 16g --memory-swap 16g`
+(`memory.max=17179869184`, không swap), giữ 600 s mỗi bậc, profile full, 0 viewer. Dừng ở bậc 700, 80 phút.
+Cùng cấu hình với G ngoài giới hạn RAM.
+
+**Kết quả: ngưỡng 500 camera, sát trần RAM. Từ 600 MediaServer bị OOM kill.**
+
+Cột "HLS ước tính": HLS nằm trên `/dev/shm` (tmpfs, tính vào cgroup), cấu hình mặc định trong code
+`hls_demand=0`, `segNum=3`, `segRetain=10`, `segDur=2` nên mỗi luồng giữ ~14 segment (~28 s): luồng chính
+4 Mbps ~14 MB, luồng phụ 512 kbps ~1,8 MB, **~15,8 MB mỗi camera**, dù không có người xem.
+
+| camera | CPU % (16 vCPU) | event poller (% 1 lõi) | RSS MB | HLS ước tính | RSS + HLS | ghi MB/s | util / `w_await` | hàng đợi `rec close` max / chờ lâu nhất | timeout / khoảng hở | kết luận |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 100 | 9,9 | 132 | 1 422 | ~1,6 GB | ~3,0 GB | 53 | 20 % / 44 ms | 16 / 0,4 s | 0 / 0 | đạt |
+| 200 | 16,4 | 237 | 2 871 | ~3,2 GB | ~6,0 GB | 104 | 39 % / 70 ms | 36 / 2,4 s | 0 / 0 | đạt |
+| 300 | 20,4 | 300 | 4 404 | ~4,7 GB | ~9,1 GB | 155 | 50 % / 61 ms | 155 / 7,2 s | 0 / 0 | đạt |
+| 400 | 25,5 | 378 | 6 306 | ~6,3 GB | ~12,6 GB | 205 | 69 % / 78 ms | 183 / 7,2 s | 0 / 0 | đạt |
+| 500 | 27,8 | 413 | 7 063 | ~7,9 GB | **~15,0 GB** | 256 | **83 %** / 80 ms | 404 / 13 s | 0 / 0 | đạt |
+| 600 | – | – | 7 902 khi bị giết, đang tăng | ~9,4 GB | **~17,3 GB** | ~285 | **98 %** / 101 ms | **6 030 / 306 s** | **275 / 229** | **OOM kill** lúc 10:50:25 |
+| 700 | – | – | 8 480 khi bị giết | ~11 GB | ~19,5 GB | – | – | – | 3 461 / 2 989 | **OOM kill** lúc 10:53:30, trong ramp |
+
+**Vì sao là OOM của cgroup.** Cả hai lần runner ghi `Killed` (SIGKILL). Log MediaServer dừng giữa chừng,
+không có `## signal` và không có SIGINT trước đó, nên không phải lỗi tự restart của C24 (mục 10.15;
+`Report statistic failed` không xuất hiện). Harness chỉ `kill -9` trong `stop_nodes` sau 40 s chờ SIGINT,
+mà tiến trình chết trước khi bậc kết thúc. vmstat của host lúc đó còn ~13 GB trống, nên người giết là OOM
+của cgroup container, không phải của host. Bundle chưa thu `dmesg` và `memory.stat` nên đây là suy ra,
+khớp với phép cộng RSS + HLS ở trên; còn phải cộng thêm nguồn RTSP và mock trong cùng container, và page
+cache của bản ghi (khi đĩa bão hoà, dirty page khó thu hồi; kernel 3.10 cgroup v1 không giới hạn dirty
+theo cgroup, chưa kiểm chứng).
+
+**RAM không hạ ngưỡng trên db3, nhưng làm cách hỏng tệ hơn.** G 32 GB đạt 500–600 với cùng 16 vCPU, và
+bậc 600 của M16 đã có dấu hiệu trần đĩa trước khi bị giết (util 98 %, 275 timeout, hàng đợi `rec close`
+chờ 306 s, RSS tăng ~30 MB/s theo hàng đợi). Ở G và C24, quá trần đĩa gây timeout và khoảng hở; ở M16,
+RSS tăng theo hàng đợi đẩy cgroup qua 16 GB và **cả node bị giết**, mất cả 1 200 luồng; ở 700 node chết
+trước khi kịp ramp xong.
+
+**Hệ quả cho production.** Production dùng cùng mặc định (HLS trên `/dev/shm`, `hls_demand=0`,
+`segRetain=10`), tmpfs chiếm RAM thật không có người xem. Mỗi camera cần ~30 MB RAM (RSS ~14 MB + HLS
+~15,8 MB), máy 16 GB chạm trần ở ~500 camera chưa kể hệ điều hành và page cache. Hai cách giảm, đều là
+quyết định sản phẩm: `hls_demand=1` (chỉ tạo HLS cho luồng có người xem) hoặc giảm `segRetain`.
+
+**Kết luận M16-a:** với binary `3388afc`, 16 vCPU và RAM 16 GB nhận **500 camera** nhưng không còn dư RAM;
+mức vận hành nên chốt ~400 như G. Cần thêm vào bundle: `memory.usage_in_bytes`/`memory.stat` của cgroup
+(`rss`, `cache`, `shmem`, `dirty`), dung lượng `/dev/shm` và dòng OOM trong `dmesg`. Với M8
+(`--memory 8g --shm-size=6g`): RAM 8 GB chạm ở ~260 camera, shm 6 GB đủ ~380 camera, nên nên dùng bậc
+`100,150,200,250,300`.
+
+### 10.18 Lượt M16, bước b — luồng xem với RAM 16 GB (2026-10-21)
+
+Tarball `result_M16_b.tar.gz` (`result_db3_M16_ssd_c16_m16_view_20261021_110413`): binary/bundle `3388afc`,
+cấu hình như M16-a, **300 camera nền**, mix `live`, bậc 0, 100, 1 000, 1 250, 1 500, 2 000, giữ 150 s
+(cửa sổ đo 120 s), 20 phút.
+
+**Kết quả: CCU ≥ 2 000, chưa chạm trần.**
+
+| viewer | CPU % (16 vCPU) | event poller (% 1 lõi) | RSS MB | TX loopback Mbps | TTFF max ms | khựng % | healthcheck p95 / max ms | CPU bộ sinh tải max % / loop lag max ms | kết luận |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | 20,2 | 295 | 4 309 | 1 245 | – | – | 4,4 / 2 575 | 0,5 / 1,9 | đạt |
+| 100 | 19,7 | 288 | 4 326 | 1 399 | 13 | 0,133 | 5,6 / 937 | 8,1 / 2,2 | đạt |
+| 1 000 | 23,3 | 347 | 4 423 | 2 708 | 19 | 0,071 | 9,1 / 1 299 | 35,3 / 3,9 | đạt |
+| 1 250 | 24,6 | 369 | 4 553 | 3 089 | 34 | 0,011 | 12,0 / 1 152 | 41,7 / 5,3 | đạt |
+| 1 500 | 26,0 | 390 | 4 423 | 3 477 | 1 177 | 0,0 | 12,1 / 41 | 48,3 / 6,9 | đạt |
+| 2 000 | 28,4 | 428 | 4 434 | 4 203 | 148 | 0,001 | 12,5 / 248 | 61,3 / 12,3 | đạt |
+
+- **RAM không phải giới hạn khi xem**: RSS đứng ~4,4 GB từ 0 tới 2 000 viewer; cộng HLS ~4,7 GB của 300
+  camera là ~9 GB, còn dư so với 16 GB. 0 lỗi join, 0 phiên đứt, 0 `receive rtp timeout`, ghi hình 600
+  luồng không hở, mọi loại luồng nhận đủ 100 % tốc độ media. Bộ sinh tải hợp lệ (CPU ≤ 61 %).
+- **TTFF ở bậc 1 500** lên 1,1–1,2 s ở cả bốn loại luồng rồi về ≤ 148 ms ở bậc 2 000: một đợt trễ chung
+  lúc mở viewer, không phải xu hướng tăng; chưa đi sâu.
+- **Monitor** báo `pollers.delay_max_ms` (616–743 ms) và `pollers.load_max` (98–100 %) ở mọi bậc như các
+  lượt trước (L8, L6), `db.write_ms` tới 1,2 s.
+
+**Kết luận M16-b:** với 16 GB RAM và 300 camera, MediaServer phục vụ **≥ 2 000 viewer**, như G-b.
+
+### 10.19 Lượt M8, bước a — ngưỡng camera với RAM 8 GB (2026-10-21)
+
+Tarball `result_M8_a.tar.gz` (`result_db3_M8_ssd_c16_m8_20261021_115611`): binary/bundle `3388afc`,
+MediaServer `0-7,16-23` (`-t 16`), bộ sinh tải `8-15,24-31`, container `--memory 8g --memory-swap 8g`
+(`memory.max=8589934592`, không swap), giữ 600 s mỗi bậc, profile full, 0 viewer. Lượt chạy bậc mặc định
+`100,200,300,…` chứ không phải `100,150,200,250,300` như mục 10.17 đề xuất, nên giữa 200 và 300 không có
+số đo. Dừng ở bậc 300, 30 phút. `--shm-size=6g` không có hiệu lực (container báo `/dev/shm` 20G); shm
+vẫn tính vào cgroup nên không ảnh hưởng kết luận.
+
+**Kết quả: ngưỡng 200 camera. Ở 300, MediaServer bị OOM kill ngay trong ramp.**
+
+Cột "HLS ước tính" tính như mục 10.17 (~15,8 MB mỗi camera).
+
+| camera | CPU % (16 vCPU) | event poller (% 1 lõi) | RSS MB | HLS ước tính | RSS + HLS | ghi MB/s | util / `w_await` | hàng đợi `rec close` max / chờ lâu nhất | healthcheck p95 / max ms | kết luận |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 100 | 10,3 | 137 | 1 456 | ~1,6 GB | ~3,0 GB | 53 | 19 % / 41 ms | 15 / 0,5 s | 2,3 / 442 | đạt |
+| 200 | 16,4 | 236 | 2 900 | ~3,2 GB | **~6,1 GB** | 104 | 35 % / 47 ms | 92 / 7,3 s | 3,1 / 602 | đạt |
+| 300 | – | – | 3 900 khi bị giết | ~4,7 GB | **~8,6 GB** | – | – | – | 5 000 | **OOM kill** lúc 12:24:49, 1,5 phút sau khi ramp |
+
+- **Bậc 100 và 200 giống hệt G và M16** ở cùng số camera (CPU, RSS, đĩa). RAM chưa ảnh hưởng gì khi
+  còn dưới trần.
+- **Bậc 300 chết vì RAM, không vì đĩa.** Đĩa 300 camera chỉ cần ~155 MB/s (G, M16: util ~50 %), và
+  MediaServer chết khi chưa ramp xong, trước khi có nghẽn ghi. Tổng RSS ~3,9 GB và HLS ~4,7 GB (HLS đầy
+  sau ~28 s mỗi luồng) đã vượt 8 GB, chưa tính nguồn RTSP, mock và page cache trong cùng container.
+  Dấu hiệu chết giống M16: `Killed`, log dừng giữa chừng, không `## signal`, không SIGINT, không
+  `Report statistic failed`.
+- **Harness chấm sai bậc 300** là "không hợp lệ (bộ sinh tải quá tải)" vì 0/8 worker báo số liệu; thực ra
+  MediaServer đã chết. Như L7, bundle nên chấm "trượt", yếu tố giới hạn RAM.
+
+**Kết luận M8-a:** với RAM 8 GB, MediaServer nhận **200 camera** (RSS + HLS ~6,1 GB), trần nằm trong khoảng
+200–270 theo hệ số ~30 MB/camera. Không còn dư cho page cache và hệ điều hành, nên vận hành nên chốt
+**~150–200**. Muốn biết trần chính xác cần chạy lại với bậc `200,225,250,275`.
+
+### 10.20 Lượt M8, bước b — luồng xem với RAM 8 GB (2026-10-21)
+
+Tarball `result_M8_b.tar.gz` (`result_db3_M8_ssd_c16_m8_view_20261021_123338`): binary/bundle `3388afc`,
+cấu hình như M8-a, **300 camera nền** (mặc định, cao hơn ngưỡng 200 của M8-a), mix `live`, 3 phút.
+
+**Kết quả: không đo được.** MediaServer bị OOM kill lúc 12:36:19, 2,5 phút sau khi ramp 300 camera (RSS
+3,9 GB), trước bậc 0 viewer. Harness lại chấm "không hợp lệ (bộ sinh tải quá tải)" vì 0/8 worker báo số
+liệu. Nguyên nhân giống M8-a bậc 300: nền 300 camera không vừa 8 GB.
+
+**Cần chạy lại** với `--cameras 200` (ngưỡng của M8-a), như C4-b chạy lại với N = 200 (mục 10.12). Theo
+M16-b, viewer gần như không tăng RSS (~0,1 MB mỗi viewer), nên kỳ vọng ≥ 2 000 viewer nếu nền 200 camera
+còn vừa RAM.
