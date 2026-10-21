@@ -2563,9 +2563,10 @@ void installWebApi() {
             // Try to exit normally
             ::kill(getpid(), SIGINT);
 
-            // Force exit after 3 seconds
-            EventPollerPool::Instance().getPoller()->doDelayTask(3000, []() {
-                exit(0);
+            // Force exit only if the normal shutdown hangs (it takes 13 s or more). _exit() skips the
+            // static destructors that exit() would run here while the shutdown still uses them.
+            EventPollerPool::Instance().getPoller()->doDelayTask(60 * 1000, []() {
+                _exit(0);
                 return 0;
             });
 

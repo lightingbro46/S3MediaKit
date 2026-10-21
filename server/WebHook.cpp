@@ -909,6 +909,8 @@ static atomic<bool> s_config_loaded { true };
 static atomic<bool> s_report_statistic { true };
 static atomic<uint64_t> s_last_load_time { 0 };
 static atomic<uint64_t> s_last_report_time { 0 };
+// Load and statistic take one tick each, so the statistic is sent every max(report_interval, 2 ticks).
+static constexpr float kReportTickSec = 10.0f;
 
 /**
  * Decrypt the server configuration JSON data returned by the hook API. 
@@ -987,7 +989,9 @@ static void reportServerStatistic() {
 
         uint64_t now_time = time(nullptr);
         uint64_t last_time = s_last_load_time.load();
-        if (now_time >= last_time + static_cast<uint64_t>(report_interval)) {
+        // Wait until the statistic of the previous load is sent: with report_interval <= the tick, every
+        // tick would load again and the statistic would never be reported.
+        if (s_report_statistic.load() && now_time >= last_time + static_cast<uint64_t>(report_interval)) {
             DebugL << "Reset report config loaded flag for next report statistic, last_time:" << getTimeStr("%Y-%m-%d %H:%M:%S", last_time) << ", now:" << getTimeStr("%Y-%m-%d %H:%M:%S", now_time);
             s_config_loaded = false;
         }
@@ -1057,7 +1061,7 @@ static void reportServerStatistic() {
         return true;
     };
 
-    g_report_timer = std::make_shared<Timer>(10.0f, report_callback, nullptr);
+    g_report_timer = std::make_shared<Timer>(kReportTickSec, report_callback, nullptr);
 }
 
 // Server report usage
@@ -1096,7 +1100,8 @@ static void reportServerUsage() {
 
         // use report usage timer to check if the last report time is too long ago, if so, print a warning log and try to restart media server to recover
         auto last_report_time = s_last_report_time.load();
-        if (last_report_time > 0 && time(nullptr) - last_report_time > static_cast<uint64_t>(report_interval * 3)) {
+        const auto report_period = std::max(report_interval, 2 * kReportTickSec);
+        if (last_report_time > 0 && time(nullptr) - last_report_time > static_cast<uint64_t>(report_period * 3)) {
             WarnL << "Report statistic failed, last report time: " << getTimeStr("%Y-%m-%d %H:%M:%S", last_report_time) << ". Try to restart media server to recover";
             NOTICE_EMIT(BroadcastSystemAuditLogArgs, Broadcast::kBroadcastSystemAuditLog, SystemAuditLogType::RESTART_CONFIG, 
                 string("Restart due to report statistic failed, last report time: ") + getTimeStr("%Y-%m-%d %H:%M:%S", last_report_time));
@@ -1997,7 +2002,7 @@ void installWebHook() {
         if (http_port > 0 && http_port != 80) {
             ss << ":" << http_port;
         }
-        ss << "/index/api/restartServer";
+        ss << "/media/api/restartServer";
         string restart_server_trigger = ss.str();
 
         HttpArgs params;
