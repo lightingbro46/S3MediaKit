@@ -86,6 +86,7 @@ protected:
     ConfigGuard _enc_budget { HwCodec::kEncodeBudget, "" };
     ConfigGuard _offline_cost { HwCodec::kOfflineCost, "60" };
     ConfigGuard _offline_headroom { HwCodec::kOfflineHeadroom, "0.8" };
+    ConfigGuard _in_process { HwCodec::kInProcess, "1" };
 };
 
 } // namespace
@@ -362,6 +363,16 @@ TEST_F(HwCodecManagerTest, OfflineDecodeLeavesHeadroomForLive) {
     EXPECT_FALSE(manager.acquireDecodeOffline(CodecH264));
     EXPECT_TRUE(manager.acquireDecode(CodecH264, 1920, 1080, 30));
     EXPECT_FALSE(manager.acquireEncodeOffline(CodecH264));
+}
+
+TEST_F(HwCodecManagerTest, InProcessOffLeavesGpuToChildProcessJobs) {
+    ConfigGuard in_process(HwCodec::kInProcess, "0");
+    HwCodecManager manager;
+    manager.probe(fakeProbe({ { HwBackend::Cuda, makeCaps(true, true, true, true) } }));
+    EXPECT_FALSE(manager.acquireDecode(CodecH264, 1920, 1080, 25));
+    EXPECT_FALSE(manager.acquireEncode(CodecH264, 1920, 1080, 25));
+    EXPECT_TRUE(manager.acquireDecodeOffline(CodecH264));
+    EXPECT_TRUE(manager.acquireEncodeOffline(CodecH264));
 }
 
 TEST_F(HwCodecManagerTest, LoweringBudgetKeepsRunningSessions) {

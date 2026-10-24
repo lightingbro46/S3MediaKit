@@ -862,6 +862,8 @@ extern const std::string kEncodeBudget;
 // encode budget such jobs may fill (0.8 = keep 20% for live streams). Only applies with a budget.
 extern const std::string kOfflineCost;
 extern const std::string kOfflineHeadroom;
+// 0: GPU only for the ffmpeg child processes (extract, tier transcode); live decode/encode in MediaServer stay on the CPU
+extern const std::string kInProcess;
 // Consecutive failures that make one session drop to CPU, and failed sessions that disable a backend
 // for cooldownSec; after it one trial session is allowed again.
 extern const std::string kFailThreshold;

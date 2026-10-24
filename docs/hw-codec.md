@@ -156,6 +156,7 @@ Mặc định đã an toàn (production sinh config từ default trong code):
 | `hwcodec.encodeBudget` | rỗng | Như trên cho mã hoá |
 | `hwcodec.offlineCost` | `60` | Tải tính cho một việc mã hoá/giải mã chạy nhanh hơn thời gian thực (trích xuất overlay, transcode khi chuyển tầng); chỉ có tác dụng khi có budget |
 | `hwcodec.offlineHeadroom` | `0.8` | Việc offline chỉ được nhận khi tải sau đó không vượt `budget × hệ số` này, chừa phần còn lại cho luồng live |
+| `hwcodec.inProcess` | `1` | `0` = GPU chỉ dành cho các việc chạy bằng tiến trình `ffmpeg` con (trích xuất overlay, transcode khi chuyển tầng); giải mã/mã hoá live trong MediaServer (motion, transcode overlay, VideoStack) chạy CPU. Dùng cho driver chạy ổn ngoài tiến trình nhưng sập trong MediaServer (WSL2 d3d12) |
 | `hwcodec.failThreshold` | `3` | Lỗi liên tiếp để một phiên về CPU, và số phiên lỗi để khoá backend |
 | `hwcodec.cooldownSec` | `300` | Thời gian khoá backend / giữ giới hạn phiên đã học |
 | `general.check_nvidia_dev` | `1` | Giữ nghĩa cũ: `0` = không bao giờ dùng `cuda` |
@@ -267,6 +268,21 @@ Chạy MediaServer hoặc unit test với `LIBVA_DRIVER_NAME=d3d12`. Chỉ có b
 Probe bằng tiến trình con phát hiện lỗi này và chỉ tắt `hevc.encode` (transcode H265 dùng libx265);
 giải mã H264/H265 và mã hoá H264 vẫn chạy GPU. Chạy thử đường GPU thật bằng
 `LIBVA_DRIVER_NAME=d3d12 unit_codec --gtest_filter='*RealProbe*'`.
+
+Đo lại 2026-10-24 (FFmpeg 7.1.5, [docs/hwcodec-benchmark-2026-10-24.md](hwcodec-benchmark-2026-10-24.md)):
+giải mã/mã hoá GPU **trong MediaServer** (motion, transcode overlay) segfault trong `libigd12dxva64.so`
+(`vaEndPicture`) ở phần lớn các bậc đo, cả khi chỉ một decoder 1080p hay chỉ mã hoá (`hwcodec.decode=0`). Cùng
+bitstream qua `ffmpeg` CLI, hay qua `FFmpegDecoder` chạy riêng trong unit test (1–4 decoder, có drop frame,
+1100 fd mở sẵn), thì không lỗi; nguyên nhân trong driver chưa tách được. Việc chạy bằng tiến trình `ffmpeg` con
+(trích xuất overlay, transcode khi chuyển tầng) ổn định và đỡ CPU 7–19 lần. Nên khi bật d3d12 trên WSL2 đặt:
+
+```ini
+[hwcodec]
+inProcess=0     # live trong MediaServer chạy CPU, GPU chỉ cho trích xuất và tier transcode
+```
+
+Không đặt `LIBVA_DRIVER_NAME=d3d12` thì libva trên WSL2 không khởi tạo được (`vaGetDriverNameByIndex() failed`),
+MediaServer tự chạy CPU nên cấu hình mặc định không bị lỗi này.
 
 **2. NVIDIA**
 

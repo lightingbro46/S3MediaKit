@@ -1201,6 +1201,7 @@ HwCodecSession::Ptr HwCodecManager::acquire(CodecId codec, bool encode, double c
     GET_CONFIG(bool, enable, HwCodec::kEnable);
     GET_CONFIG(bool, decode_on, HwCodec::kDecode);
     GET_CONFIG(bool, encode_on, HwCodec::kEncode);
+    GET_CONFIG(bool, in_process, HwCodec::kInProcess);
     GET_CONFIG(int, max_decode, HwCodec::kMaxDecodeSessions);
     GET_CONFIG(int, max_encode, HwCodec::kMaxEncodeSessions);
     GET_CONFIG(string, decode_budget_cfg, HwCodec::kDecodeBudget);
@@ -1208,7 +1209,7 @@ HwCodecSession::Ptr HwCodecManager::acquire(CodecId codec, bool encode, double c
     GET_CONFIG(float, offline_headroom, HwCodec::kOfflineHeadroom);
 
     auto idx = codecIndex(codec);
-    if (idx < 0 || !enable || !(encode ? encode_on : decode_on)) {
+    if (idx < 0 || !enable || !(encode ? encode_on : decode_on) || (!offline && !in_process)) {
         return nullptr;
     }
     vector<std::shared_ptr<HwBackendState>> states;
