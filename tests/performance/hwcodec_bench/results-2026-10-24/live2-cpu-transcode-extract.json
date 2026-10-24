@@ -1,0 +1,103 @@
+{
+ "kind": "live",
+ "mode": "cpu",
+ "machine": {
+  "cpu": "12th Gen Intel(R) Core(TM) i7-12700H",
+  "vcpu": 8,
+  "mem_mb": 7941,
+  "ffmpeg": "ffmpeg version n7.1.5 Copyright (c) 2000-2026 the FFmpeg developers",
+  "va_driver": "Mesa Gallium driver 23.2.1-1ubuntu3.1~22.04.4 for D3D12 (Intel(R) Iris(R) Xe Graphics)",
+  "kernel": "6.18.33.2-microsoft-standard-WSL2"
+ },
+ "cameras": 2,
+ "steps": [
+  {
+   "window_s": 20.0,
+   "server_cpu_pct": 7.2,
+   "server_rss_mb": 95,
+   "system_cpu_pct": 1.5,
+   "drop_events": 0,
+   "gpu": {
+    "3d": 1.5,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 0,
+    "VideoEncoder": 0,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "",
+    "HwCodecLoad": ""
+   },
+   "scenario": "idle",
+   "n": 0
+  },
+  {
+   "window_s": 20.0,
+   "server_cpu_pct": 39.1,
+   "server_rss_mb": 195,
+   "system_cpu_pct": 6.7,
+   "drop_events": 0,
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 1,
+    "VideoEncoder": 1,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "",
+    "HwCodecLoad": ""
+   },
+   "viewer_fps_min": 5.7,
+   "viewer_fps_avg": 5.7,
+   "scenario": "transcode-overlay",
+   "n": 1,
+   "derived": 0,
+   "output": {}
+  },
+  {
+   "scenario": "extract-overlay",
+   "n": 1,
+   "clip_s": 60,
+   "ok": true,
+   "job_wall_s": [
+    30.3
+   ],
+   "batch_wall_s": 31.4,
+   "child_cpu_s": 170.18,
+   "server_cpu_s": 2.09,
+   "gpu_jobs": 0,
+   "gpu_retry": 0,
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 0,
+    "VideoEncoder": 0,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "",
+    "HwCodecLoad": ""
+   },
+   "out_probe": {
+    "codec": "h264",
+    "size": "1920x1080",
+    "fps": "25/1",
+    "duration": "60.000000"
+   }
+  }
+ ],
+ "probe_log": []
+}

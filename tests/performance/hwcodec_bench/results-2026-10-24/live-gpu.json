@@ -1,0 +1,249 @@
+{
+ "kind": "live",
+ "mode": "gpu",
+ "machine": {
+  "cpu": "12th Gen Intel(R) Core(TM) i7-12700H",
+  "vcpu": 8,
+  "mem_mb": 7941,
+  "ffmpeg": "ffmpeg version n7.1.5 Copyright (c) 2000-2026 the FFmpeg developers",
+  "va_driver": "Mesa Gallium driver 23.2.1-1ubuntu3.1~22.04.4 for D3D12 (Intel(R) Iris(R) Xe Graphics)",
+  "kernel": "6.18.33.2-microsoft-standard-WSL2"
+ },
+ "cameras": 16,
+ "ini": "",
+ "steps": [
+  {
+   "window_s": 40.0,
+   "server_cpu_pct": 27.6,
+   "server_rss_mb": 316,
+   "system_cpu_pct": 5.8,
+   "drop_events": 0,
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 0,
+    "VideoEncoder": 0,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "vaapi",
+    "HwCodecLoad": "vaapi:/dev/dri/renderD128 dec=0 enc=0"
+   },
+   "scenario": "idle",
+   "n": 0
+  },
+  {
+   "crashed": true,
+   "window_s": 22.0,
+   "stat": {
+    "VideoDecoder": null,
+    "VideoEncoder": null,
+    "HwVideoDecoder": null,
+    "HwVideoEncoder": null,
+    "HwCodecFallback": null,
+    "HwCodecBackends": null,
+    "HwCodecLoad": null
+   },
+   "scenario": "motion-sub",
+   "n": 1
+  },
+  {
+   "crashed": true,
+   "stat": {},
+   "scenario": "motion-sub",
+   "n": 2
+  },
+  {
+   "crashed": true,
+   "stat": {},
+   "scenario": "motion-sub",
+   "n": 4
+  },
+  {
+   "crashed": true,
+   "window_s": 7.0,
+   "stat": {
+    "VideoDecoder": null,
+    "VideoEncoder": null,
+    "HwVideoDecoder": null,
+    "HwVideoEncoder": null,
+    "HwCodecFallback": null,
+    "HwCodecBackends": null,
+    "HwCodecLoad": null
+   },
+   "scenario": "motion-main",
+   "n": 1
+  },
+  {
+   "crashed": true,
+   "stat": {},
+   "scenario": "motion-main",
+   "n": 2
+  },
+  {
+   "crashed": true,
+   "stat": {},
+   "scenario": "motion-main",
+   "n": 4
+  },
+  {
+   "crashed": true,
+   "window_s": 12.0,
+   "stat": {
+    "VideoDecoder": null,
+    "VideoEncoder": null,
+    "HwVideoDecoder": null,
+    "HwVideoEncoder": null,
+    "HwCodecFallback": null,
+    "HwCodecBackends": null,
+    "HwCodecLoad": null
+   },
+   "scenario": "transcode-overlay",
+   "n": 1,
+   "derived": 1,
+   "output": {
+    "codec_id_name": "H264",
+    "width": 1920,
+    "height": 1080,
+    "fps": 333.0
+   }
+  },
+  {
+   "window_s": 40.0,
+   "server_cpu_pct": 32.9,
+   "server_rss_mb": 424,
+   "system_cpu_pct": 6.6,
+   "drop_events": 40,
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 2,
+    "VideoEncoder": 2,
+    "HwVideoDecoder": 2,
+    "HwVideoEncoder": 1,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "vaapi",
+    "HwCodecLoad": "vaapi:/dev/dri/renderD128 dec=50 enc=5"
+   },
+   "viewer_fps_min": 0.0,
+   "viewer_fps_avg": 0.0,
+   "scenario": "transcode-overlay",
+   "n": 2,
+   "derived": 0,
+   "output": {}
+  },
+  {
+   "crashed": true,
+   "window_s": 15.0,
+   "stat": {
+    "VideoDecoder": null,
+    "VideoEncoder": null,
+    "HwVideoDecoder": null,
+    "HwVideoEncoder": null,
+    "HwCodecFallback": null,
+    "HwCodecBackends": null,
+    "HwCodecLoad": null
+   },
+   "scenario": "transcode-overlay",
+   "n": 4,
+   "derived": 0,
+   "output": {}
+  },
+  {
+   "scenario": "extract-overlay",
+   "n": 1,
+   "clip_s": 60,
+   "ok": true,
+   "job_wall_s": [
+    35.3
+   ],
+   "batch_wall_s": 36.3,
+   "child_cpu_s": 137.49,
+   "server_cpu_s": 9.86,
+   "gpu_jobs": 1,
+   "gpu_retry": 0,
+   "gpu": {
+    "3d": 7.3,
+    "copy": 0.0,
+    "videodecode": 22.6,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 0,
+    "VideoEncoder": 0,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "vaapi",
+    "HwCodecLoad": "vaapi:/dev/dri/renderD128 dec=0 enc=0"
+   },
+   "out_probe": {
+    "codec": "h264",
+    "size": "1920x1080",
+    "fps": "25/1",
+    "duration": "60.000000"
+   }
+  },
+  {
+   "scenario": "extract-overlay",
+   "n": 3,
+   "clip_s": 60,
+   "ok": true,
+   "job_wall_s": [
+    70.5,
+    70.5,
+    70.4
+   ],
+   "batch_wall_s": 72.6,
+   "child_cpu_s": 496.68,
+   "server_cpu_s": 22.81,
+   "gpu_jobs": 3,
+   "gpu_retry": 0,
+   "gpu": {
+    "3d": 8.5,
+    "copy": 0.0,
+    "videodecode": 27.9,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 0,
+    "VideoEncoder": 0,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "vaapi",
+    "HwCodecLoad": "vaapi:/dev/dri/renderD128 dec=0 enc=0"
+   },
+   "out_probe": {
+    "codec": "h264",
+    "size": "1920x1080",
+    "fps": "25/1",
+    "duration": "60.000000"
+   }
+  }
+ ],
+ "probe_log": [
+  "GPU backend cuda unavailable: Operation not permitted\u001b[0m",
+  "GPU backend vaapi: using /dev/dri/renderD128 (faux_driver)\u001b[0m",
+  "GPU backend vaapi:/dev/dri/renderD128: decode h264=1 h265=1, encode h264=1 h265=1\u001b[0m",
+  "GPU backend qsv unavailable: Input/output error\u001b[0m"
+ ],
+ "crashes": [
+  "stdout-motion-sub-1.log",
+  "stdout-motion-sub-2.log",
+  "stdout-motion-sub-4.log",
+  "stdout-motion-main-1.log",
+  "stdout-motion-main-2.log",
+  "stdout-motion-main-4.log",
+  "stdout-transcode-1.log",
+  "stdout-transcode-4.log"
+ ]
+}

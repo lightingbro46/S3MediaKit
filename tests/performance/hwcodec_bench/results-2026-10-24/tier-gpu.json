@@ -1,0 +1,448 @@
+{
+ "kind": "tier",
+ "mode": "gpu",
+ "machine": {
+  "cpu": "12th Gen Intel(R) Core(TM) i7-12700H",
+  "vcpu": 8,
+  "mem_mb": 7941,
+  "ffmpeg": "ffmpeg version n7.1.5 Copyright (c) 2000-2026 the FFmpeg developers",
+  "va_driver": "Mesa Gallium driver 23.2.1-1ubuntu3.1~22.04.4 for D3D12 (Intel(R) Iris(R) Xe Graphics)",
+  "kernel": "6.18.33.2-microsoft-standard-WSL2"
+ },
+ "runs": [
+  {
+   "source": "h264",
+   "target": "H264",
+   "profile": "1280x720:15:1500",
+   "ok": true,
+   "runs": [
+    {
+     "hw": 1,
+     "codec": "H264",
+     "rep": 0,
+     "encoder": "h264_vaapi",
+     "wall_s": 13.2769,
+     "child_cpu_s": 4.56491,
+     "bytes": 11317038,
+     "backends": "vaapi",
+     "source": "h264",
+     "profile": "1280x720:15:1500"
+    },
+    {
+     "hw": 1,
+     "codec": "H264",
+     "rep": 1,
+     "encoder": "h264_vaapi",
+     "wall_s": 13.5798,
+     "child_cpu_s": 4.65163,
+     "bytes": 11317038,
+     "backends": "vaapi",
+     "source": "h264",
+     "profile": "1280x720:15:1500"
+    },
+    {
+     "hw": 1,
+     "codec": "H264",
+     "rep": 2,
+     "encoder": "h264_vaapi",
+     "wall_s": 13.8008,
+     "child_cpu_s": 4.73646,
+     "bytes": 11317038,
+     "backends": "vaapi",
+     "source": "h264",
+     "profile": "1280x720:15:1500"
+    }
+   ],
+   "levels": [
+    "L1"
+   ],
+   "gpu": {
+    "3d": 5.8,
+    "copy": 0.0,
+    "videodecode": 37.5,
+    "videoprocessing": 14.0
+   },
+   "tail": ""
+  },
+  {
+   "source": "h264",
+   "target": "H264",
+   "profile": "640x360:10:500",
+   "ok": true,
+   "runs": [
+    {
+     "hw": 1,
+     "codec": "H264",
+     "rep": 0,
+     "encoder": "h264_vaapi",
+     "wall_s": 9.09175,
+     "child_cpu_s": 3.48502,
+     "bytes": 3784477,
+     "backends": "vaapi",
+     "source": "h264",
+     "profile": "640x360:10:500"
+    },
+    {
+     "hw": 1,
+     "codec": "H264",
+     "rep": 1,
+     "encoder": "h264_vaapi",
+     "wall_s": 9.03787,
+     "child_cpu_s": 3.47657,
+     "bytes": 3784477,
+     "backends": "vaapi",
+     "source": "h264",
+     "profile": "640x360:10:500"
+    },
+    {
+     "hw": 1,
+     "codec": "H264",
+     "rep": 2,
+     "encoder": "h264_vaapi",
+     "wall_s": 9.03673,
+     "child_cpu_s": 3.44733,
+     "bytes": 3784477,
+     "backends": "vaapi",
+     "source": "h264",
+     "profile": "640x360:10:500"
+    }
+   ],
+   "levels": [
+    "L1"
+   ],
+   "gpu": {
+    "3d": 5.7,
+    "copy": 0.0,
+    "videodecode": 33.5,
+    "videoprocessing": 12.3
+   },
+   "tail": ""
+  },
+  {
+   "source": "h264",
+   "target": "H265",
+   "profile": "1280x720:15:1500",
+   "ok": true,
+   "runs": [
+    {
+     "hw": 1,
+     "codec": "H265",
+     "rep": 0,
+     "encoder": "hevc_vaapi",
+     "wall_s": 13.5379,
+     "child_cpu_s": 4.82322,
+     "bytes": 11239541,
+     "backends": "vaapi",
+     "source": "h264",
+     "profile": "1280x720:15:1500"
+    },
+    {
+     "hw": 1,
+     "codec": "H265",
+     "rep": 1,
+     "encoder": "hevc_vaapi",
+     "wall_s": 14.5667,
+     "child_cpu_s": 5.55004,
+     "bytes": 11239541,
+     "backends": "vaapi",
+     "source": "h264",
+     "profile": "1280x720:15:1500"
+    },
+    {
+     "hw": 1,
+     "codec": "H265",
+     "rep": 2,
+     "encoder": "hevc_vaapi",
+     "wall_s": 12.8961,
+     "child_cpu_s": 4.60731,
+     "bytes": 11239541,
+     "backends": "vaapi",
+     "source": "h264",
+     "profile": "1280x720:15:1500"
+    }
+   ],
+   "levels": [
+    "L1"
+   ],
+   "gpu": {
+    "3d": 8.3,
+    "copy": 0.0,
+    "videodecode": 33.3,
+    "videoprocessing": 12.6
+   },
+   "tail": ""
+  },
+  {
+   "source": "h264",
+   "target": "H265",
+   "profile": "640x360:10:500",
+   "ok": true,
+   "runs": [
+    {
+     "hw": 1,
+     "codec": "H265",
+     "rep": 0,
+     "encoder": "hevc_vaapi",
+     "wall_s": 9.18887,
+     "child_cpu_s": 3.73801,
+     "bytes": 3738490,
+     "backends": "vaapi",
+     "source": "h264",
+     "profile": "640x360:10:500"
+    },
+    {
+     "hw": 1,
+     "codec": "H265",
+     "rep": 1,
+     "encoder": "hevc_vaapi",
+     "wall_s": 9.12657,
+     "child_cpu_s": 3.45631,
+     "bytes": 3738490,
+     "backends": "vaapi",
+     "source": "h264",
+     "profile": "640x360:10:500"
+    },
+    {
+     "hw": 1,
+     "codec": "H265",
+     "rep": 2,
+     "encoder": "hevc_vaapi",
+     "wall_s": 8.57577,
+     "child_cpu_s": 3.30674,
+     "bytes": 3738490,
+     "backends": "vaapi",
+     "source": "h264",
+     "profile": "640x360:10:500"
+    }
+   ],
+   "levels": [
+    "L1"
+   ],
+   "gpu": {
+    "3d": 6.6,
+    "copy": 0.0,
+    "videodecode": 33.4,
+    "videoprocessing": 12.5
+   },
+   "tail": ""
+  },
+  {
+   "source": "hevc",
+   "target": "H264",
+   "profile": "1280x720:15:1500",
+   "ok": true,
+   "runs": [
+    {
+     "hw": 1,
+     "codec": "H264",
+     "rep": 0,
+     "encoder": "h264_vaapi",
+     "wall_s": 13.0581,
+     "child_cpu_s": 4.4051,
+     "bytes": 11326507,
+     "backends": "vaapi",
+     "source": "hevc",
+     "profile": "1280x720:15:1500"
+    },
+    {
+     "hw": 1,
+     "codec": "H264",
+     "rep": 1,
+     "encoder": "h264_vaapi",
+     "wall_s": 13.3917,
+     "child_cpu_s": 4.43586,
+     "bytes": 11326507,
+     "backends": "vaapi",
+     "source": "hevc",
+     "profile": "1280x720:15:1500"
+    },
+    {
+     "hw": 1,
+     "codec": "H264",
+     "rep": 2,
+     "encoder": "h264_vaapi",
+     "wall_s": 13.4205,
+     "child_cpu_s": 4.45534,
+     "bytes": 11326507,
+     "backends": "vaapi",
+     "source": "hevc",
+     "profile": "1280x720:15:1500"
+    }
+   ],
+   "levels": [
+    "L1"
+   ],
+   "gpu": {
+    "3d": 6.2,
+    "copy": 0.0,
+    "videodecode": 30.6,
+    "videoprocessing": 13.1
+   },
+   "tail": ""
+  },
+  {
+   "source": "hevc",
+   "target": "H264",
+   "profile": "640x360:10:500",
+   "ok": true,
+   "runs": [
+    {
+     "hw": 1,
+     "codec": "H264",
+     "rep": 0,
+     "encoder": "h264_vaapi",
+     "wall_s": 9.33931,
+     "child_cpu_s": 3.46174,
+     "bytes": 3779482,
+     "backends": "vaapi",
+     "source": "hevc",
+     "profile": "640x360:10:500"
+    },
+    {
+     "hw": 1,
+     "codec": "H264",
+     "rep": 1,
+     "encoder": "h264_vaapi",
+     "wall_s": 9.48689,
+     "child_cpu_s": 3.45677,
+     "bytes": 3779482,
+     "backends": "vaapi",
+     "source": "hevc",
+     "profile": "640x360:10:500"
+    },
+    {
+     "hw": 1,
+     "codec": "H264",
+     "rep": 2,
+     "encoder": "h264_vaapi",
+     "wall_s": 9.2082,
+     "child_cpu_s": 3.51743,
+     "bytes": 3779482,
+     "backends": "vaapi",
+     "source": "hevc",
+     "profile": "640x360:10:500"
+    }
+   ],
+   "levels": [
+    "L1"
+   ],
+   "gpu": {
+    "3d": 7.2,
+    "copy": 0.0,
+    "videodecode": 28.5,
+    "videoprocessing": 12.6
+   },
+   "tail": ""
+  },
+  {
+   "source": "hevc",
+   "target": "H265",
+   "profile": "1280x720:15:1500",
+   "ok": true,
+   "runs": [
+    {
+     "hw": 1,
+     "codec": "H265",
+     "rep": 0,
+     "encoder": "hevc_vaapi",
+     "wall_s": 13.191,
+     "child_cpu_s": 4.6446,
+     "bytes": 11238818,
+     "backends": "vaapi",
+     "source": "hevc",
+     "profile": "1280x720:15:1500"
+    },
+    {
+     "hw": 1,
+     "codec": "H265",
+     "rep": 1,
+     "encoder": "hevc_vaapi",
+     "wall_s": 23.1111,
+     "child_cpu_s": 18.3719,
+     "bytes": 11239570,
+     "backends": "vaapi",
+     "source": "hevc",
+     "profile": "1280x720:15:1500"
+    },
+    {
+     "hw": 1,
+     "codec": "H265",
+     "rep": 2,
+     "encoder": "hevc_vaapi",
+     "wall_s": 9.6008,
+     "child_cpu_s": 18.5624,
+     "bytes": 11239570,
+     "backends": "vaapi",
+     "source": "hevc",
+     "profile": "1280x720:15:1500"
+    }
+   ],
+   "levels": [
+    "L1",
+    "L2"
+   ],
+   "gpu": {
+    "3d": 7.0,
+    "copy": 0.0,
+    "videodecode": 16.4,
+    "videoprocessing": 4.0
+   },
+   "tail": ""
+  },
+  {
+   "source": "hevc",
+   "target": "H265",
+   "profile": "640x360:10:500",
+   "ok": true,
+   "runs": [
+    {
+     "hw": 1,
+     "codec": "H265",
+     "rep": 0,
+     "encoder": "hevc_vaapi",
+     "wall_s": 10.2167,
+     "child_cpu_s": 4.06701,
+     "bytes": 3757447,
+     "backends": "vaapi",
+     "source": "hevc",
+     "profile": "640x360:10:500"
+    },
+    {
+     "hw": 1,
+     "codec": "H265",
+     "rep": 1,
+     "encoder": "hevc_vaapi",
+     "wall_s": 9.49217,
+     "child_cpu_s": 3.71524,
+     "bytes": 3757447,
+     "backends": "vaapi",
+     "source": "hevc",
+     "profile": "640x360:10:500"
+    },
+    {
+     "hw": 1,
+     "codec": "H265",
+     "rep": 2,
+     "encoder": "hevc_vaapi",
+     "wall_s": 14.2422,
+     "child_cpu_s": 16.0292,
+     "bytes": 3755440,
+     "backends": "vaapi",
+     "source": "hevc",
+     "profile": "640x360:10:500"
+    }
+   ],
+   "levels": [
+    "L1",
+    "L2"
+   ],
+   "gpu": {
+    "3d": 5.9,
+    "copy": 0.0,
+    "videodecode": 17.0,
+    "videoprocessing": 7.3
+   },
+   "tail": ""
+  }
+ ]
+}

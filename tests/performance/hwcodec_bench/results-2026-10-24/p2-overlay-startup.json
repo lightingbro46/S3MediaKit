@@ -1,0 +1,66 @@
+{
+ "kind": "live",
+ "mode": "cpu",
+ "machine": {
+  "cpu": "12th Gen Intel(R) Core(TM) i7-12700H",
+  "vcpu": 8,
+  "mem_mb": 7941,
+  "ffmpeg": "ffmpeg version n7.1.5 Copyright (c) 2000-2026 the FFmpeg developers",
+  "va_driver": "Mesa Gallium driver 23.2.1-1ubuntu3.1~22.04.4 for D3D12 (Intel(R) Iris(R) Xe Graphics)",
+  "kernel": "6.18.33.2-microsoft-standard-WSL2"
+ },
+ "cameras": 6,
+ "ini": "manager.mediaServerProjectId=e2e-project",
+ "steps": [],
+ "p2": [
+  {
+   "cam": "cam-00",
+   "t": 3.0,
+   "http": 404,
+   "bytes": 193,
+   "derived": false,
+   "video": "<html><head><title>404 Not Found</title></head><body bgcolor"
+  },
+  {
+   "cam": "cam-01",
+   "t": 6.0,
+   "http": 200,
+   "bytes": 1006550,
+   "derived": true,
+   "video": "1920,1080,5/1"
+  },
+  {
+   "cam": "cam-02",
+   "t": 9.0,
+   "http": 200,
+   "bytes": 1411002,
+   "derived": true,
+   "video": "1920,1080,5/1"
+  },
+  {
+   "cam": "cam-03",
+   "t": 12.0,
+   "http": 200,
+   "bytes": 1876366,
+   "derived": true,
+   "video": "1920,1080,5/1"
+  },
+  {
+   "cam": "cam-04",
+   "t": 15.0,
+   "http": 200,
+   "bytes": 2299069,
+   "derived": true,
+   "video": "1920,1080,5/1"
+  },
+  {
+   "cam": "cam-05",
+   "t": 18.0,
+   "http": 200,
+   "bytes": 2797539,
+   "derived": true,
+   "video": "1920,1080,5/1"
+  }
+ ],
+ "probe_log": []
+}

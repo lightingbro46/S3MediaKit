@@ -1,0 +1,446 @@
+{
+ "kind": "tier",
+ "mode": "cpu",
+ "machine": {
+  "cpu": "12th Gen Intel(R) Core(TM) i7-12700H",
+  "vcpu": 8,
+  "mem_mb": 7941,
+  "ffmpeg": "ffmpeg version n7.1.5 Copyright (c) 2000-2026 the FFmpeg developers",
+  "va_driver": "Mesa Gallium driver 23.2.1-1ubuntu3.1~22.04.4 for D3D12 (Intel(R) Iris(R) Xe Graphics)",
+  "kernel": "6.18.33.2-microsoft-standard-WSL2"
+ },
+ "runs": [
+  {
+   "source": "h264",
+   "target": "H264",
+   "profile": "1280x720:15:1500",
+   "ok": true,
+   "runs": [
+    {
+     "hw": 0,
+     "codec": "H264",
+     "rep": 0,
+     "encoder": "libx264",
+     "wall_s": 6.39753,
+     "child_cpu_s": 42.1308,
+     "bytes": 11355566,
+     "backends": "",
+     "source": "h264",
+     "profile": "1280x720:15:1500"
+    },
+    {
+     "hw": 0,
+     "codec": "H264",
+     "rep": 1,
+     "encoder": "libx264",
+     "wall_s": 9.25594,
+     "child_cpu_s": 64.3144,
+     "bytes": 11355566,
+     "backends": "",
+     "source": "h264",
+     "profile": "1280x720:15:1500"
+    },
+    {
+     "hw": 0,
+     "codec": "H264",
+     "rep": 2,
+     "encoder": "libx264",
+     "wall_s": 7.77425,
+     "child_cpu_s": 53.4211,
+     "bytes": 11355566,
+     "backends": "",
+     "source": "h264",
+     "profile": "1280x720:15:1500"
+    }
+   ],
+   "levels": [
+    "L3"
+   ],
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "tail": ""
+  },
+  {
+   "source": "h264",
+   "target": "H264",
+   "profile": "640x360:10:500",
+   "ok": true,
+   "runs": [
+    {
+     "hw": 0,
+     "codec": "H264",
+     "rep": 0,
+     "encoder": "libx264",
+     "wall_s": 2.81342,
+     "child_cpu_s": 17.7708,
+     "bytes": 3788012,
+     "backends": "",
+     "source": "h264",
+     "profile": "640x360:10:500"
+    },
+    {
+     "hw": 0,
+     "codec": "H264",
+     "rep": 1,
+     "encoder": "libx264",
+     "wall_s": 4.01853,
+     "child_cpu_s": 26.1244,
+     "bytes": 3788012,
+     "backends": "",
+     "source": "h264",
+     "profile": "640x360:10:500"
+    },
+    {
+     "hw": 0,
+     "codec": "H264",
+     "rep": 2,
+     "encoder": "libx264",
+     "wall_s": 3.3448,
+     "child_cpu_s": 21.3986,
+     "bytes": 3788012,
+     "backends": "",
+     "source": "h264",
+     "profile": "640x360:10:500"
+    }
+   ],
+   "levels": [
+    "L3"
+   ],
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "tail": ""
+  },
+  {
+   "source": "h264",
+   "target": "H265",
+   "profile": "1280x720:15:1500",
+   "ok": true,
+   "runs": [
+    {
+     "hw": 0,
+     "codec": "H265",
+     "rep": 0,
+     "encoder": "libx265",
+     "wall_s": 21.0676,
+     "child_cpu_s": 94.9677,
+     "bytes": 11305925,
+     "backends": "",
+     "source": "h264",
+     "profile": "1280x720:15:1500"
+    },
+    {
+     "hw": 0,
+     "codec": "H265",
+     "rep": 1,
+     "encoder": "libx265",
+     "wall_s": 20.5881,
+     "child_cpu_s": 93.4243,
+     "bytes": 11305925,
+     "backends": "",
+     "source": "h264",
+     "profile": "1280x720:15:1500"
+    },
+    {
+     "hw": 0,
+     "codec": "H265",
+     "rep": 2,
+     "encoder": "libx265",
+     "wall_s": 20.9426,
+     "child_cpu_s": 95.0651,
+     "bytes": 11305925,
+     "backends": "",
+     "source": "h264",
+     "profile": "1280x720:15:1500"
+    }
+   ],
+   "levels": [
+    "L3"
+   ],
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "tail": ""
+  },
+  {
+   "source": "h264",
+   "target": "H265",
+   "profile": "640x360:10:500",
+   "ok": true,
+   "runs": [
+    {
+     "hw": 0,
+     "codec": "H265",
+     "rep": 0,
+     "encoder": "libx265",
+     "wall_s": 7.55014,
+     "child_cpu_s": 25.7688,
+     "bytes": 3804082,
+     "backends": "",
+     "source": "h264",
+     "profile": "640x360:10:500"
+    },
+    {
+     "hw": 0,
+     "codec": "H265",
+     "rep": 1,
+     "encoder": "libx265",
+     "wall_s": 7.54265,
+     "child_cpu_s": 25.7327,
+     "bytes": 3804082,
+     "backends": "",
+     "source": "h264",
+     "profile": "640x360:10:500"
+    },
+    {
+     "hw": 0,
+     "codec": "H265",
+     "rep": 2,
+     "encoder": "libx265",
+     "wall_s": 7.5347,
+     "child_cpu_s": 25.7342,
+     "bytes": 3804082,
+     "backends": "",
+     "source": "h264",
+     "profile": "640x360:10:500"
+    }
+   ],
+   "levels": [
+    "L3"
+   ],
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "tail": ""
+  },
+  {
+   "source": "hevc",
+   "target": "H264",
+   "profile": "1280x720:15:1500",
+   "ok": true,
+   "runs": [
+    {
+     "hw": 0,
+     "codec": "H264",
+     "rep": 0,
+     "encoder": "libx264",
+     "wall_s": 8.33697,
+     "child_cpu_s": 56.966,
+     "bytes": 11286728,
+     "backends": "",
+     "source": "hevc",
+     "profile": "1280x720:15:1500"
+    },
+    {
+     "hw": 0,
+     "codec": "H264",
+     "rep": 1,
+     "encoder": "libx264",
+     "wall_s": 9.06537,
+     "child_cpu_s": 63.4133,
+     "bytes": 11286728,
+     "backends": "",
+     "source": "hevc",
+     "profile": "1280x720:15:1500"
+    },
+    {
+     "hw": 0,
+     "codec": "H264",
+     "rep": 2,
+     "encoder": "libx264",
+     "wall_s": 9.03556,
+     "child_cpu_s": 63.0428,
+     "bytes": 11286728,
+     "backends": "",
+     "source": "hevc",
+     "profile": "1280x720:15:1500"
+    }
+   ],
+   "levels": [
+    "L3"
+   ],
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "tail": ""
+  },
+  {
+   "source": "hevc",
+   "target": "H264",
+   "profile": "640x360:10:500",
+   "ok": true,
+   "runs": [
+    {
+     "hw": 0,
+     "codec": "H264",
+     "rep": 0,
+     "encoder": "libx264",
+     "wall_s": 4.41068,
+     "child_cpu_s": 20.866,
+     "bytes": 3786795,
+     "backends": "",
+     "source": "hevc",
+     "profile": "640x360:10:500"
+    },
+    {
+     "hw": 0,
+     "codec": "H264",
+     "rep": 1,
+     "encoder": "libx264",
+     "wall_s": 5.64644,
+     "child_cpu_s": 27.0368,
+     "bytes": 3786795,
+     "backends": "",
+     "source": "hevc",
+     "profile": "640x360:10:500"
+    },
+    {
+     "hw": 0,
+     "codec": "H264",
+     "rep": 2,
+     "encoder": "libx264",
+     "wall_s": 5.63512,
+     "child_cpu_s": 27.032,
+     "bytes": 3786795,
+     "backends": "",
+     "source": "hevc",
+     "profile": "640x360:10:500"
+    }
+   ],
+   "levels": [
+    "L3"
+   ],
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "tail": ""
+  },
+  {
+   "source": "hevc",
+   "target": "H265",
+   "profile": "1280x720:15:1500",
+   "ok": true,
+   "runs": [
+    {
+     "hw": 0,
+     "codec": "H265",
+     "rep": 0,
+     "encoder": "libx265",
+     "wall_s": 20.583,
+     "child_cpu_s": 91.3497,
+     "bytes": 11323508,
+     "backends": "",
+     "source": "hevc",
+     "profile": "1280x720:15:1500"
+    },
+    {
+     "hw": 0,
+     "codec": "H265",
+     "rep": 1,
+     "encoder": "libx265",
+     "wall_s": 21.2662,
+     "child_cpu_s": 95.3741,
+     "bytes": 11323508,
+     "backends": "",
+     "source": "hevc",
+     "profile": "1280x720:15:1500"
+    },
+    {
+     "hw": 0,
+     "codec": "H265",
+     "rep": 2,
+     "encoder": "libx265",
+     "wall_s": 21.6679,
+     "child_cpu_s": 96.7195,
+     "bytes": 11323508,
+     "backends": "",
+     "source": "hevc",
+     "profile": "1280x720:15:1500"
+    }
+   ],
+   "levels": [
+    "L3"
+   ],
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "tail": ""
+  },
+  {
+   "source": "hevc",
+   "target": "H265",
+   "profile": "640x360:10:500",
+   "ok": true,
+   "runs": [
+    {
+     "hw": 0,
+     "codec": "H265",
+     "rep": 0,
+     "encoder": "libx265",
+     "wall_s": 7.55272,
+     "child_cpu_s": 29.0122,
+     "bytes": 3793433,
+     "backends": "",
+     "source": "hevc",
+     "profile": "640x360:10:500"
+    },
+    {
+     "hw": 0,
+     "codec": "H265",
+     "rep": 1,
+     "encoder": "libx265",
+     "wall_s": 7.97258,
+     "child_cpu_s": 30.5734,
+     "bytes": 3793433,
+     "backends": "",
+     "source": "hevc",
+     "profile": "640x360:10:500"
+    },
+    {
+     "hw": 0,
+     "codec": "H265",
+     "rep": 2,
+     "encoder": "libx265",
+     "wall_s": 8.80634,
+     "child_cpu_s": 33.7609,
+     "bytes": 3793433,
+     "backends": "",
+     "source": "hevc",
+     "profile": "640x360:10:500"
+    }
+   ],
+   "levels": [
+    "L3"
+   ],
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "tail": ""
+  }
+ ]
+}

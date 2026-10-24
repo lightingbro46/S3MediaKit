@@ -1,0 +1,235 @@
+{
+ "kind": "raw",
+ "machine": {
+  "cpu": "12th Gen Intel(R) Core(TM) i7-12700H",
+  "vcpu": 8,
+  "mem_mb": 7941,
+  "ffmpeg": "ffmpeg version n7.1.5 Copyright (c) 2000-2026 the FFmpeg developers",
+  "va_driver": "Mesa Gallium driver 23.2.1-1ubuntu3.1~22.04.4 for D3D12 (Intel(R) Iris(R) Xe Graphics)",
+  "kernel": "6.18.33.2-microsoft-standard-WSL2"
+ },
+ "idle_gpu": {
+  "3d": 0.0,
+  "copy": 0.0,
+  "videodecode": 0.0,
+  "videoprocessing": 0.0
+ },
+ "cases": [
+  {
+   "ok": true,
+   "wall_s": 1.52,
+   "cpu_s": 6.96,
+   "err": "",
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "case": "decode-h264-1080p",
+   "mode": "cpu",
+   "parallel": 1,
+   "fps_total": 986.8,
+   "cpu_ms_per_frame": 4.64,
+   "cpu_cores": 4.58
+  },
+  {
+   "ok": true,
+   "wall_s": 3.9,
+   "cpu_s": 27.16,
+   "err": "",
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "case": "decode-h264-1080p",
+   "mode": "cpu",
+   "parallel": 4,
+   "fps_total": 1538.5,
+   "cpu_ms_per_frame": 4.53,
+   "cpu_cores": 6.96
+  },
+  {
+   "ok": true,
+   "wall_s": 23.42,
+   "cpu_s": 7.88,
+   "err": "",
+   "gpu": {
+    "3d": 29.3,
+    "copy": 0.0,
+    "videodecode": 15.3,
+    "videoprocessing": 0.0
+   },
+   "case": "decode-h264-1080p",
+   "mode": "gpu",
+   "parallel": 1,
+   "fps_total": 64.0,
+   "cpu_ms_per_frame": 5.25,
+   "cpu_cores": 0.34
+  },
+  {
+   "ok": true,
+   "wall_s": 14.42,
+   "cpu_s": 26.63,
+   "err": "",
+   "gpu": {
+    "3d": 77.8,
+    "copy": 0.0,
+    "videodecode": 44.1,
+    "videoprocessing": 0.0
+   },
+   "case": "decode-h264-1080p",
+   "mode": "gpu",
+   "parallel": 4,
+   "fps_total": 416.1,
+   "cpu_ms_per_frame": 4.44,
+   "cpu_cores": 1.85
+  },
+  {
+   "ok": true,
+   "wall_s": 4.03,
+   "cpu_s": 10.37,
+   "err": "",
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "case": "decode-hevc-1080p",
+   "mode": "cpu",
+   "parallel": 1,
+   "fps_total": 372.2,
+   "cpu_ms_per_frame": 6.91,
+   "cpu_cores": 2.57
+  },
+  {
+   "ok": true,
+   "wall_s": 8.04,
+   "cpu_s": 54.34,
+   "err": "",
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "case": "decode-hevc-1080p",
+   "mode": "cpu",
+   "parallel": 4,
+   "fps_total": 746.3,
+   "cpu_ms_per_frame": 9.06,
+   "cpu_cores": 6.76
+  },
+  {
+   "ok": true,
+   "wall_s": 20.49,
+   "cpu_s": 6.83,
+   "err": "",
+   "gpu": {
+    "3d": 32.4,
+    "copy": 0.0,
+    "videodecode": 13.3,
+    "videoprocessing": 0.0
+   },
+   "case": "decode-hevc-1080p",
+   "mode": "gpu",
+   "parallel": 1,
+   "fps_total": 73.2,
+   "cpu_ms_per_frame": 4.55,
+   "cpu_cores": 0.33
+  },
+  {
+   "ok": true,
+   "wall_s": 13.84,
+   "cpu_s": 26.22,
+   "err": "",
+   "gpu": {
+    "3d": 60.0,
+    "copy": 0.0,
+    "videodecode": 23.8,
+    "videoprocessing": 0.0
+   },
+   "case": "decode-hevc-1080p",
+   "mode": "gpu",
+   "parallel": 4,
+   "fps_total": 433.5,
+   "cpu_ms_per_frame": 4.37,
+   "cpu_cores": 1.89
+  },
+  {
+   "ok": true,
+   "wall_s": 3.01,
+   "cpu_s": 10.89,
+   "err": "",
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "case": "encode-h264-1080p",
+   "mode": "cpu",
+   "parallel": 1,
+   "fps_total": 199.3,
+   "cpu_ms_per_frame": 18.15,
+   "cpu_cores": 3.62
+  },
+  {
+   "ok": true,
+   "wall_s": 8.58,
+   "cpu_s": 54.9,
+   "err": "",
+   "gpu": {
+    "3d": 0.0,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "case": "encode-h264-1080p",
+   "mode": "cpu",
+   "parallel": 4,
+   "fps_total": 279.7,
+   "cpu_ms_per_frame": 22.88,
+   "cpu_cores": 6.4
+  },
+  {
+   "ok": true,
+   "wall_s": 10.46,
+   "cpu_s": 4.09,
+   "err": "",
+   "gpu": {
+    "3d": 8.8,
+    "copy": 0.0,
+    "videodecode": 28.2,
+    "videoprocessing": 0.0
+   },
+   "case": "encode-h264-1080p",
+   "mode": "gpu",
+   "parallel": 1,
+   "fps_total": 57.4,
+   "cpu_ms_per_frame": 6.82,
+   "cpu_cores": 0.39
+  },
+  {
+   "ok": true,
+   "wall_s": 7.21,
+   "cpu_s": 13.77,
+   "err": "",
+   "gpu": {
+    "3d": 30.9,
+    "copy": 0.0,
+    "videodecode": 96.6,
+    "videoprocessing": 0.0
+   },
+   "case": "encode-h264-1080p",
+   "mode": "gpu",
+   "parallel": 4,
+   "fps_total": 332.9,
+   "cpu_ms_per_frame": 5.74,
+   "cpu_cores": 1.91
+  }
+ ]
+}

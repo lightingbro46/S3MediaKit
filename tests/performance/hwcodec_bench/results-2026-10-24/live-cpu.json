@@ -1,0 +1,378 @@
+{
+ "kind": "live",
+ "mode": "cpu",
+ "machine": {
+  "cpu": "12th Gen Intel(R) Core(TM) i7-12700H",
+  "vcpu": 8,
+  "mem_mb": 7941,
+  "ffmpeg": "ffmpeg version n7.1.5 Copyright (c) 2000-2026 the FFmpeg developers",
+  "va_driver": "Mesa Gallium driver 23.2.1-1ubuntu3.1~22.04.4 for D3D12 (Intel(R) Iris(R) Xe Graphics)",
+  "kernel": "6.18.33.2-microsoft-standard-WSL2"
+ },
+ "cameras": 16,
+ "ini": "",
+ "steps": [
+  {
+   "window_s": 40.0,
+   "server_cpu_pct": 25.8,
+   "server_rss_mb": 210,
+   "system_cpu_pct": 4.0,
+   "drop_events": 0,
+   "restart_churn": 0,
+   "gpu": {
+    "3d": 0.6,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 0,
+    "VideoEncoder": 0,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "",
+    "HwCodecLoad": ""
+   },
+   "scenario": "idle",
+   "n": 0
+  },
+  {
+   "window_s": 40.0,
+   "server_cpu_pct": 33.0,
+   "server_rss_mb": 259,
+   "system_cpu_pct": 5.3,
+   "drop_events": 0,
+   "restart_churn": 4,
+   "gpu": {
+    "3d": 0.3,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 1,
+    "VideoEncoder": 0,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "",
+    "HwCodecLoad": ""
+   },
+   "scenario": "motion-sub",
+   "n": 1
+  },
+  {
+   "window_s": 40.0,
+   "server_cpu_pct": 37.0,
+   "server_rss_mb": 377,
+   "system_cpu_pct": 6.6,
+   "drop_events": 0,
+   "restart_churn": 12,
+   "gpu": {
+    "3d": 2.8,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 4,
+    "VideoEncoder": 0,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "",
+    "HwCodecLoad": ""
+   },
+   "scenario": "motion-sub",
+   "n": 4
+  },
+  {
+   "window_s": 40.0,
+   "server_cpu_pct": 54.8,
+   "server_rss_mb": 422,
+   "system_cpu_pct": 9.0,
+   "drop_events": 0,
+   "restart_churn": 16,
+   "gpu": {
+    "3d": 3.8,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 8,
+    "VideoEncoder": 0,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "",
+    "HwCodecLoad": ""
+   },
+   "scenario": "motion-sub",
+   "n": 8
+  },
+  {
+   "window_s": 40.0,
+   "server_cpu_pct": 71.8,
+   "server_rss_mb": 708,
+   "system_cpu_pct": 11.8,
+   "drop_events": 0,
+   "restart_churn": 32,
+   "gpu": {
+    "3d": 4.6,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 16,
+    "VideoEncoder": 0,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "",
+    "HwCodecLoad": ""
+   },
+   "scenario": "motion-sub",
+   "n": 16
+  },
+  {
+   "window_s": 40.0,
+   "server_cpu_pct": 46.8,
+   "server_rss_mb": 665,
+   "system_cpu_pct": 7.6,
+   "drop_events": 0,
+   "restart_churn": 63,
+   "gpu": {
+    "3d": 7.7,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 1,
+    "VideoEncoder": 0,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "",
+    "HwCodecLoad": ""
+   },
+   "scenario": "motion-main",
+   "n": 1
+  },
+  {
+   "window_s": 40.0,
+   "server_cpu_pct": 93.4,
+   "server_rss_mb": 868,
+   "system_cpu_pct": 14.5,
+   "drop_events": 0,
+   "restart_churn": 12,
+   "gpu": {
+    "3d": 3.1,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 4,
+    "VideoEncoder": 0,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "",
+    "HwCodecLoad": ""
+   },
+   "scenario": "motion-main",
+   "n": 4
+  },
+  {
+   "window_s": 40.0,
+   "server_cpu_pct": 150.8,
+   "server_rss_mb": 1584,
+   "system_cpu_pct": 22.5,
+   "drop_events": 0,
+   "restart_churn": 16,
+   "gpu": {
+    "3d": 2.9,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 8,
+    "VideoEncoder": 0,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "",
+    "HwCodecLoad": ""
+   },
+   "scenario": "motion-main",
+   "n": 8
+  },
+  {
+   "window_s": 40.1,
+   "server_cpu_pct": 290.3,
+   "server_rss_mb": 3149,
+   "system_cpu_pct": 39.0,
+   "drop_events": 0,
+   "restart_churn": 32,
+   "gpu": {
+    "3d": 4.2,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 16,
+    "VideoEncoder": 0,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "",
+    "HwCodecLoad": ""
+   },
+   "scenario": "motion-main",
+   "n": 16
+  },
+  {
+   "window_s": 40.0,
+   "server_cpu_pct": 60.1,
+   "server_rss_mb": 379,
+   "system_cpu_pct": 10.1,
+   "drop_events": 0,
+   "restart_churn": 64,
+   "gpu": {
+    "3d": 3.9,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 1,
+    "VideoEncoder": 1,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "",
+    "HwCodecLoad": ""
+   },
+   "viewer_fps_min": 5.0,
+   "viewer_fps_avg": 5.0,
+   "scenario": "transcode-overlay",
+   "n": 1,
+   "derived": 1,
+   "output": {
+    "codec_id_name": "H264",
+    "width": 1920,
+    "height": 1080,
+    "fps": 5.0
+   }
+  },
+  {
+   "window_s": 40.0,
+   "server_cpu_pct": 74.8,
+   "server_rss_mb": 410,
+   "system_cpu_pct": 11.6,
+   "drop_events": 0,
+   "restart_churn": 0,
+   "gpu": {
+    "3d": 6.7,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 2,
+    "VideoEncoder": 2,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "",
+    "HwCodecLoad": ""
+   },
+   "viewer_fps_min": 5.0,
+   "viewer_fps_avg": 5.0,
+   "scenario": "transcode-overlay",
+   "n": 2,
+   "derived": 2,
+   "output": {
+    "codec_id_name": "H264",
+    "width": 1920,
+    "height": 1080,
+    "fps": 5.0
+   }
+  },
+  {
+   "window_s": 40.0,
+   "server_cpu_pct": 104.1,
+   "server_rss_mb": 550,
+   "system_cpu_pct": 16.3,
+   "drop_events": 0,
+   "restart_churn": 0,
+   "gpu": {
+    "3d": 3.1,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 4,
+    "VideoEncoder": 4,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "",
+    "HwCodecLoad": ""
+   },
+   "viewer_fps_min": 5.0,
+   "viewer_fps_avg": 5.0,
+   "scenario": "transcode-overlay",
+   "n": 4,
+   "derived": 3,
+   "output": {
+    "codec_id_name": "H264",
+    "width": 1920,
+    "height": 1080,
+    "fps": 5.0
+   }
+  },
+  {
+   "window_s": 40.0,
+   "server_cpu_pct": 197.8,
+   "server_rss_mb": 931,
+   "system_cpu_pct": 29.1,
+   "drop_events": 0,
+   "restart_churn": 0,
+   "gpu": {
+    "3d": 2.8,
+    "copy": 0.0,
+    "videodecode": 0.0,
+    "videoprocessing": 0.0
+   },
+   "stat": {
+    "VideoDecoder": 8,
+    "VideoEncoder": 8,
+    "HwVideoDecoder": 0,
+    "HwVideoEncoder": 0,
+    "HwCodecFallback": 0,
+    "HwCodecBackends": "",
+    "HwCodecLoad": ""
+   },
+   "viewer_fps_min": 5.0,
+   "viewer_fps_avg": 5.0,
+   "scenario": "transcode-overlay",
+   "n": 8,
+   "derived": 8,
+   "output": {
+    "codec_id_name": "H264",
+    "width": 1920,
+    "height": 1080,
+    "fps": 5.0
+   }
+  }
+ ],
+ "probe_log": []
+}
