@@ -411,7 +411,9 @@ void MultiMediaSourceProcessor::onDecode(const FFmpegFrame::Ptr &frame) {
         ring = _ring;
     }
     if (ring) {
-        ring->write(input, frame->get() && frame->get()->key_frame > 0);
+        // Every frame starts its own GOP: the motion reader attaches without the cache, and caching a GOP of
+        // decoded frames costs ~150 MB per 1080p stream (up to 512 frames when the GPU path drops key_frame).
+        ring->write(input, true);
     }
 }
 

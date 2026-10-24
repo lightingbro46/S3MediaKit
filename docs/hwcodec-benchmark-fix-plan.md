@@ -209,6 +209,29 @@ frame thật sự nằm trong ring (thêm vào log debug tạm, không commit). 
 
 **Đạt:** có số đo và quyết định (sửa hoặc ghi giới hạn vào docs/hw-codec.md).
 
+**Kết quả (2026-10-24, nhánh `fix/decoder-self-join`).** Nguyên nhân là ring 512, đúng như nghi vấn, nhưng không
+cần log tạm để xác định.
+- Ring được tạo với `max_gop_size=1` và giữ trọn GOP hiện tại gồm các frame **đã giải mã**. Mỗi frame YUV 1080p
+  khoảng 3,1 MB; GOP 2 s ở 25 fps là 50 frame, tức khoảng 155 MB mỗi luồng.
+- Ở đường GPU, `toYuv420p` (`FFmpegSws::inputFrame` chỉ chép `pts`) làm mất `key_frame`, nên GOP không bao giờ
+  đóng: ring tích tới 512 frame (khoảng 1,6 GB) rồi mới xoá.
+- Reader duy nhất là motion, và motion attach với `use_cache=false`, nên cache này không ai đọc.
+- Sửa: `MultiMediaSourceProcessor::onDecode` ghi mọi frame với `is_key=true`, ring chỉ giữ frame mới nhất. Diff
+  một dòng.
+- Số đo RSS (harness, motion Main):
+
+  | Cấu hình | Trước | Sau |
+  |---|---|---|
+  | CPU, 1 luồng | 668 MB | 238 MB |
+  | CPU, 16 luồng | 2 850 MB | 545 MB |
+  | GPU, 2 luồng | 3 357 MB | 531 MB |
+
+- Chức năng giữ nguyên: 16/16 camera vẫn phát sự kiện motion; `motion.mjpeg` vẫn ra 24 JPEG trong 5 s (khoảng 5 fps,
+  khớp `intervalMS=200`).
+- Phần còn lại ở chế độ GPU, khoảng 135 MB mỗi decoder so với CPU, là pool surface VAAPI/d3d12. Không giới hạn thêm.
+- Chưa sửa: frame ra từ `toYuv420p` chỉ mang `pts`, còn các props khác như `key_frame` bị mất. Hiện không có
+  consumer nào cần các props đó.
+
 ## P6 — Tier transcode HEVC → H.265, L1 lỗi
 
 **Bước làm.** Chạy lại riêng ca này (`TIER_BENCH_SOURCE=…hevc.mp4 TIER_BENCH_CODEC=H265`, REPS=6), giữ stdout để
