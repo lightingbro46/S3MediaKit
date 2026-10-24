@@ -47,6 +47,11 @@ public:
      */
     bool haveVideo() const;
 
+    /**
+     * Whether the caller runs on the thread of one of the decoders (inside a decode callback)
+     */
+    bool onDecoderThread() const;
+
 protected:
     /**
      * Decode callback

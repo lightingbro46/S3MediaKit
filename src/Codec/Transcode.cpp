@@ -149,12 +149,18 @@ void TaskManager::setMaxTaskSize(size_t size) {
 void TaskManager::startThread(const string &name) {
     _thread.reset(new thread([this, name]() {
         onThreadRun(name);
-    }), [](thread *ptr) {
+    }), [name](thread *ptr) {
+        if (ptr->get_id() == this_thread::get_id()) {
+            // join() throws EDEADLK here and the process terminates: the owner released its last
+            // reference inside a callback of this thread instead of releasing it on a poller.
+            ErrorL << name << " destroyed from its own thread";
+        }
         if (ptr->joinable()) {
             ptr->join();
         }
         delete ptr;
     });
+    _thread_id = _thread->get_id();
 }
 
 void TaskManager::stopThread(bool drop_task) {
@@ -174,10 +180,15 @@ void TaskManager::stopThread(bool drop_task) {
     }
     _sem.post(10);
     _thread = nullptr;
+    _thread_id = thread::id();
 }
 
 TaskManager::~TaskManager() {
     stopThread(true);
+}
+
+bool TaskManager::isCurrentThread() const {
+    return _thread_id != thread::id() && _thread_id == this_thread::get_id();
 }
 
 bool TaskManager::isEnabled() const {

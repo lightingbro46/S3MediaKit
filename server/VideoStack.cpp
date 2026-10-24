@@ -187,6 +187,15 @@ void Channel::resizeFrameImplWithoutAspectRatio(const mediakit::FFmpegFrame::Ptr
     _tmp = _sws->inputFrame(frame);
 }
 
+StackPlayer::~StackPlayer() {
+    // The decode callback locks this object on the decoder thread, so this can be its last reference.
+    // The player owns the decoder (through the track delegate): release it on the player's poller.
+    if (_player) {
+        auto player = std::make_shared<mediakit::MediaPlayer::Ptr>(std::move(_player));
+        (*player)->getPoller()->async([player]() { player->reset(); }, false);
+    }
+}
+
 void StackPlayer::addChannel(const std::weak_ptr<Channel>& chn) {
     std::lock_guard<std::recursive_mutex> lock(_mx);
     _channels.push_back(chn);

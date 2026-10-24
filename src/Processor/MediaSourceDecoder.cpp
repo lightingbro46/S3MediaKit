@@ -90,6 +90,15 @@ bool MediaSourceDecoder::haveVideo() const {
     return _track_existed[TrackVideo];
 }
 
+bool MediaSourceDecoder::onDecoderThread() const {
+    for (auto &track : _tracks) {
+        if (track.second.decoder && track.second.decoder->isCurrentThread()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace mediakit
 
 #endif // ENABLE_FFMPEG

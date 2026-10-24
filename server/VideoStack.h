@@ -94,6 +94,7 @@ public:
     using Ptr = std::shared_ptr<StackPlayer>;
 
     StackPlayer(const std::string& url) : _url(url) {}
+    ~StackPlayer();
 
     void addChannel(const std::weak_ptr<Channel>& chn);
 

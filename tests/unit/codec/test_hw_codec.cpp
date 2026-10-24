@@ -2,13 +2,18 @@
 
 #if defined(ENABLE_FFMPEG)
 
+#include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstring>
+#include <thread>
 #include <unistd.h>
 #include "Codec/HwCodec.h"
 #include "Codec/Transcode.h"
 #include "Common/config.h"
 #include "Extension/Factory.h"
+#include "Processor/MultiMediaSourceProcessor.h"
+#include "Thread/semaphore.h"
 
 using namespace mediakit;
 using namespace toolkit;
@@ -496,6 +501,100 @@ size_t encodeThenDecode(int count, std::vector<int> &formats, CodecId codec = Co
 }
 
 } // namespace
+
+TEST_F(HwCodecManagerTest, DecodeCallbackSeesItsDecoderThread) {
+    HwCodecManager::Instance().probe(fakeProbe({}));
+    std::vector<Frame::Ptr> encoded;
+    FFmpegEncoder encoder(CodecH264, 320, 240, 25, 400000, 25);
+    encoder.setOnEncode([&encoded](const Frame::Ptr &frame) { encoded.emplace_back(Frame::getCacheAbleFrame(frame)); });
+    for (int i = 0; i < 5; ++i) {
+        ASSERT_TRUE(encoder.inputFrame(makeYuvFrame(320, 240, i)));
+    }
+    encoder.flush();
+
+    auto decoder = std::make_shared<FFmpegDecoder>(Factory::getTrackByCodecId(CodecH264), 0);
+    std::atomic<int> inside { 0 }, outside { 0 };
+    decoder->setOnDecode([&](const FFmpegFrame::Ptr &) { (decoder->isCurrentThread() ? inside : outside)++; });
+    for (auto &frame : encoded) {
+        decoder->inputFrame(frame, false, true, false);
+    }
+    EXPECT_FALSE(decoder->isCurrentThread());
+    decoder->stopThread(false);
+    EXPECT_EQ(5, inside.load());
+    EXPECT_EQ(0, outside.load());
+}
+
+namespace {
+
+// Holds the decoder thread inside MultiMediaSourceProcessor::onDecode (at its TraceL) until released.
+// Without an async log writer the logger writes on the logging thread, so this blocks exactly there.
+class DecodeGateChannel : public LogChannel {
+public:
+    DecodeGateChannel() : LogChannel("decode-gate", LTrace) {}
+
+    void write(const Logger &, const LogContextPtr &ctx) override {
+        if (ctx->str().find("Decoded frame dts") == std::string::npos || !armed.exchange(false)) {
+            return;
+        }
+        entered.post();
+        release.wait();
+    }
+
+    std::atomic<bool> armed { false };
+    semaphore entered, release;
+};
+
+} // namespace
+
+TEST_F(HwCodecManagerTest, ProcessorReleasedWhileDecodingIsNotDestroyedOnTheDecoderThread) {
+    // The decode callback holds a temporary reference to the processor. When the owner lets go while
+    // a frame is in the callback, that temporary is the last reference: destroying the processor
+    // there destroyed the decoder on its own thread, which joined itself and terminated the process.
+    HwCodecManager::Instance().probe(fakeProbe({}));
+    std::vector<Frame::Ptr> encoded;
+    FFmpegEncoder encoder(CodecH264, 320, 240, 25, 400000, 25);
+    encoder.setOnEncode([&encoded](const Frame::Ptr &frame) { encoded.emplace_back(Frame::getCacheAbleFrame(frame)); });
+    // Frame-threaded software decoding holds a few frames back: send enough to get output.
+    for (int i = 0; i < 50; ++i) {
+        ASSERT_TRUE(encoder.inputFrame(makeYuvFrame(320, 240, i)));
+    }
+    encoder.flush();
+    ASSERT_FALSE(encoded.empty());
+
+    auto gate = std::make_shared<DecodeGateChannel>();
+    Logger::Instance().add(gate);
+    ProtocolOption option;
+    option.enable_rtsp = option.enable_rtmp = option.enable_hls = option.enable_hls_fmp4 = false;
+    option.enable_ts = option.enable_fmp4 = option.enable_mp4 = false;
+    auto track = Factory::getTrackByCodecId(CodecH264);
+    track->inputFrame(encoded.front());
+    ASSERT_TRUE(track->ready());
+    auto processor = MultiMediaSourceProcessor::create(MediaTuple(DEFAULT_VHOST, "unit", "release", ""), option);
+    std::weak_ptr<MultiMediaSourceProcessor> weak = processor;
+    processor->addTrack(track);
+    processor->addTrackCompleted();
+    // As in the muxer: the track splits the encoder output (SPS/PPS/IDR) before the processor sees it.
+    track->addDelegate([weak](const Frame::Ptr &frame) {
+        auto strong = weak.lock();
+        return strong ? strong->inputFrame(frame) : false;
+    });
+
+    gate->armed = true;
+    for (auto &frame : encoded) {
+        track->inputFrame(frame);
+    }
+    ASSERT_TRUE(gate->entered.wait(5000)) << "no frame reached the decode callback";
+    processor = nullptr;
+    gate->release.post();
+
+    // Destroyed on its poller once the callback returns, not on the decoder thread.
+    for (int i = 0; i < 100 && !weak.expired(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_TRUE(weak.expired());
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    Logger::Instance().del(gate->name());
+}
 
 TEST_F(HwCodecManagerTest, DecoderFallsBackToCpuWhenGpuCannotDecode) {
     // A "cuda" backend without a device: the decoder gets a GPU session, FFmpeg cannot use the

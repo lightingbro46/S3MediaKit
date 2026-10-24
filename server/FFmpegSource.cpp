@@ -428,7 +428,17 @@ static void makeSnapAsync(const string &play_url, const string &save_path, float
             if (done) {
                 return;
             }
-            onceToken token(nullptr, [&]() { new_holder->player = nullptr; timer->cancel(); done = true; });
+            onceToken token(nullptr, [&]() {
+                timer->cancel();
+                done = true;
+                // This runs on the decoder thread, and the player owns the track whose delegate owns the
+                // decoder: release it on the player's poller, or the decoder would be destroyed (and
+                // joined) from its own thread.
+                auto player = std::make_shared<MediaPlayer::Ptr>(std::move(new_holder->player));
+                if (*player) {
+                    (*player)->getPoller()->async([player]() { player->reset(); }, false);
+                }
+            });
             auto ret = FFmpegUtils::saveFrame(frame, save_path.data());
             cb(std::get<0>(ret), std::get<1>(ret));
         });

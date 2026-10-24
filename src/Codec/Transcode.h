@@ -94,6 +94,9 @@ public:
 
     void setMaxTaskSize(size_t size);
     void stopThread(bool drop_task);
+    // Whether the caller runs on this object's worker thread (inside a decode/encode task or its callback).
+    // An owner must not drop its last reference there: the destructor would join the thread from itself.
+    bool isCurrentThread() const;
 
 protected:
     void startThread(const std::string &name);
@@ -118,6 +121,7 @@ private:
     toolkit::semaphore _sem;
     toolkit::List<std::function<void()> > _task;
     std::shared_ptr<std::thread> _thread;
+    std::thread::id _thread_id;
 };
 
 class FFmpegDecoder : public TaskManager {

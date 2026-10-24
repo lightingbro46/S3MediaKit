@@ -25,6 +25,14 @@ class MultiMediaSourceProcessor
 public:
     using Ptr = std::shared_ptr<MultiMediaSourceProcessor>;
 
+    /**
+     * Use this instead of make_shared: decode callbacks hold a temporary reference, and when the owner has
+     * already released the processor that last reference goes away on the decoder thread. The deleter
+     * then destroys it on its poller (the decoder thread cannot join itself).
+     */
+    static Ptr create(const MediaTuple &tuple, const ProtocolOption &option,
+                      const toolkit::EventPoller::Ptr &poller = nullptr);
+
     MultiMediaSourceProcessor(const MediaTuple &tuple, const ProtocolOption &option,
                               const toolkit::EventPoller::Ptr &poller = nullptr);
     ~MultiMediaSourceProcessor() override;

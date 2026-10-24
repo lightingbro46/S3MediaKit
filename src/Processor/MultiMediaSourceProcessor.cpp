@@ -62,6 +62,19 @@ MultiMediaSourceProcessor::MultiMediaSourceProcessor(const MediaTuple &tuple, co
     }
 }
 
+MultiMediaSourceProcessor::Ptr MultiMediaSourceProcessor::create(const MediaTuple &tuple, const ProtocolOption &option,
+                                                                 const toolkit::EventPoller::Ptr &poller) {
+    return Ptr(new MultiMediaSourceProcessor(tuple, option, poller), [](MultiMediaSourceProcessor *ptr) {
+        if (!ptr->onDecoderThread()) {
+            delete ptr;
+            return;
+        }
+        // The owner let go while a frame was being decoded: destroying the decoders here would join
+        // the current thread (std::terminate) and tear down the muxers off their poller.
+        ptr->_poller->async([ptr]() { delete ptr; }, false);
+    });
+}
+
 MultiMediaSourceProcessor::~MultiMediaSourceProcessor() {
     try {
         close();
@@ -457,8 +470,8 @@ void MultiMediaSourceProcessor::close() {
         InfoL << "Transcode bounded queue dropped " << dropped_frames << " frame(s): " << _tuple.shortUrl();
     }
 
-    // stopThread(true) drops pending decode tasks. Since create() routes
-    // this destructor to the source poller, destroying the decoder cannot
+    // stopThread(true) drops pending decode tasks. create() never runs this
+    // destructor on a decoder thread, so destroying the decoder cannot
     // attempt to join the current decoder thread.
     MediaSourceDecoder::resetTracks();
 
