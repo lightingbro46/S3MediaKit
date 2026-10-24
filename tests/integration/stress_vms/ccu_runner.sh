@@ -29,8 +29,13 @@
 #                                [100,200,300,400,500,600,700,800,1000]
 #   --ms-cpus LIST               ghim MediaServer vao cac loi nay (taskset), vd 0-15; tu dat -t
 #   --gen-cpus LIST              ghim bo sinh tai (nguon RTSP, viewer, mock) vao cac loi nay, vd 16-31
-#   --viewer-hosts h1,h2         chay them worker viewer tren may khac qua ssh (khong mat khau)
-#   --nic IFACE                  card mang phuc vu viewer (mac dinh lo, hoac tu do khi co --viewer-hosts)
+#   --viewer-hosts h1,h2         chay worker viewer tren may khac qua ssh (khong mat khau, python3);
+#                                khi do may nay khong chay worker viewer (dat CCU_WORKERS=N de chay them)
+#   --viewer-workers N           so worker viewer moi may khac [nproc/2 cua may do]
+#   --source-host H              chay nguon RTSP gia tren may H (ssh khong mat khau, python3 >= 3.7):
+#                                MediaServer keo luong camera qua NIC that thay vi loopback
+#   --client-host H              = --source-host H --viewer-hosts H: moi tai mang qua NIC that
+#   --nic IFACE                  card mang de do tx/rx (mac dinh lo, hoac tu do theo duong toi may khac)
 #   --soak-hours H               thoi luong soak [4]
 #   --keep-records               giu file ghi hinh sau moi kich ban (mac dinh xoa de do ton dia)
 #   --yes                        khong hoi lai khi canh bao dung luong
@@ -52,6 +57,8 @@ WORK="$PWD/ccu_work"
 ACCEPT=""
 PROFILE=full
 VIEWER_HOSTS=""
+VIEWER_WORKERS=""
+SOURCE_HOST=""
 NIC=""
 SOAK_HOURS=4
 KEEP_RECORDS=0
@@ -67,7 +74,7 @@ GEN_CPUS=""
 ALL_SCENARIOS="cam_step step_hot step_uniform storm churn admission mix_fmp4-sub mix_fmp4-main mix_rtsp mix_hls mix_replay soak live_step live_uniform live_storm live_replay live_soak"
 
 usage() {
-    sed -n '2,41p' "$SELF" | sed 's/^# \{0,1\}//'
+    sed -n '2,46p' "$SELF" | sed 's/^# \{0,1\}//'
     echo "Kich ban: $ALL_SCENARIOS"
     exit "${1:-0}"
 }
@@ -84,6 +91,9 @@ while [ $# -gt 0 ]; do
         --ms-cpus) MS_CPUS="$2"; shift 2 ;;
         --gen-cpus) GEN_CPUS="$2"; shift 2 ;;
         --viewer-hosts) VIEWER_HOSTS="$2"; shift 2 ;;
+        --viewer-workers) VIEWER_WORKERS="$2"; shift 2 ;;
+        --source-host) SOURCE_HOST="$2"; shift 2 ;;
+        --client-host) SOURCE_HOST="$2"; VIEWER_HOSTS="$2"; shift 2 ;;
         --nic) NIC="$2"; shift 2 ;;
         --soak-hours) SOAK_HOURS="$2"; shift 2 ;;
         --keep-records) KEEP_RECORDS=1; shift ;;
@@ -217,16 +227,25 @@ cat "$B/BUNDLE_INFO" 2>/dev/null | sed 's/^/  /'
 # ------------------------------------------------------------------ mạng
 SERVER_HOST=127.0.0.1
 CTL_HOST=127.0.0.1
-if [ -n "$VIEWER_HOSTS" ]; then
-    first="${VIEWER_HOSTS%%,*}"
-    route=$(ip route get "$(getent hosts "$first" | awk '{print $1}' | head -1 || echo "$first")" 2>/dev/null | head -1)
+REMOTE_HOSTS=$(echo "${VIEWER_HOSTS//,/ } $SOURCE_HOST" | tr ' ' '\n' | awk 'NF && !seen[$0]++')
+if [ -n "$REMOTE_HOSTS" ]; then
+    first=$(echo "$REMOTE_HOSTS" | head -1); first="${first#*@}"
+    addr=$(getent hosts "$first" | awk '{print $1; exit}')
+    route=$(ip route get "${addr:-$first}" 2>/dev/null | head -1)
+    [ -n "$route" ] || { echo "Khong tim duoc duong toi $first (ten khong phan giai duoc? dung IP)"; exit 2; }
     [ -z "$NIC" ] && NIC=$(echo "$route" | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}')
-    SERVER_HOST=$(echo "$route" | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
-    CTL_HOST="$SERVER_HOST"
-    for h in ${VIEWER_HOSTS//,/ }; do
-        ssh -o BatchMode=yes -o ConnectTimeout=5 "$h" python3 -c 'print(1)' > /dev/null 2>&1 \
-            || { echo "Khong ssh duoc (khong mat khau) toi $h hoac may do thieu python3"; exit 2; }
+    if [ -n "$VIEWER_HOSTS" ]; then
+        SERVER_HOST=$(echo "$route" | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+        CTL_HOST="$SERVER_HOST"
+    fi
+    command -v ssh > /dev/null && command -v scp > /dev/null \
+        || { echo "Thieu ssh/scp (goi openssh-client) - can cho --viewer-hosts/--source-host"; exit 2; }
+    for h in $REMOTE_HOSTS; do
+        ssh -o BatchMode=yes -o ConnectTimeout=5 "$h" python3 -c "'import sys; assert sys.version_info >= (3, 7)'" \
+            > /dev/null 2>&1 \
+            || { echo "Khong ssh duoc (khong mat khau) toi $h hoac may do thieu python3 >= 3.7"; exit 2; }
     done
+    [ "$NIC" = lo ] || [ -z "$NIC" ] && { echo "Duong toi $first di qua lo - may khac phai la may that cung dai mang"; exit 2; }
 fi
 [ -z "$NIC" ] && NIC=lo
 
@@ -253,11 +272,19 @@ fi
     for i in $(ls /sys/class/net 2>/dev/null); do
         echo "  $i speed=$(cat /sys/class/net/$i/speed 2>/dev/null || echo ?)Mbps"
     done
+    for b in /proc/net/bonding/*; do [ -f "$b" ] && { echo "== $b"; cat "$b"; }; done
+    command -v ethtool > /dev/null && [ -n "$NIC" ] && [ "$NIC" != lo ] && { echo "== ethtool $NIC"; ethtool "$NIC"; }
+    for h in $REMOTE_HOSTS; do
+        echo "== may client $h (nguon=$([ "$h" = "$SOURCE_HOST" ] && echo co || echo khong), viewer=$(case ",$VIEWER_HOSTS," in *",$h,"*) echo co ;; *) echo khong ;; esac))"
+        ssh -o BatchMode=yes -o ConnectTimeout=5 "$h" 'hostname; nproc; free -m | sed -n 2p; ip -br addr;
+            for i in $(ls /sys/class/net); do echo "  $i speed=$(cat /sys/class/net/$i/speed 2>/dev/null)Mbps"; done;
+            cat /proc/net/bonding/* 2>/dev/null | grep -E "Mode|Hash|Slave Interface|Speed"' 2>&1
+    done
     echo "== ulimit -n";   ulimit -n
     echo "== python";      python3 --version
     echo "== sysctl";      sysctl vm.dirty_ratio vm.dirty_background_ratio net.core.somaxconn 2>/dev/null
     echo "== PSI";         for k in cpu io memory; do echo "$k: $(tr '\n' ' ' < /proc/pressure/$k 2>/dev/null)"; done
-    echo "== tham so";     echo "suite=$SUITE scenarios=$SCENARIOS accept=$ACCEPT profile=$PROFILE cam_steps=$CAM_STEPS nic=$NIC viewer_hosts=$VIEWER_HOSTS"
+    echo "== tham so";     echo "suite=$SUITE scenarios=$SCENARIOS accept=$ACCEPT profile=$PROFILE cam_steps=$CAM_STEPS nic=$NIC viewer_hosts=$VIEWER_HOSTS source_host=$SOURCE_HOST"
     echo "== tinh chinh";  echo "tag=${TAG#_} set=$STRESS_INI args=$MS_EXTRA_ARGS"
 } > "$OUT/system.txt" 2>&1
 
@@ -366,7 +393,7 @@ cam_table() {
     python3 - "$OUT" $RAN <<'PY'
 import json, os, sys
 out, names = sys.argv[1], [n for n in sys.argv[2:] if n.startswith("cam_")]
-print("| camera | luong online | CPU % (loi MS) | poller max % | RSS MB | ghi dia MB/s | IO full % | NIC Mbps | healthcheck p95 ms | timeout ngoai cua so | ket luan |")
+print("| camera | luong online | CPU % (loi MS) | poller max % | RSS MB | ghi dia MB/s | IO full % | NIC rx/tx Mbps | healthcheck p95 ms | timeout ngoai cua so | ket luan |")
 print("|---|---|---|---|---|---|---|---|---|---|---|")
 for n in names:
     try:
@@ -377,7 +404,8 @@ for n in names:
     why = "; ".join(r.get("invalid", []) + r.get("failures", []))
     print("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
         n[4:], r.get("live_streams"), r.get("cpu_pct_total"), r.get("poller_load_max"), r.get("rss_mb"),
-        r.get("disk_write_mbps"), r.get("io_full_pct"), r.get("nic_tx_mbps"), r.get("healthcheck_p95_ms"),
+        r.get("disk_write_mbps"), r.get("io_full_pct"), "%s/%s" % (r.get("nic_rx_mbps"), r.get("nic_tx_mbps")),
+        r.get("healthcheck_p95_ms"),
         r.get("ingest_timeouts_outside_window", 0),
         r.get("verdict", "?") + (": " + why if why else "")))
 PY
@@ -519,7 +547,8 @@ run_one() {
     (
         export MEDIASERVER_DIR="$BIN_DIR" MEDIA_PROFILE=realistic MEDIA_DIR="$B/media"
         export PHASE_SEC="${PHASE_SEC:-180}" CCU_NIC="$NIC" CCU_SERVER_HOST="$SERVER_HOST"
-        export CCU_CTL_HOST="$CTL_HOST" VIEWER_HOSTS="$VIEWER_HOSTS"
+        export CCU_CTL_HOST="$CTL_HOST" VIEWER_HOSTS="$VIEWER_HOSTS" SOURCE_HOST="$SOURCE_HOST"
+        [ -n "$VIEWER_WORKERS" ] && export VIEWER_WORKERS_PER_HOST="$VIEWER_WORKERS"
         export STRESS_INI MS_EXTRA_ARGS
         while IFS= read -r kv; do export "$kv"; done < <(scenario_env "$s")
         bash "$H/run_stress.sh" "$WORK/$s" "${RUN_PROFILE:-$PROFILE}" "$hs"
@@ -544,7 +573,8 @@ finish() {
         echo "- Binary: \`$BIN\` (debug_build=$IS_DEBUG)"
         echo "- Suite: $([ -n "$ONLY" ] && echo "--only" || echo "$SUITE") - kich ban: $SCENARIOS"
         echo "- Profile: $PROFILE ($CAMERAS camera / $(( CAMERAS * 2 )) luong, bitrate that), muc nghiem thu $ACCEPT"
-        echo "- Viewer: $([ -n "$VIEWER_HOSTS" ] && echo "may nay + $VIEWER_HOSTS (NIC $NIC)" || echo "chay cung may (loopback)")"
+        echo "- Viewer: $([ -n "$VIEWER_HOSTS" ] && echo "$VIEWER_HOSTS (NIC $NIC)" || echo "chay cung may (loopback)")"
+        echo "- Nguon RTSP: $([ -n "$SOURCE_HOST" ] && echo "$SOURCE_HOST (NIC $NIC, cot NIC rx = luong keo camera)" || echo "chay cung may (loopback)")"
         echo "- Tinh chinh: tag=${TAG#_} set=${STRESS_INI:--} args=${MS_EXTRA_ARGS:--}"
         echo "- Tong thoi gian: $(( ($(date +%s) - START_TS) / 60 )) phut"
         echo "- Ghim CPU: MediaServer=${MS_CPUS:-khong} (${MS_NCPU:-tat ca} loi), bo sinh tai=${GEN_CPUS:-khong}"

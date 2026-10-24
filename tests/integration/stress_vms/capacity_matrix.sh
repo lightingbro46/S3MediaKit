@@ -13,7 +13,7 @@
 #
 # Kich ban:
 #   smoke              20/50 camera, giu 60 s; truot thi dung ca chuoi
-#   <L>                ca luot: a, b (G, H them c). L = G C4 C8 C24 M16 M8 H
+#   <L>                ca luot: a, b (G, H them c). L = G C4 C8 C24 M16 M8 H, va C28 (chi voi --client-host)
 #   <L>-a              cam_step: nguong camera
 #   <L>-b[:N]          live_step tren N camera; khong co N thi lay theo nguong <L>-a (300 neu >= 300,
 #                      neu khong thi lam tron xuong boi cua 50), tu lan chay nay hoac tarball moi nhat
@@ -40,6 +40,11 @@
 #   --image IMG        image test [s3mk-captest]
 #   --bin PATH         MediaServer trong image [/opt/media/bin/MediaServer]
 #   --ccu PATH         bundle ccu_test.sh trong image [/opt/media/ccu_test.sh]
+#   --client-host H    nguon RTSP va viewer chay tren may H cung dai mang (ssh khong mat khau tu host,
+#                      python3 >= 3.7): luong camera va luong xem di qua NIC that. Them _net vao moi tag,
+#                      mount --ssh-dir vao /root/.ssh trong container
+#   --ssh-dir DIR      khoa ssh va known_hosts dung de vao may client [$HOME/.ssh]
+#   --viewer-workers N so worker viewer tren may client [nproc/2 cua may do]
 #
 # Ket qua: bang o cuoi man hinh va trong $CAP_DIR/matrix_<thoi gian>.txt; log tung kich ban va iostat
 # luc ranh trong $CAP_DIR/matrix_logs_<thoi gian>/. Ctrl+C dung container va van in danh sach.
@@ -54,11 +59,14 @@ CCU=/opt/media/ccu_test.sh
 SUFFIX=""
 DRY_RUN=0
 SETS=()
+CLIENT_HOST=""
+SSH_DIR="$HOME/.ssh"
+NET=()
 NAME=s3mk-cap
 CCU_STEPS_LIVE="0,100,200,300,400,500,600,750,1000,1250,1500,2000"
 STAMP=$(date +%Y%m%d_%H%M%S)
 
-usage() { sed -n '2,45p' "$SELF" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,50p' "$SELF" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 ARGS=()
 while [ $# -gt 0 ]; do
@@ -71,12 +79,21 @@ while [ $# -gt 0 ]; do
         --image) IMAGE="$2"; shift 2 ;;
         --bin) BIN="$2"; shift 2 ;;
         --ccu) CCU="$2"; shift 2 ;;
+        --client-host) CLIENT_HOST="$2"; shift 2 ;;
+        --ssh-dir) SSH_DIR="$2"; shift 2 ;;
+        --viewer-workers) NET+=(--viewer-workers "$2"); shift 2 ;;
         --list|-h|--help) usage 0 ;;
         -*) echo "Tuy chon khong ro: $1"; usage 2 ;;
         *) ARGS+=("$1"); shift ;;
     esac
 done
 [ ${#ARGS[@]} -gt 0 ] || usage 2
+if [ -n "$CLIENT_HOST" ]; then
+    NET+=(--client-host "$CLIENT_HOST")
+    SUFFIX="_net$SUFFIX"
+else
+    NET=()
+fi
 
 LIST="$CAP_DIR/matrix_$STAMP.txt"
 LOGDIR="$CAP_DIR/matrix_logs_$STAMP"
@@ -92,6 +109,8 @@ lot_spec() {
         C4)  echo "0-1,16-17|8-15,24-31||C4_ssd_c4_m32" ;;
         C8)  echo "0-3,16-19|8-15,24-31||C8_ssd_c8_m32" ;;
         C24) echo "0-11,16-27|12-15,28-31||C24_ssd_c24_m32" ;;
+        # bo sinh tai o may client nen may nay chi con runner/mock/check: MediaServer lay 14/16 loi
+        C28) echo "0-13,16-29|14-15,30-31||C28_ssd_c28_m32" ;;
         M16) echo "0-7,16-23|8-15,24-31|--memory 16g --memory-swap 16g|M16_ssd_c16_m16" ;;
         M8)  echo "0-7,16-23|8-15,24-31|--memory 8g --memory-swap 8g --shm-size=6g|M8_ssd_c16_m8" ;;
         H)   echo "0-7,16-23|8-15,24-31|-v $HDD_DIR:/hdd|H_hdd_c16_m32" ;;
@@ -115,11 +134,13 @@ expand() {
         *-a|*-b|*-b:*|*-c|*-c:*)
             lot="${x%%-*}"
             lot_spec "$lot" > /dev/null || { echo "Luot khong ro trong '$x'"; exit 2; }
+            [ "$lot" = C28 ] && [ -z "$CLIENT_HOST" ] && { echo "C28 chi chay voi --client-host"; exit 2; }
             case "$x" in *-c*) case "$lot" in G|H) ;; *) echo "Buoc c chi co o G va H: $x"; exit 2 ;; esac ;; esac
             case "$x" in *:*) [[ "${x#*:}" =~ ^[1-9][0-9]*$ ]] || { echo "N khong hop le: $x"; exit 2; } ;; esac
             STEPS+=("$x") ;;
         *)
             lot_spec "$x" > /dev/null || { echo "Kich ban khong ro: $x (xem --list)"; exit 2; }
+            [ "$x" = C28 ] && [ -z "$CLIENT_HOST" ] && { echo "C28 chi chay voi --client-host"; exit 2; }
             STEPS+=("$x-a" "$x-b")
             case "$x" in G|H) STEPS+=("$x-c") ;; esac ;;
     esac
@@ -144,6 +165,14 @@ if [ "$DRY_RUN" != 1 ]; then
     case " ${STEPS[*]} " in *" Ga_dirty "*|*" diskinfo "*|*" trim "*|*" fio-"*)
         [ "$(id -u)" = 0 ] || { echo "Ga_dirty va cac buoc P6 can root"; exit 2; } ;; esac
     case " ${STEPS[*]} " in *" fio-"*) command -v fio > /dev/null || { echo "Host chua cai fio"; exit 2; } ;; esac
+    if [ -n "$CLIENT_HOST" ]; then
+        # container dung khoa va known_hosts cua host: ssh mot lan tu host truoc de nhan host key
+        [ -d "$SSH_DIR" ] || { echo "Khong thay --ssh-dir $SSH_DIR"; exit 2; }
+        ssh -o BatchMode=yes -o ConnectTimeout=5 "$CLIENT_HOST" true \
+            || { echo "Khong ssh duoc (khong mat khau) tu host toi $CLIENT_HOST"; exit 2; }
+        docker run --rm "$IMAGE" bash -c 'command -v ssh && command -v scp' > /dev/null \
+            || { echo "Image $IMAGE thieu openssh-client (ssh/scp)"; exit 2; }
+    fi
     mkdir -p "$LOGDIR"
 fi
 say "kich ban: ${STEPS[*]}"
@@ -186,17 +215,18 @@ run_one() {
                --shm-size=20g --ulimit nofile=1048576:1048576)
     # shellcheck disable=SC2206
     [ -n "$extra" ] && cmd+=($extra)    # --shm-size o day ghi de gia tri mac dinh phia tren
+    [ -n "$CLIENT_HOST" ] && cmd+=(-v "$SSH_DIR:/root/.ssh:ro")
     cmd+=(-v "$CAP_DIR:/work" -w /work "$IMAGE")
     TARBALL=""; RC=0
     if [ "$DRY_RUN" = 1 ]; then
-        echo "${cmd[*]} $* ${SETS[*]} --tag $tag --yes"
+        echo "${cmd[*]} $* ${SETS[*]} ${NET[*]} --tag $tag --yes"
         add_row "$id" "$tag" - -
         return 0
     fi
     say "===== $id ($tag) ====="
     iostat -x 5 3 > "$LOGDIR/$tag.iostat_idle.txt" 2>&1 || true
     local marker="$LOGDIR/.$tag.start"; : > "$marker"
-    "${cmd[@]}" "$@" "${SETS[@]}" --tag "$tag" --yes > "$LOGDIR/$tag.log" 2>&1
+    "${cmd[@]}" "$@" "${SETS[@]}" ${NET[@]+"${NET[@]}"} --tag "$tag" --yes > "$LOGDIR/$tag.log" 2>&1
     RC=$?
     TARBALL=$(find "$CAP_DIR" -maxdepth 1 -name "ccu_result_*_${tag}_[0-9]*.tar.gz" -newer "$marker" \
               2>/dev/null | sort | tail -1)
@@ -286,6 +316,7 @@ print_list() {
         echo "# Do nguong - $(hostname -s), bat dau $STAMP, xong $(date +%Y%m%d_%H%M%S)"
         echo
         echo "Image $IMAGE, bundle $CCU: ${BUNDLE_INFO:--}"
+        echo "Nguon RTSP + viewer: ${CLIENT_HOST:-cung may (loopback)}"
         echo
         echo "| kich ban | tag | ket qua | tarball |"
         echo "|---|---|---|---|"

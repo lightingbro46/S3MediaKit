@@ -321,7 +321,11 @@ class Sampler(object):
     def _source(self):
         path = os.path.join(self.s.work, "rtsp_state.json")
         while not self.stop_ev.is_set():
-            st = cs.load_json(path)
+            try:
+                fresh = time.time() - os.path.getmtime(path) < 60
+            except OSError:
+                fresh = False
+            st = cs.load_json(path) if fresh else None
             if st:
                 self.source.append(st)
             self.stop_ev.wait(5)
@@ -606,8 +610,9 @@ class Runner(object):
         logs1 = scan_logs(a.work, a.node)
         view = self.server_view()
         # nguồn: lấy giá trị xấu nhất trong các lần lấy mẫu của cửa sổ
-        ss = smp.source or [cs.load_json(os.path.join(a.work, "rtsp_state.json"))]
+        ss = smp.source or [cs.load_json(os.path.join(a.work, "rtsp_state.json")) or {}]
         self.source_window = {
+            "stale": not smp.source,
             "cpu_pct_max": max((x.get("cpu_pct_max", x.get("cpu_pct")) or 0) for x in ss),
             "tick_late_p99_ms": max((x.get("tick_late_p99_ms") or 0) for x in ss),
             "tick_late_max_ms": max((x.get("tick_late_max_ms") or 0) for x in ss),
@@ -661,6 +666,21 @@ class Runner(object):
         if new["db_locked"] or new["failed_apply"]:
             warns.append("log: db_locked=%d failed_apply=%d" % (new["db_locked"], new["failed_apply"]))
 
+        # ---- NIC: tx = tới viewer, rx = luồng kéo camera (khi nguồn RTSP ở máy khác); song công
+        # nên mỗi chiều so riêng với tốc độ card
+        tx_mbps = (s1["tx"] - s0["tx"]) * 8 / 1e6 / span
+        rx_mbps = (s1["rx"] - s0["rx"]) * 8 / 1e6 / span
+        row["nic_tx_mbps"] = round(tx_mbps, 1)
+        row["nic_rx_mbps"] = round(rx_mbps, 1)
+        speed = self.s.nic_speed_mbps()
+        nic_busy = False
+        for name, mbps in (("tx", tx_mbps), ("rx", rx_mbps)):
+            if speed and mbps > speed * th["nic_util"]:
+                warns.append("NIC %s %s %.0f/%d Mbps" % (self.s.nic, name, mbps, speed))
+                nic_busy = True
+        if nic_busy:
+            cat.append("nic")
+
         # ---- tự kiểm client
         workers = win.get("workers") or []
         fresh = [w for w in workers if w.get("fresh") and w.get("same_mark")]
@@ -674,6 +694,8 @@ class Runner(object):
         src = self.source_window
         row["source"] = src
         source_late = []
+        if src.get("stale"):
+            invalid.append("nguồn RTSP không báo số liệu trong cửa sổ (rtsp_state.json cũ)")
         if (row["source"]["cpu_pct_max"] or 0) > th["source_cpu_pct"]:
             invalid.append("nguồn RTSP CPU %.0f%%" % row["source"]["cpu_pct_max"])
         if (row["source"]["tick_late_p99_ms"] or 0) > th["source_late_p99_ms"]:
@@ -683,9 +705,11 @@ class Runner(object):
         # Nguồn còn CPU mà trễ nhịp trong khi MediaServer đã sập hoặc đã timeout luồng kéo: server
         # ngừng đọc thì nguồn bị chặn ở send(), trễ nhịp là hệ quả chứ không phải nguyên nhân.
         # Bậc khi đó "trượt" theo yếu tố giới hạn của server, không "không hợp lệ".
+        # NIC của server bão hoà thì nguồn ở máy khác bị chặn ở send() vì chính card server: cũng là hệ quả.
         server_failed = not self.s.alive() or new["crash"] or row["ingest_timeouts_total"]
-        if source_late and server_failed and not invalid:
-            warns.extend(x + " (hệ quả: server đã timeout/sập)" for x in source_late)
+        if source_late and (server_failed or nic_busy) and not invalid:
+            warns.extend(x + (" (hệ quả: NIC server bão hoà)" if nic_busy and not server_failed
+                              else " (hệ quả: server đã timeout/sập)") for x in source_late)
         else:
             invalid.extend(source_late)
         row["client"] = {"workers": len(fresh), "cpu_max": max([w.get("cpu_pct") or 0 for w in fresh] or [0]),
@@ -826,13 +850,6 @@ class Runner(object):
                     warns.append("đĩa nghẽn: CPU chờ IO %.1f%% thời gian (iowait, kernel không có PSI)"
                                  % row["io_wait_pct"])
                     cat.append("disk")
-        tx_mbps = (s1["tx"] - s0["tx"]) * 8 / 1e6 / span
-        row["nic_tx_mbps"] = round(tx_mbps, 1)
-        speed = self.s.nic_speed_mbps()
-        if speed and tx_mbps > speed * th["nic_util"]:
-            warns.append("NIC %s %.0f/%d Mbps" % (self.s.nic, tx_mbps, speed))
-            cat.append("nic")
-
         # ---- nền
         if "error" in view:
             fails.append("getMediaList lỗi: %s" % view["error"])
@@ -911,15 +928,15 @@ def render_md(rep):
         for k, v in s.items():
             lines.append("- **%s**: %s" % (k, v))
         lines.append("")
-    lines.append("| bậc | viewer | phát | client Mbps | NIC tx Mbps | CPU% | poller max | ghi đĩa MB/s | IO full % | "
+    lines.append("| bậc | viewer | phát | client Mbps | NIC tx/rx Mbps | CPU% | poller max | ghi đĩa MB/s | IO full % | "
                  "healthcheck p95 | TTFF max (ms) | khựng % | trôi p95 | ghi hình | kết luận |")
     lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in rep["rows"]:
         ttff = ", ".join("%s %s" % kv for kv in sorted((r.get("ttff_max_ms") or r.get("ttff_p95_ms") or {}).items())) or "-"
         rec = r.get("record") or {}
         lines.append("| %s | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
-            r["label"], r["level"], r.get("playing"), r.get("client_mbps"), r.get("nic_tx_mbps"),
-            r.get("cpu_pct_total"), r.get("poller_load_max"), r.get("disk_write_mbps"),
+            r["label"], r["level"], r.get("playing"), r.get("client_mbps"),
+            "%s/%s" % (r.get("nic_tx_mbps"), r.get("nic_rx_mbps")), r.get("cpu_pct_total"), r.get("poller_load_max"), r.get("disk_write_mbps"),
             r.get("io_full_pct") if r.get("io_full_pct") is not None
             else ("wa %s" % r["io_wait_pct"] if r.get("io_wait_pct") is not None else None),
             r.get("healthcheck_p95_ms"), ttff,
@@ -1101,9 +1118,9 @@ def scenario_step(rn):
         # mức dư ở bậc mục tiêu — đọc cùng "CPU theo nhóm thread"/"Hàm nóng" để biết tinh chỉnh gì
         groups = accept_row.get("thread_groups") or []
         summary["Tài nguyên ở bậc %d" % a.accept] = (
-            "CPU %s%% tổng, poller nóng %s%%, NIC tx %s Mbps, ghi đĩa %s MB/s, RSS %s MB, nhóm nặng nhất: %s" % (
+            "CPU %s%% tổng, poller nóng %s%%, NIC tx/rx %s/%s Mbps, ghi đĩa %s MB/s, RSS %s MB, nhóm nặng nhất: %s" % (
                 accept_row.get("cpu_pct_total"), accept_row.get("poller_load_max"),
-                accept_row.get("nic_tx_mbps"), accept_row.get("disk_write_mbps"), accept_row.get("rss_mb"),
+                accept_row.get("nic_tx_mbps"), accept_row.get("nic_rx_mbps"), accept_row.get("disk_write_mbps"), accept_row.get("rss_mb"),
                 ", ".join("%s %.0f%%/%d thread" % tuple(g) for g in groups[:3]) or "-"))
     if accept_row:
         summary["Monitor ở bậc %d" % a.accept] = monitor_verdict(accept_row) + (

@@ -94,8 +94,9 @@ tag (`c16`) là **số vCPU**, tức gấp đôi số lõi vật lý.
 
 Hệ quả là **không đo được trực tiếp MediaServer dùng cả 32 vCPU** trên một máy: bộ sinh tải luôn
 cần một phần lõi. Cấp cho MediaServer 4, 8, 16, 24 vCPU rồi đọc đường cong theo số vCPU; mức 32 vCPU
-suy ra từ đường cong đó. Nếu mượn được một máy thứ hai trong cùng mạng 10 Gbps, đặt viewer lên đó
-bằng `--viewer-hosts` (xem [mục 5.4](#54-có-máy-thứ-hai)).
+suy ra từ đường cong đó. Nếu mượn được một máy thứ hai cùng dải mạng, đặt cả nguồn RTSP lẫn viewer
+lên đó bằng `--client-host` (xem [mục 2.6](#26-đo-qua-nic-thật-máy-client-riêng)): bộ sinh tải rời
+khỏi máy đo và MediaServer lấy được 28 vCPU (lượt C28).
 
 ### 2.2 RAM: giới hạn của container
 
@@ -137,6 +138,53 @@ Ví dụ: 300 camera (1 350 Mbps) để lại ~6 650 Mbps, tức ~4 200 người
 này NIC hiếm khi là giới hạn đầu tiên, trừ khi vượt ~1 500 camera. Cột `NIC Mbps` trong báo cáo là
 lưu lượng loopback, dùng để kiểm tải thật đã được tạo, không phải tải lên card 10 Gbps.
 
+**db3 thực tế chỉ có `bond0` = 2 × 1 Gbps** (Bảng 0). NIC song công nên camera (chiều nhận) và người
+xem (chiều gửi) tính riêng: ở 80 % của 2 Gbps, chiều nhận chạm trần ở ~355 camera, chiều gửi ở
+~1 000 người xem. Đó là mức thấp hơn ngưỡng đĩa của lượt G (500–700 camera) và ngưỡng luồng xem
+(≥ 2 000) đo qua loopback, nên trên db3 NIC rất có thể là giới hạn đầu tiên. Công thức không bắt
+được các hiệu ứng thật của card: chia luồng giữa hai cổng bond, ngắt/softirq, mất gói và retransmit.
+Vì vậy cần đo lại qua NIC thật, xem mục 2.6.
+
+### 2.6 Đo qua NIC thật: máy client riêng
+
+`--client-host H` chạy **nguồn RTSP giả và mọi worker viewer trên máy H** cùng dải mạng, qua SSH.
+MediaServer kéo luồng camera vào qua card thật (cột `NIC rx`) và phục vụ người xem ra qua card thật
+(cột `NIC tx`). Máy đo chỉ còn MediaServer, mock API/ONVIF và bộ chấm (nhẹ, < 1 vCPU).
+
+| Mục | Loopback (lượt cũ) | `--client-host` (lượt `_net`) |
+|---|---|---|
+| Luồng camera vào | loopback | NIC thật, chiều nhận |
+| Người xem | loopback, worker trên máy đo | NIC thật, chiều gửi; máy đo không chạy worker |
+| CPU bộ sinh tải | ăn lõi của máy đo (`--gen-cpus`) | trên máy H |
+| Ngắt mạng, softirq, TCP thật | không có | có, tính vào CPU của máy đo |
+| MediaServer tối đa | 24 vCPU (C24) | 28 vCPU (C28) |
+
+Lượt `_net` giữ **nguyên** `--ms-cpus`/`--gen-cpus`/RAM/ổ của lượt tương ứng (tag thêm hậu tố
+`_net`), nên so một lượt loopback với lượt `_net` cùng tên là đọc được riêng ảnh hưởng của NIC.
+
+Yêu cầu với máy H:
+
+- Cùng dải mạng, đi thẳng qua switch tới db3 (không qua router/NAT/VPN). `ip route get <IP H>` trên
+  db3 phải ra `dev bond0` (không phải `lo`).
+- **NIC của H không chậm hơn của db3** (≥ 2 Gbps cho db3, tốt nhất 10 Gbps). H chỉ có 1 Gbps thì
+  mọi bậc trên ~180 camera hoặc ~500 người xem chạm trần card của H, không phải của db3. Bundle ghi
+  tốc độ card của H vào `system.txt`; nếu H chậm hơn thì không kết luận được giới hạn NIC của db3.
+- CPU: nguồn RTSP ~1 vCPU / 150 camera, viewer ~1 vCPU / 250 người xem (bậc 2 000 cần ~8 vCPU). Bậc
+  vượt sức H bị chấm "không hợp lệ" như trước (nguồn tụt nhịp, worker > 85 % CPU).
+- Linux, `python3` ≥ 3.7, SSH không mật khẩu từ db3 (user root của host), không cần repo hay ffmpeg:
+  bundle chép script và clip sang `/tmp/s3mk_rtsp_src_<máy đo>_<cổng>/` mỗi kịch bản.
+- Tường lửa: db3 phải vào được cổng RTSP 18554 của H; H phải vào được cổng HTTP của node (18081, thêm
+  RTSP 18551 nếu hỗn hợp có RTSP) và controller viewer 18600 trên db3. CentOS 7 có `firewalld`: mở các cổng này hoặc
+  `systemctl stop firewalld` trong lúc đo.
+- Không dùng H cho việc khác trong lúc đo.
+
+**Bond 2 × 1 Gbps chia luồng theo hàm băm.** Một cổng bond chỉ có 1 Gbps; chiều gửi của db3 chia
+theo `xmit_hash_policy` của bond, chiều nhận do switch chia. Với `layer2` hoặc `layer2+3`, mọi kết
+nối tới cùng một máy H đi chung **một** cổng, trần thực tế còn ~1 Gbps mỗi chiều. Với `layer3+4`,
+nhiều kết nối TCP được chia ra hai cổng. Bundle ghi `/proc/net/bonding/bond0` (mode, hash policy, cổng
+con) vào `system.txt`; ghi chúng vào Bảng 0. Chạy như production: nếu production chỉ có một máy VMS
+kéo luồng thì kết quả một máy H là đúng thực tế.
+
 ### 2.5 Ma trận lượt đo
 
 Không chạy mọi tổ hợp CPU × RAM × đĩa (quá lâu). Mỗi lượt chỉ đổi **một** yếu tố so với cấu hình gốc
@@ -151,6 +199,11 @@ G (MediaServer 16 vCPU, RAM không giới hạn, SSD).
 | M16 | 16 vCPU như G | `8-15,24-31` | 16 GB | SSD | 2 |
 | M8 | 16 vCPU như G | `8-15,24-31` | 8 GB | SSD | 3 |
 | H | 16 vCPU như G | `8-15,24-31` | không giới hạn | HDD (`sdb`) | 1 |
+| C28 (chỉ `_net`) | 28 vCPU = 14 lõi (`0-13,16-29`, cả 2 node) | runner/mock `14-15,30-31`, nguồn + viewer ở máy H | không giới hạn | SSD | 2 khi có máy H |
+
+Mọi lượt trên chạy được ở chế độ `_net` (mục 2.6) với cùng cách ghim lõi. Thứ tự đề xuất khi có máy H:
+`smoke` → `G` → `C8` → `C28` → `M16`, rồi các lượt khác nếu còn thời gian. G `_net` so với G loopback
+cho biết ảnh hưởng của NIC; C28 thay cho mức 32 vCPU ngoại suy.
 
 Ở C4 và C8, bộ sinh tải vẫn giữ trọn node1 (`8-15,24-31`); các lõi còn lại của node0 để trống. Như
 vậy sức sinh tải giống G và chỉ số vCPU của MediaServer thay đổi. Riêng C24, MediaServer lấn sang
@@ -191,13 +244,13 @@ Tổng thời gian: khoảng 3 giờ mỗi lượt. Thứ tự đề xuất: G �
 
 ### 3.2 Image chạy test
 
-Image production thiếu python3, `ss`/`ip`, `vmstat`, `iostat`. Dựng image test từ image production:
+Image production thiếu python3, `ss`/`ip`, `vmstat`, `iostat`, `ssh`. Dựng image test từ image production:
 
 ```dockerfile
 # Dockerfile.captest
 FROM 3spro/3spro-mserver:<tag>
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        python3 iproute2 procps sysstat util-linux linux-tools-generic \
+        python3 iproute2 procps sysstat util-linux linux-tools-generic openssh-client ethtool \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf "$(ls /usr/lib/linux-tools/*/perf | head -1)" /usr/local/bin/perf
 ```
@@ -370,17 +423,53 @@ $D -v /mnt/hdd/cap:/work -w /work s3mk-captest \
 #   rồi bước b, c như G với tag H_hdd_…; nên chạy cả c (replay) ở lượt này
 ```
 
-### 5.4 Có máy thứ hai
+### 5.4 Có máy thứ hai (đo qua NIC thật)
 
-Nếu có máy client nối cùng mạng 10 Gbps (có python3, SSH không mật khẩu từ container), thêm vào
-bước b:
+Điều kiện của máy client H ở [mục 2.6](#26-đo-qua-nic-thật-máy-client-riêng). Chuẩn bị một lần trên
+host db3:
 
 ```bash
-   --viewer-hosts 10.0.0.21 --nic <card 10G>
+H=10.0.0.21                                   # IP máy client, cùng dải với bond0
+ip route get $H                               # phải là "dev bond0"
+ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519   # nếu root chưa có khoá
+ssh-copy-id root@$H && ssh root@$H 'python3 --version; nproc; ethtool $(ip route get <IP db3> | awk "/dev/{print \$3}") | grep Speed'
+cat /proc/net/bonding/bond0 | grep -E 'Mode|Hash|Slave Interface|Speed'   # ghi vào Bảng 0
+systemctl stop firewalld                      # hoặc mở 18554 trên H; 18081, 18551, 18600 trên db3
 ```
 
-Viewer khi đó đi qua NIC thật nên cột `NIC Mbps` là lưu lượng ra card thật, và bộ sinh tải trên máy
-này nhẹ hơn. Có thể cho MediaServer 24–28 lõi.
+`ssh root@$H` lần đầu từ host để lưu host key vào `~/.ssh/known_hosts`; container dùng chung thư mục
+này (mount chỉ đọc, ssh chạy `BatchMode` nên không hỏi lại).
+
+Mỗi lệnh `ccu_test.sh` ở mục 5.1–5.3 thêm `--client-host $H` và mount khoá SSH; thêm `_net` vào tag:
+
+```bash
+$D -v /root/.ssh:/root/.ssh:ro -v /data/cap:/work -w /work s3mk-captest \
+   ./ccu_test.sh $B --only cam_step --ms-cpus 0-7,16-23 --gen-cpus 8-15,24-31 \
+      --client-host $H --tag G_ssd_c16_m32_net --yes
+```
+
+Hoặc qua `capacity_matrix.sh` (mục 5.7), tự thêm mount, tuỳ chọn và hậu tố `_net`:
+
+```bash
+./capacity_matrix.sh --client-host 10.0.0.21 smoke G C8 C28 M16
+```
+
+Tuỳ chọn tách riêng khi có hai máy client: `--source-host A --viewer-hosts B` (nguồn ở A, viewer ở
+B); `--viewer-hosts B1,B2` chia viewer cho nhiều máy; `--viewer-workers N` đặt số worker mỗi máy
+(mặc định nproc/2 của máy đó). Có `--viewer-hosts` thì máy đo không chạy worker viewer nào (đặt
+`CCU_WORKERS=N` để chạy thêm).
+
+Đọc kết quả `_net`:
+
+- Cột `NIC rx/tx Mbps` ở bảng bậc camera và `NIC tx/rx Mbps` ở bảng bậc viewer là lưu lượng card
+  thật. Vượt 80 % tốc độ card (`/sys/class/net/bond0/speed`, với bond là tổng các cổng) thì bậc có
+  cảnh báo `NIC bond0 rx …` và yếu tố giới hạn là `nic`.
+- NIC của db3 bão hoà làm nguồn trên H tụt nhịp; khi đó trễ nhịp được ghi là hệ quả và bậc chấm
+  **trượt** theo NIC, không "không hợp lệ". Nguồn tụt nhịp trong khi NIC db3 còn dư thì vẫn là
+  "không hợp lệ" (H thiếu CPU hoặc card của H chậm hơn).
+- So `TcpRetransSegs` trong `<kịch bản>.network_before/after.txt` giữa lượt loopback và `_net`.
+- Nếu H mất kết nối giữa chừng, `rtsp_state.json` thôi cập nhật và bậc chấm "không hợp lệ: nguồn
+  RTSP không báo số liệu".
 
 ### 5.5 Khi lượt bị ngắt
 
@@ -559,6 +648,12 @@ nohup ./capacity_matrix.sh all > matrix.out 2>&1 &  # smoke G C4 C8 M16 M8, ~14 
 | `fio-seq`, `fio-rec` | `fio` ghi tuần tự 200 GB / ghi kiểu ghi hình. Chạy `fio-seq` lần 2 sau một lượt xoá lớn |
 | `p6` | `diskinfo trim fio-seq fio-rec dirty` |
 | `all` | `smoke G C4 C8 M16 M8` |
+| `C28`, `C28-a`, `C28-b` | MediaServer 28 vCPU; chỉ chạy với `--client-host` |
+
+- **`--client-host H`**: mọi kịch bản docker chạy với nguồn RTSP + viewer trên H (mục 5.4), mount
+  `--ssh-dir` (mặc định `~/.ssh`) vào `/root/.ssh`, và thêm `_net` vào mọi tag
+  (`G_ssd_c16_m32_net`, `G_ssd_c16_m32_view_net`). N của bước b lấy từ bước a cùng chế độ `_net`.
+  Trước khi chạy, script kiểm ssh tới H từ host và kiểm image có `ssh`/`scp`.
 
 - **N của bước b/c**, theo thứ tự ưu tiên: N ghi trên dòng lệnh; ngưỡng của bước a trong cùng lần chạy;
   ngưỡng trong tarball bước a mới nhất ở `/data/cap`; cuối cùng là 300. Từ ngưỡng ra N theo mục 2.5:
@@ -631,6 +726,8 @@ mẫu tài nguyên trong tarball.
 | Kernel (`uname -r`), PSI có/không | `3.10.0-1160.105.1.el7.x86_64`, **không có PSI**: cột "IO full %" luôn `None`, đánh giá đĩa bằng `vmstat wa` và `iostat %util`/`w_await` |
 | Docker version, cgroup v1/v2 | cgroup v1 (giới hạn RAM đọc qua `memory.limit_in_bytes`); docker version chưa ghi |
 | NIC (model, tốc độ) | `bond0` = `eno1` + `eno2` 1 Gbps, tổng 2 Gbps (**không phải 10 Gbps** như giả định mục 2.4); viewer chạy loopback |
+| Bond: mode, `xmit_hash_policy` (`/proc/net/bonding/bond0`) | |
+| Máy client cho lượt `_net`: IP, CPU, RAM, NIC (tốc độ), cùng switch với db3? | |
 | Image / commit MediaServer, kiểu build (Release/RelWithDebInfo) | `/opt/media/bin/MediaServer` Release (`debug_build=0`), git `e331cbe` nhánh `feature/anhnq48-replay-timeline`, build 2026-10-15 13:34, sha256 `392de394…94135`; FFmpeg 4.4.2 của hệ thống, không có GPU (cuda/vaapi/qsv đều không dùng được) |
 | Commit của bundle (`BUNDLE_INFO` in ra lúc chạy) | `3aca28e8` (dựng từ nhánh của binary, đóng gói 2026-10-16 11:36). Bundle `b74ea144` (develop) **không chạy được** với binary này, xem mục 4.1 |
 | Đợt đo 2 (2026-10-19): binary / bundle | Binary Release (`debug_build=0`), git `3388afc` nhánh `feature/anhnq48-health-monitor` (commit 2026-10-19 08:25, build 14:43), sha256 `0dea37d6…2a1054`; bundle `3388afcc` đóng gói 2026-10-19 16:29, cùng commit với binary. sysctl vẫn mặc định (`vm.dirty_ratio=20`, `vm.dirty_background_ratio=10`, `net.core.somaxconn=128`), tức chưa làm P6/K5 |
@@ -649,6 +746,10 @@ Theo cách chia lõi của db3 (vCPU N và N+16 cùng lõi vật lý, NUMA node0
 | M16 | 0-7,16-23 | 8-15,24-31 | 16 GB | SSD | `M16_ssd_c16_m16` (2026-10-21 09:34, binary `3388afc`): ngưỡng **500** (sát trần RAM), 600 và 700 bị **OOM kill** trong cgroup 16 GB (mục 10.17) | `M16_ssd_c16_m16_view` (2026-10-21 11:04, N = 300): ≥ 2 000 đạt (mục 10.18) | — | `--memory 16g --memory-swap 16g`, `-t 16` |
 | M8 | 0-7,16-23 | 8-15,24-31 | 8 GB | SSD | `M8_ssd_c16_m8` (2026-10-21 11:56, binary `3388afc`): ngưỡng **200**, 300 bị **OOM kill** trong ramp (mục 10.19) | `M8_ssd_c16_m8_view` (2026-10-21 12:33, N = 300): **không đo được**, nền 300 camera bị OOM kill trong ramp (mục 10.20) | — | `--memory 8g --memory-swap 8g --shm-size=6g` (container vẫn báo `/dev/shm` 20G), `-t 16`; chạy bậc mặc định, không dùng bậc 100–300 như mục 10.17 đề xuất |
 | H | 0-7,16-23 | 8-15,24-31 | 32 GB | HDD (`sdb`) | | | | |
+| G `_net` | 0-7,16-23 | 8-15,24-31 (chỉ runner/mock) | 32 GB | SSD | | | | nguồn + viewer ở máy client |
+| C8 `_net` | 0-3,16-19 | 8-15,24-31 | 32 GB | SSD | | | | |
+| C28 `_net` | 0-13,16-29 | 14-15,30-31 | 32 GB | SSD | | | | |
+| M16 `_net` | 0-7,16-23 | 8-15,24-31 | 16 GB | SSD | | | | |
 
 ### Bảng 2 — Ngưỡng camera (bước a, 0 người xem, ghi 24/7 cả hai luồng)
 
@@ -778,7 +879,8 @@ giá sẽ tính lại.
 
 - **Một máy**: MediaServer không được dùng cả 32 vCPU; mức 32 lõi là ngoại suy từ C4/C8/G/C24. Ở
   C24, bộ sinh tải chỉ có 8 lõi nên các bậc cao dễ "không hợp lệ".
-- **Loopback**: NIC 10 Gbps không được đo trực tiếp (mục 2.4), trừ khi có máy thứ hai.
+- **Loopback**: lượt không có `_net` không đo NIC (mục 2.4). Lượt `_net` đo NIC của db3 nhưng chỉ
+  từ một máy client: nhiều máy VMS/người xem thật chia luồng qua bond khác với một máy H (mục 2.6).
 - **Camera giả**: nguồn phát đều, không có camera chập chờn, mất gói, đổi độ phân giải hay ONVIF
   chậm. Ngưỡng thật với camera thật thường thấp hơn; nên giữ dư 20–30% so với ngưỡng đo được.
 - **Bitrate cố định** H.264 4 Mbps + 512 kbps. Camera H.265 hoặc bitrate khác: đĩa và mạng quy đổi

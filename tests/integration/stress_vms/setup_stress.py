@@ -114,7 +114,8 @@ def camera(index, total, node_ids, args):
     suffix = "-offline" if cohort == "offline" else ""
     main_id = "%s-main" % cam_id
     sub_id = "%s-sub" % cam_id
-    base = "rtsp://127.0.0.1:%d" % args.rtsp_port
+    # STRESS_RTSP_HOST: nguồn RTSP ở máy khác (run_stress.sh SOURCE_HOST), luồng kéo đi qua NIC thật
+    base = "rtsp://%s:%d" % (os.environ.get("STRESS_RTSP_HOST", "127.0.0.1"), args.rtsp_port)
 
     entry = {
         "id": cam_id,

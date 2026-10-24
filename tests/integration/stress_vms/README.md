@@ -305,6 +305,11 @@ MEDIASERVER_DIR=/opt/s3mk-release MEDIA_PROFILE=realistic CCU_MIX=vms CCU_DIST=h
 CCU_NIC=eth0 VIEWER_HOSTS=10.0.0.21,10.0.0.22 CCU_CTL_HOST=10.0.0.5 CCU_SERVER_HOST=10.0.0.5 \
     bash tests/integration/stress_vms/run_stress.sh /data/s3mk_ccu full ccu
 
+# nguồn RTSP giả cũng ở máy khác: luồng kéo camera đi qua NIC thật (cột NIC rx).
+# Script + clip được scp sang /tmp/s3mk_rtsp_src_<máy>_<cổng>/, state kéo về qua ssh.
+SOURCE_HOST=10.0.0.21 VIEWER_HOSTS=10.0.0.21 CCU_NIC=eth0 CCU_CTL_HOST=10.0.0.5 CCU_SERVER_HOST=10.0.0.5 \
+    bash tests/integration/stress_vms/run_stress.sh /data/s3mk_ccu full ccu
+
 bash run_stress.sh /data/s3mk_ccu full ccu_storm       # A3: 400 viewer mở trong 5 s
 CCU_DURATION=1800  bash run_stress.sh ... full ccu_churn   # A5
 CCU_DURATION=14400 bash run_stress.sh ... full ccu_soak    # A4

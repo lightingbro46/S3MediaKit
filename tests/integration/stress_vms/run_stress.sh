@@ -41,7 +41,12 @@
 #   CCU_NIC          card mạng phục vụ viewer, để đo egress               [lo]
 #   CCU_REST_LOAD    1 = chạy thêm tải REST nhẹ (PTZ/storage) làm nền     [1]
 #   CCU_PRODUCTION_ARGS 1 = chạy MediaServer không -t 4 --affinity 0     [1 với ccu*]
-#   VIEWER_HOSTS     máy client khác (ssh), mỗi máy VIEWER_WORKERS_PER_HOST worker [4]
+#   VIEWER_HOSTS     máy client khác (ssh), mỗi máy VIEWER_WORKERS_PER_HOST worker [nproc/2 của máy đó];
+#                    có VIEWER_HOSTS thì CCU_WORKERS mặc định 0: mọi viewer đi qua NIC thật
+#   SOURCE_HOST      chạy nguồn RTSP giả trên máy này (ssh không mật khẩu, python3 ≥ 3.7) thay vì
+#                    loopback: MediaServer kéo luồng camera qua NIC thật. Số tiến trình nguồn =
+#                    SOURCE_PROCS [nproc/2 của máy đó]; điều kiện lỗi (drop_spec) chỉ đẩy một lần
+#                    lúc khởi động nên chỉ hợp với kịch bản ccu*
 #   CCU_CTL_HOST     địa chỉ controller mà máy client gọi về    [IP đầu của máy này]
 #   CCU_ARGS         tham số thêm cho check_ccu.py (vd "--th long_stall_session_ratio=0.02")
 #   MEDIA_PROFILE    light (176x144 5fps 48kbps, mặc định) | realistic (main 1080p25 4Mbps,
@@ -140,12 +145,23 @@ stop_helpers() {
         kill $(cat "$WORK/viewer_remote.pids") 2>/dev/null
         rm -f "$WORK/viewer_remote.pids"
     fi
-    for name in rtsp_source onvif_mock mock_api sampler blocking_sampler; do
+    for name in rtsp_source rtsp_state_pull onvif_mock mock_api sampler blocking_sampler; do
         if [ -f "$WORK/$name.pid" ]; then
             kill "$(cat "$WORK/$name.pid")" 2>/dev/null
             rm -f "$WORK/$name.pid"
         fi
     done
+    if [ -f "$WORK/rtsp_source.remote" ]; then
+        local h d
+        read -r h d < "$WORK/rtsp_source.remote"
+        stop_remote_source "$h" "$d"
+        rm -f "$WORK/rtsp_source.remote"
+    fi
+}
+
+# "[r]" để pkill -f không khớp chính dòng lệnh của shell chạy pkill
+stop_remote_source() {
+    ssh -o BatchMode=yes -o ConnectTimeout=5 "$1" "pkill -TERM -f '$2/[r]tsp_'" 2>/dev/null
 }
 
 stop_all() { stop_nodes; stop_helpers; }
@@ -260,11 +276,16 @@ node_port() {
 start_viewers() {
     # $1 = cổng controller, $2 = tên pid, còn lại = tham số thêm cho controller
     local port="$1" name="$2"; shift 2
-    local local_workers="${CCU_WORKERS:-$(( $(nproc) / 2 > 0 ? $(nproc) / 2 : 1 ))}"
-    local per_host="${VIEWER_WORKERS_PER_HOST:-4}" hosts="" total
+    local local_workers per_host="${VIEWER_WORKERS_PER_HOST:-}" hosts="" total h
+    declare -A n_of
     [ -n "${VIEWER_HOSTS:-}" ] && [ "$name" = viewer_ctl ] && hosts="${VIEWER_HOSTS//,/ }"
+    # có máy client thì mọi viewer chạy ở đó (đi qua NIC thật), trừ khi đặt CCU_WORKERS
+    local_workers="${CCU_WORKERS:-$([ -n "$hosts" ] && echo 0 || echo $(( $(nproc) / 2 > 0 ? $(nproc) / 2 : 1 )))}"
     total=$local_workers
-    for h in $hosts; do total=$((total + per_host)); done
+    for h in $hosts; do
+        n_of[$h]="${per_host:-$(ssh -o BatchMode=yes "$h" 'n=$(nproc); echo $(( n / 2 > 0 ? n / 2 : 1 ))')}"
+        total=$((total + ${n_of[$h]:-4}))
+    done
     nohup python3 "$HERE/viewer_load.py" controller --port "$port" \
         --inventory "$WORK/inventory.json" --host "${CCU_SERVER_HOST:-127.0.0.1}" \
         --http-port "$(node_port node-a http)" --rtsp-port "$(node_port node-a rtsp)" \
@@ -275,7 +296,7 @@ start_viewers() {
     # Worker ở máy khác: script đẩy qua stdin nên máy client không cần checkout repo.
     local idx=$local_workers ctl="${CCU_CTL_HOST:-$(hostname -I | awk '{print $1}')}"
     for h in $hosts; do
-        for _ in $(seq 1 "$per_host"); do
+        for _ in $(seq 1 "${n_of[$h]:-4}"); do
             ssh -o BatchMode=yes "$h" python3 - worker --control "http://$ctl:$port" \
                 --index "$idx" --total "$total" < "$HERE/viewer_load.py" \
                 >> "$WORK/viewer_remote_$h.log" 2>&1 &
@@ -393,6 +414,12 @@ if [ "$MEDIA_PROFILE" = light ] && [ ! -f "$MEDIA" ]; then
         -sc_threshold 0 -b:v 48k -bsf:v h264_mp4toannexb -f h264 "$MEDIA" -y || exit 1
 fi
 
+if [ -n "${SOURCE_HOST:-}" ]; then
+    # địa chỉ camera trong api-config.json (setup_stress.py); host trong ~/.ssh/config thì đặt sẵn biến này
+    src_name="${SOURCE_HOST#*@}"
+    export STRESS_RTSP_HOST="${STRESS_RTSP_HOST:-$(getent hosts "$src_name" | awk '{print $1; exit}')}"
+    STRESS_RTSP_HOST="${STRESS_RTSP_HOST:-$src_name}"
+fi
 python3 "$HERE/setup_stress.py" "$REPO" "$WORK" layout \
     --cameras "$CAMERAS" --nodes "$NODES" --config-base "${CONFIG_BASE:-repo}" \
     --rtsp-port "$RTSP_PORT" --onvif-port "$ONVIF_PORT" --api-port "$API_PORT" \
@@ -400,12 +427,46 @@ python3 "$HERE/setup_stress.py" "$REPO" "$WORK" layout \
 
 trap stop_all EXIT
 
-nohup python3 "$HERE/rtsp_source.py" "$MEDIA" --port "$RTSP_PORT" --fps "$SOURCE_FPS" \
-    ${SUB_MEDIA:+--sub-media "$SUB_MEDIA"} --procs "$RTSP_PROCS" \
-    --drop-spec "$WORK/drop_spec.json" --state "$WORK/rtsp_state.json" \
-    --replay-speed "${REPLAY_SPEED:-4}" \
-    > "$WORK/rtsp_source.log" 2>&1 &
-echo $! > "$WORK/rtsp_source.pid"
+if [ -z "${SOURCE_HOST:-}" ]; then
+    nohup python3 "$HERE/rtsp_source.py" "$MEDIA" --port "$RTSP_PORT" --fps "$SOURCE_FPS" \
+        ${SUB_MEDIA:+--sub-media "$SUB_MEDIA"} --procs "$RTSP_PROCS" \
+        --drop-spec "$WORK/drop_spec.json" --state "$WORK/rtsp_state.json" \
+        --replay-speed "${REPLAY_SPEED:-4}" \
+        > "$WORK/rtsp_source.log" 2>&1 &
+    echo $! > "$WORK/rtsp_source.pid"
+else
+    # Nguồn ở máy khác: chép script + clip sang, chạy qua ssh (stdout về rtsp_source.log), một ssh
+    # thứ hai in rtsp_state.json mỗi 5 s để check_ccu.py đọc như khi chạy cục bộ.
+    SRC_DIR="${SOURCE_DIR:-/tmp/s3mk_rtsp_src_$(hostname -s)_$RTSP_PORT}"
+    SSH=(ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=15 "$SOURCE_HOST")
+    stop_remote_source "$SOURCE_HOST" "$SRC_DIR"
+    src_procs="${SOURCE_PROCS:-$("${SSH[@]}" 'n=$(nproc); echo $(( n / 2 > 0 ? n / 2 : 1 ))')}"
+    "${SSH[@]}" "mkdir -p '$SRC_DIR'" \
+        && scp -q -o BatchMode=yes "$HERE/rtsp_source.py" "$MEDIA" ${SUB_MEDIA:+"$SUB_MEDIA"} \
+            $([ -f "$WORK/drop_spec.json" ] && echo "$WORK/drop_spec.json") "$SOURCE_HOST:$SRC_DIR/" \
+        || { echo "FAIL: không chép được nguồn RTSP sang $SOURCE_HOST:$SRC_DIR"; exit 1; }
+    echo "$SOURCE_HOST $SRC_DIR" > "$WORK/rtsp_source.remote"
+    rm -f "$WORK/rtsp_state.json"
+    nohup "${SSH[@]}" "exec python3 '$SRC_DIR/rtsp_source.py' '$SRC_DIR/$(basename "$MEDIA")' \
+        --port $RTSP_PORT --fps $SOURCE_FPS ${SUB_MEDIA:+--sub-media '$SRC_DIR/$(basename "$SUB_MEDIA")'} \
+        --procs $src_procs --drop-spec '$SRC_DIR/drop_spec.json' --state '$SRC_DIR/rtsp_state.json' \
+        --replay-speed ${REPLAY_SPEED:-4}" > "$WORK/rtsp_source.log" 2>&1 &
+    echo $! > "$WORK/rtsp_source.pid"
+    # $! là chính ssh: giết nó thì vòng đọc gặp EOF và thoát theo
+    nohup "${SSH[@]}" "while sleep 5; do cat '$SRC_DIR/rtsp_state.json' 2>/dev/null; echo || exit; done" \
+        > >(while IFS= read -r line; do
+                [ -n "$line" ] && printf '%s\n' "$line" > "$WORK/rtsp_state.json.tmp" \
+                    && mv -f "$WORK/rtsp_state.json.tmp" "$WORK/rtsp_state.json"
+            done) 2> /dev/null &
+    echo $! > "$WORK/rtsp_state_pull.pid"
+    # nguồn lên chưa và cổng có mở từ máy này không (tường lửa máy nguồn)
+    for i in $(seq 1 30); do
+        (exec 3<> "/dev/tcp/$STRESS_RTSP_HOST/$RTSP_PORT") 2> /dev/null && break
+        [ "$i" = 30 ] && { echo "FAIL: không kết nối được $STRESS_RTSP_HOST:$RTSP_PORT (xem $WORK/rtsp_source.log, tường lửa)"; exit 1; }
+        sleep 1
+    done
+    echo "nguồn RTSP: $SOURCE_HOST ($STRESS_RTSP_HOST:$RTSP_PORT, $src_procs tiến trình)"
+fi
 
 ONVIF_EXTRA=""
 # Video config rule tìm profile chính bằng URI luồng, nên mock phải trả đúng URL camera.
