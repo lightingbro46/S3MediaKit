@@ -21,6 +21,10 @@ HlsMediaSource::Ptr makeHlsSource(const std::string &schema, const std::string &
     return source;
 }
 
+MediaSource::Ptr findHls(const std::string &stream) {
+    return MediaSource::find(HLS_SCHEMA, DEFAULT_VHOST, "hls-unit", stream);
+}
+
 bool waitForReaderCount(const HlsMediaSource::Ptr &source, int expected) {
     for (size_t i = 0; i < 100 && source->readerCount() != expected; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -105,4 +109,23 @@ TEST(HlsCookieDataTest, SwitchingRenditionMovesTheReader) {
     EXPECT_TRUE(waitForReaderCount(low, 1));
     viewer.reset();
     EXPECT_TRUE(waitForReaderCount(low, 0));
+}
+
+TEST(HlsMediaSourceTest, RestartedStreamReplacesFinishedSource) {
+    auto finished = makeHlsSource(HLS_SCHEMA, "restart-finished");
+    finished->setFinished();
+
+    HlsMediaSource::Ptr restarted;
+    ASSERT_NO_THROW(restarted = makeHlsSource(HLS_SCHEMA, "restart-finished"));
+    EXPECT_EQ(restarted, findHls("restart-finished"));
+
+    // The finished source leaving after hls.deleteDelaySec must not take the new one with it
+    finished.reset();
+    EXPECT_EQ(restarted, findHls("restart-finished"));
+}
+
+TEST(HlsMediaSourceTest, DuplicateLiveSourceIsRejected) {
+    auto live = makeHlsSource(HLS_SCHEMA, "duplicate-live");
+    EXPECT_THROW(makeHlsSource(HLS_SCHEMA, "duplicate-live"), std::invalid_argument);
+    EXPECT_EQ(live, findHls("duplicate-live"));
 }

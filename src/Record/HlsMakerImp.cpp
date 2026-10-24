@@ -83,6 +83,10 @@ void HlsMakerImp::clearCache(bool immediately, bool eof) {
             // grace period as its files. Clients can reload the final playlist
             // from memory, observe EXT-X-ENDLIST and fetch referenced segments.
             auto media_src = eof ? _media_src : nullptr;
+            if (media_src) {
+                // A restarted stream registers its new HLS source in place of this one
+                media_src->setFinished();
+            }
             _poller->doDelayTask(delay * 1000, [lst, media_src]() {
                 clearHls(lst);
                 return 0;

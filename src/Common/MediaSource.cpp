@@ -534,6 +534,7 @@ void MediaSource::emitEvent(bool regist){
 }
 
 void MediaSource::regist() {
+    Ptr replaced;
     {
         // Reduce mutex lock critical area
         lock_guard<recursive_mutex> lock(s_media_source_mtx);
@@ -543,10 +544,18 @@ void MediaSource::regist() {
             if (src.get() == this) {
                 return;
             }
-            // Add judgment to prevent re-registration when the current stream is already registered
-            throw std::invalid_argument("media source already existed:" + getUrl());
+            if (!src->isFinished()) {
+                // Add judgment to prevent re-registration when the current stream is already registered
+                throw std::invalid_argument("media source already existed:" + getUrl());
+            }
+            // The old source only waits for its readers to drain; its unregist() will not remove this one
+            replaced = std::move(src);
         }
         ref = shared_from_this();
+    }
+    if (replaced) {
+        InfoL << "Replace finished media source:" << getUrl();
+        replaced->emitEvent(false);
     }
     emitEvent(true);
 }

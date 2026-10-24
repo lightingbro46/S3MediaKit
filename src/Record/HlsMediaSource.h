@@ -48,12 +48,17 @@ public:
 
     void onSegmentSize(size_t bytes) { _speed[TrackVideo] += bytes; }
 
+    // The live stream reached eof; the source stays registered for hls.deleteDelaySec
+    void setFinished() { _finished = true; }
+    bool isFinished() const override { return _finished; }
+
     void getPlayerList(const std::function<void(const std::list<toolkit::Any> &info_list)> &cb,
                        const std::function<toolkit::Any(toolkit::Any &&info)> &on_change) override {
         _ring->getInfoList(cb, on_change);
     }
 
 private:
+    std::atomic<bool> _finished { false };
     RingType::Ptr _ring;
     std::string _index_file;
     mutable std::mutex _mtx_index;

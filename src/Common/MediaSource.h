@@ -440,6 +440,9 @@ public:
 
     virtual bool broadcastMessage(const toolkit::Any &data) { return false; }
 
+    // Ended and kept registered only so readers can drain it; a new source with the same key takes its place
+    virtual bool isFinished() const { return false; }
+
     // Get the media source type
     MediaOriginType getOriginType() const;
     // Get the media source url or file path
