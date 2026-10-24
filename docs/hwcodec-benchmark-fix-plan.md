@@ -113,7 +113,9 @@ chưa nạp"; E2E `check overlay` vẫn đạt; tái hiện ở bước 1 không
 - Bước 2, đổi nóng (theo đọc code, chưa chạy): bật watermark/privacy mask cho camera đang chạy **không** ngắt và
   không chuyển viewer đang xem luồng gốc. `StreamOption::operator==` không gồm trường overlay nên luồng không dựng
   lại, và không có chỗ nào đánh giá lại policy của session đang mở. Viewer cũ thấy hình không mask cho tới khi tự
-  kết nối lại. Cần chốt cách xử lý (ngắt session nào, có miễn role không) trước khi sửa.
+  kết nối lại. **Đã chốt 2026-10-24: giữ nguyên.** Viewer cũ xem tới hết phiên, hoặc tới khi camera khởi động lại
+  vì cấu hình thay đổi.
+- Lỗi 401 ở lần khởi động đầu tiên: **đã chốt giữ nguyên.**
 
 ## P3 — HLS cũ còn đăng ký làm luồng khởi động lại thất bại lặp
 
@@ -259,6 +261,21 @@ kèm stderr ffmpeg. Phân loại: lỗi driver WSL (giữ fallback, ghi docs) ha
    đầu file và vào tests/integration/stress_vms/README.md. Không sửa công cụ (cần tách POC để có pts), vì camera thật
    phát đúng pts. Nếu cần kiểm nguồn B-frame thì dùng nguồn RTSP thật hoặc ffmpeg `-f rtsp`.
 3. Sau P1/P3/P4, chạy lại toàn bộ harness (CPU và GPU) và cập nhật báo cáo.
+
+**Kết quả (2026-10-24).**
+- Bước 1: commit b4924e38. Bước 2: ghi giới hạn B-frame vào đầu `rtsp_source.py` và vào stress_vms/README.md.
+- Sửa harness: `info.txt` nằm ở `record/record/<cam>/`, mẫu xoá cũ `record/*/info.txt` không khớp file nào, nên
+  khoảng 17 s đầu mỗi bậc vẫn chạy cấu hình của bậc trước. Nay xoá đệ quy. `rtsp_source.py` chạy trong work dir để
+  `rtsp_state.json` không rơi vào repo.
+- Bước 3: chạy lại CPU (13 bậc + extract), GPU `inProcess=0` (12 bậc + extract), GPU mặc định (9 bậc). Báo cáo có
+  thêm mục 10, và các mục 1, 5, 6, 7, 8 đã cập nhật.
+  - CPU: 0 crash, `restart_churn` = 0, RSS motion Main 16 luồng còn 533 MB.
+  - GPU `inProcess=0`: 0 crash.
+  - GPU mặc định: 5/9 bậc crash.
+- Lỗi mới tìm ra khi đo lại: `Process` (server/Process.cpp) báo exit code 0 cho tiến trình chết vì signal. Trích xuất
+  3 job GPU (ffmpeg segfault trong driver) vì vậy báo SUCCESS với file mp4 thiếu moov (2/4 lượt), và `retryOnCpu` không
+  chạy. Đã sửa ở c70e03c9 (128 + signal), có unit `ProcessExitCodeTest`. Chạy lại 4 lượt 3 job: 1 lần segfault, được
+  phát hiện (`exit code = 139`) và chạy lại bằng libx264, mọi file đều hợp lệ.
 
 ## Không sửa: nạp `record/<cam>/info.txt` trước cấu hình API
 

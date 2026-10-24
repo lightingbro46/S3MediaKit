@@ -77,7 +77,7 @@ theo docs/hwcodec-benchmark-fix-plan.md), báo cáo ở
 Những điều harness đã xử lý sẵn:
 
 - Mỗi bậc chạy một MediaServer mới. Đổi motion/overlay giữa chừng không dựng lại luồng camera đang chạy.
-- Trước mỗi lần khởi động, harness xoá `db/` và `record/*/info.txt`. Cả hai được nạp trước `api-config.json`, nên nếu
+- Trước mỗi lần khởi động, harness xoá `db/` và `record/record/<cam>/info.txt`. Cả hai được nạp trước `api-config.json`, nên nếu
   giữ lại, cấu hình của bậc trước sẽ chạy thêm khoảng 20 s ở đầu bậc sau.
 - Không đo trước giây thứ `--warmup` (45). Khoảng 30 s đầu, luồng camera khởi động lại liên tục
   (`media source already existed: hls`); số lần đếm được nằm ở `restart_churn`.

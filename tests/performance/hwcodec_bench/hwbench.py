@@ -313,12 +313,13 @@ class Bench:
     def start_server(self, label):
         """MediaServer mới cho mỗi bậc: đổi motion/overlay giữa chừng không dựng lại luồng camera đang chạy."""
         self.write_cameras()
-        # Camera lưu trong SQLite và record/<cam>/info.txt (StatisticRecorder) được nạp trước api-config.json:
+        # Camera lưu trong SQLite và record/record/<cam>/info.txt (StatisticRecorder) được nạp trước api-config.json:
         # xoá để cấu hình bậc trước (motion, overlay) không chạy thêm ~20 s đầu bậc sau. Giữ file ghi của camera 0.
         import shutil
         shutil.rmtree(os.path.join(self.work, "db"), ignore_errors=True)
         os.makedirs(os.path.join(self.work, "db"))
-        for info in glob.glob(os.path.join(self.work, "record", "*", "info.txt")):
+        # File nằm ở record/<record.appName>/<cam>/info.txt: phải tìm đệ quy, mẫu record/*/info.txt không khớp file nào.
+        for info in glob.glob(os.path.join(self.work, "record", "**", "info.txt"), recursive=True):
             os.remove(info)
         env = gpu_env(self.mode)
         env["LD_LIBRARY_PATH"] = BIN_DIR

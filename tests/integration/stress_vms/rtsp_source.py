@@ -5,6 +5,10 @@ Mỗi URL (bất kể path) đều được chấp nhận và trả về cùng m
 đóng gói RTP sẵn, nên chi phí CPU cho mỗi luồng chỉ là vá seq/timestamp rồi ghi socket.
 Chỉ hỗ trợ RTP/AVP/TCP (interleaved) để không phải mở thêm cổng UDP cho 600 luồng.
 
+Timestamp RTP tăng đều theo thứ tự frame trong file (thứ tự giải mã), không mang pts. Clip có
+B-frame vì vậy phát ra pts đi lùi; FFmpegFrameRateFilter của motion/transcode sẽ reset ở mỗi frame.
+Dùng clip không B-frame (`-bf 0`). Muốn kiểm nguồn có B-frame thì dùng camera thật hoặc ffmpeg `-f rtsp`.
+
 Dùng:
     rtsp_source.py <h264_file> [--sub-media <h264_file>] [--port 8554] [--fps 5]
                    [--procs N] [--stats-sec 10] [--drop-spec PATH] [--state PATH]
