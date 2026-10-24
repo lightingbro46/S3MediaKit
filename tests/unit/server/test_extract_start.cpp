@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <csignal>
 #include <chrono>
 #include <cstdlib>
 #include <future>
@@ -12,6 +13,7 @@
 
 #include "Common/BlockingExecutors.h"
 #include "FFmpegSource.h"
+#include "Process.h"
 #include "Poller/EventPoller.h"
 #include "Storage/DbStorage.h"
 #include "Storage/MigrationHistory.h"
@@ -142,4 +144,19 @@ TEST(ExtractStartTest, CancelBeforePreparationStopsIt) {
     EXPECT_FALSE(extractor->status().finished);
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     EXPECT_EQ(1, calls.load());
+}
+
+TEST(ProcessExitCodeTest, KilledBySignalIsNotSuccess) {
+    // ffmpeg segfaulting in a GPU driver must not read as exit code 0: extract would report success on a broken file.
+    Process process;
+    std::string log_file;
+    process.run("/bin/sh -c 'kill -SEGV $$'", log_file);
+    EXPECT_FALSE(process.wait(true));
+    EXPECT_EQ(128 + SIGSEGV, process.exit_code());
+
+    Process normal;
+    log_file.clear();
+    normal.run("/bin/sh -c 'exit 3'", log_file);
+    EXPECT_FALSE(normal.wait(true));
+    EXPECT_EQ(3, normal.exit_code());
 }

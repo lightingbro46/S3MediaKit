@@ -211,7 +211,8 @@ static bool s_wait(pid_t pid, void *handle, int *exit_code_ptr, bool block) {
 #else
     int status = 0;
     pid_t p = waitpid(pid, &status, block ? 0 : WNOHANG);
-    int exit_code = (status & 0xFF00) >> 8;
+    // Killed by a signal (ffmpeg segfaulting in a GPU driver) is not success: 128 + signal, like a shell.
+    int exit_code = WIFSIGNALED(status) ? 128 + WTERMSIG(status) : WEXITSTATUS(status);
     if (exit_code_ptr) {
         *exit_code_ptr = exit_code;
     }
