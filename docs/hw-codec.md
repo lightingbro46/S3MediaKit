@@ -451,6 +451,13 @@ sang CPU, backend đó nghỉ `hwcodec.cooldownSec` cho tier, `HwCodecFallback` 
 phiên NVENC học được của pipeline trong tiến trình không bị ảnh hưởng. `scale_cuda` của FFmpeg 4.4
 không đổi định dạng điểm ảnh, nên nguồn 10-bit với `h264_nvenc` luôn rơi về L2.
 
+Khi ffmpeg thoát với mã khác 0, thông báo lỗi trong log và job được thêm `exit code N:` ở đầu. Nếu ffmpeg chết vì
+crash driver thì stderr không có dòng lỗi nào, và `139` (128 + SIGSEGV) là dấu hiệu duy nhất. Trên WSL2 với d3d12,
+L1 HEVC → H.265 (giải mã HEVC và `hevc_vaapi` trong cùng tiến trình) segfault khoảng 2/10 lần, kể cả khi chạy ffmpeg
+tay với đúng lệnh L1, nên đây là lỗi driver chứ không phải lệnh sai. Sau lần đầu lỗi, các segment tiếp theo chạy L2
+trong `hwcodec.cooldownSec`: kết quả vẫn đúng, nhưng CPU tốn khoảng 17 s thay vì 4,6 s cho mỗi đoạn 60 s 1080p→720p.
+Các tổ hợp còn lại (H.264 → H.264/H.265, HEVC → H.264) chạy L1 ổn định.
+
 ### ffmpeg ngoài tiến trình khác
 
 `ffmpeg.cmd` / `ffmpeg.snap` / `ffmpeg.snap_overlay` (thumbnail bản ghi) chạy tiến trình ffmpeg riêng,

@@ -241,6 +241,16 @@ kèm stderr ffmpeg. Phân loại: lỗi driver WSL (giữ fallback, ghi docs) ha
 
 **Đạt:** 6/6 lần ra L1, hoặc nguyên nhân đã ghi vào docs/hw-codec.md mục "Transcode khi chuyển tầng".
 
+**Kết quả (2026-10-24, nhánh `fix/decoder-self-join`).** Nguyên nhân là lỗi driver WSL, không phải lệnh sai.
+- Chạy lại REPS=6: ở 360p, 6/6 lần L1. Ở 720p, lần đầu L1 lỗi; 5 lần sau đi thẳng L2 vì L1 của vaapi nghỉ
+  `cooldownSec`, nên CPU mỗi lần khoảng 17 s thay vì 4,6 s.
+- Thông báo lỗi chỉ gồm nhiễu `MESA-LOADER`/`KMS: DRM_IOCTL_MODE_CREATE_DUMB`, không có dòng lỗi nào của ffmpeg.
+- Chạy tay đúng lệnh L1 bằng ffmpeg 10 lần: 2 lần segfault (exit 139), 8 lần đạt. Lệnh đúng, driver d3d12 chết khi
+  giải mã HEVC và mã hoá `hevc_vaapi` trong cùng một tiến trình. Không sửa argv L1, fallback L2 giữ nguyên.
+- Sửa nhỏ: khi ffmpeg thoát với mã khác 0, `error_message` có thêm `exit code N:` ở đầu (TierMediaTransformer.cpp),
+  vì nếu không thì crash driver không để lại dấu vết gì trong log/job.
+- docs/hw-codec.md mục "Transcode khi chuyển tầng": ghi nguyên nhân, cái giá về CPU, và ý nghĩa của mã 139.
+
 ## P7 — Harness và công cụ đo
 
 1. Commit `tests/performance/hwcodec_bench/` (harness, README, results-2026-10-24), bench `BenchmarkFromEnv` trong

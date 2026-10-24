@@ -504,6 +504,10 @@ TierTransformResult FfmpegTierMediaTransformer::transform(
             output.error_message = !ran
                 ? (result.error.empty() ? result.standard_error : result.error)
                 : validation_error;
+            if (!ran && result.error.empty() && result.exit_code != 0) {
+                // A driver crash leaves no ffmpeg message, only loader noise: 139 = 128 + SIGSEGV.
+                output.error_message = "exit code " + std::to_string(result.exit_code) + ": " + output.error_message;
+            }
             std::remove(destination.c_str());
             if (request.cancellation && request.cancellation->cancelled()) break;
 #if defined(ENABLE_FFMPEG)
