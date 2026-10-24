@@ -69,8 +69,8 @@ Yêu cầu: `MediaServer` Debug (đọc `./api-config.json`, như harness E2E), 
 khi server lên (camera có watermark + privacy mask từ đầu), ghi HTTP status và fps của luồng nhận được (derived
 overlay 5 fps, luồng gốc 25 fps).
 
-Kết quả đợt 2026-10-24 (WSL2, Iris Xe): `results-2026-10-24/` (`p2-*`, `p3-*`, `p4-*` là các lượt kiểm sau khi sửa
-theo docs/hwcodec-benchmark-fix-plan.md), báo cáo ở
+Kết quả đợt 2026-10-24 (WSL2, Iris Xe): `results-2026-10-24/` (`p2-*` tới `p7-*` là các lượt kiểm sau khi sửa
+lỗi, xem mục 10 của báo cáo), báo cáo ở
 [docs/hwcodec-benchmark-2026-10-24.md](../../../docs/hwcodec-benchmark-2026-10-24.md). Rig nhỏ:
 `--cameras 4 --motion-steps 1,2,4 --transcode-steps 1,2,4`. Giới hạn phiên GPU: `--ini "hwcodec.maxDecodeSessions=2"`.
 

@@ -207,7 +207,7 @@ Hệ quả cho production:
 - Nguồn tổng hợp không B-frame: `rtsp_source.py` đánh timestamp RTP theo thứ tự giải mã. Clip có B-frame làm pts
   đi lùi và `FFmpegFrameRateFilter` reset ở mỗi B-frame (đã thấy khi thử), nên camera thật dùng B-frame cần đo riêng.
 
-## 10. Đo lại sau khi sửa (docs/hwcodec-benchmark-fix-plan.md)
+## 10. Đo lại sau khi sửa
 
 Cùng máy, cùng harness, sau các bản sửa P1 (22628e24), P3 (b26a05a0), P4 (7ba32286), P5 (831cc564), P6 (e719a8b8),
 `Process` (c70e03c9), và sửa harness xoá đúng `record/record/<cam>/info.txt`. Số liệu: `results-2026-10-24/p7-*.json`.
