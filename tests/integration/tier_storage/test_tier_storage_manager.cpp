@@ -3127,6 +3127,8 @@ int scenarioRestoreConcurrencyLimit(const std::string &root) {
 int scenarioSearchEngineReflectsTierMetadata(const std::string &root) {
     migrateDatabase(root);
     migrateEscDatabase(root);
+    // restore_required is only reported when replay does not restore object storage by itself.
+    mINI::Instance()[Storage::kAutoRestoreOnRecordAccess] = 0;
     TierStorageManager &manager = TierStorageManager::Instance();
     manager.start();
     const int64_t now = static_cast<int64_t>(::time(nullptr));
