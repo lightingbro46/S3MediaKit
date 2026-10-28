@@ -2834,8 +2834,9 @@ void OnvifControl::getRecordingSearchResults() {
 
     if (GetRecordingSearchResultsResponse.ResultList) {
         for (auto info : GetRecordingSearchResultsResponse.ResultList->RecordingInformation) {
+            if (!info) continue;
             for (auto track : info->Track) {
-                if (track->TrackType == tt__TrackType__Video) {
+                if (track && track->TrackType == tt__TrackType__Video) {
                     RecordingInformation rec_info;
                     rec_info.recordingToken = info->RecordingToken;
                     rec_info.trackToken = track->TrackToken;
@@ -3152,8 +3153,8 @@ VideoEncoderConfig OnvifControl::GetRecordingVideoEncoder(const std::string& rec
     auto attributes = firstOrNull(GetMediaAttributesResponse.MediaAttributes);
     if (attributes && !attributes->TrackAttributes.empty()) {
         for (const auto trackAttribute : attributes->TrackAttributes) {
-            if (!trackAttribute->TrackInformation) continue;
-            if (!trackAttribute->TrackInformation->TrackType != tt__TrackType__Video) continue;
+            if (!trackAttribute || !trackAttribute->TrackInformation) continue;
+            if (trackAttribute->TrackInformation->TrackType != tt__TrackType__Video) continue;
             if (!trackAttribute->VideoAttributes) continue;
 
             if (trackAttribute->VideoAttributes->Bitrate) {
