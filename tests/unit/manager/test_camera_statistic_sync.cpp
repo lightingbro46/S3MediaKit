@@ -306,14 +306,19 @@ TEST_F(CameraStatisticSyncTest, SyncFromEscKeepsOnlyConfiguredStreams) {
 // Regression: load() dropped the motion and tier keep thresholds saved in info.txt.
 TEST_F(CameraStatisticSyncTest, ReloadKeepsMotionAndTierThresholds) {
     const std::string guid = "cam-stat-reload";
+    std::weak_ptr<CameraStatisticImp> weak;
     {
         auto stats = makeCamera(guid, false);
+        weak = stats;
         stats->addMotionKeepThreshold(true, 123);
         stats->addMotionKeepThreshold(false, 456);
 #ifdef ENABLE_TIER_STORAGE
         stats->addTierKeepThreshold(HotTier, true, 789);
 #endif
     }
+    // info.txt is written asynchronously: a queued save that already holds the camera writes
+    // before releasing it, otherwise the destructor writes. Either way it is on disk once gone.
+    ASSERT_TRUE(waitFor([&] { return weak.expired(); }));
     auto reloaded = std::make_shared<CameraStatisticImp>(_dir + "/" + guid);
     auto params = reloaded->getParams();
     EXPECT_EQ(123u, params.motion_stats.archiveStartTime);
