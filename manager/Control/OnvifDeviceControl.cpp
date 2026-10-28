@@ -1337,7 +1337,7 @@ tt__VideoEncoder2Configuration* OnvifControl::getConfigVideoEncoder2ByToken(cons
 
     for (auto profile : GetProfilesResponse.Profiles)
     {
-        if (profile->token == profileToken)
+        if (profile && profile->token == profileToken && profile->VideoEncoderConfiguration)
         {
             ns1__GetConfiguration *GetVideoConfig  = soap_new_ns1__GetConfiguration(_m_soap);
             GetVideoConfig->ProfileToken = &profile->token;
@@ -1350,7 +1350,7 @@ tt__VideoEncoder2Configuration* OnvifControl::getConfigVideoEncoder2ByToken(cons
                 reportError();
                 return nullptr;
             }
-            return GetVideoConfigResponse.Configurations[0];
+            return firstOrNull(GetVideoConfigResponse.Configurations);
         }
     }
 
@@ -2866,6 +2866,9 @@ void OnvifControl::getRecordingSearchResults() {
     if (_recordingInformations.size() > 2)
         _recordingInformations.erase(_recordingInformations.begin() + 2, _recordingInformations.end());
 
+    if (_recordingInformations.empty())
+        return;
+
     _recordingInformations[0].streamType = 0;
 
     if (_recordingInformations.size() == 2)
@@ -3146,7 +3149,7 @@ VideoEncoderConfig OnvifControl::GetRecordingVideoEncoder(const std::string& rec
         return config;
     }
 
-    auto attributes = GetMediaAttributesResponse.MediaAttributes[0];
+    auto attributes = firstOrNull(GetMediaAttributesResponse.MediaAttributes);
     if (attributes && !attributes->TrackAttributes.empty()) {
         for (const auto trackAttribute : attributes->TrackAttributes) {
             if (!trackAttribute->TrackInformation) continue;
@@ -3257,8 +3260,8 @@ void OnvifControl::getStorageConfiguration() {
     if (callWithAuth([&] { return _proxyDevice->GetStorageConfigurations(GetStorageConfigurations, GetStorageConfigurationsResponse); })) {
         reportError();
     } else {
-        auto StorageConfig = GetStorageConfigurationsResponse.StorageConfigurations[0];
-        if (StorageConfig->Data) {
+        auto StorageConfig = firstOrNull(GetStorageConfigurationsResponse.StorageConfigurations);
+        if (StorageConfig && StorageConfig->Data) {
             _sdCardInfo.type = StorageConfig->Data->type;
         }
     }
@@ -3288,7 +3291,7 @@ bool OnvifControl::setupAudioBackchannel(std::string &backchannelUri, const bool
                                     supportedDecodingEncodings.end(),
                                     encoding) != supportedDecodingEncodings.end();
 
-            if (exists) {
+            if (exists || supportedDecodingEncodings.empty()) {
                 return { false, tt__AudioEncoding__G711 };
             }
 
