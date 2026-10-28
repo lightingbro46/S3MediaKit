@@ -56,8 +56,10 @@ bool MediaSourceDecoder::inputFrame(const Frame::Ptr &frame) {
         return false;
     }
     if (!_started) {
-        // This logic ensures that the first frame is a keyframe when there is video
-        if (frame->getTrackType() == TrackVideo && !frame->keyFrame()) {
+        // This logic ensures that the first frame is a keyframe when there is video. The track sends
+        // SPS/PPS as config frames ahead of the IDR and the decoder has no extradata: dropping them
+        // makes the whole first GOP undecodable.
+        if (frame->getTrackType() == TrackVideo && !frame->keyFrame() && !frame->configFrame()) {
             // Contains video, but not a keyframe, then the previous frames are discarded
             return false;
         }

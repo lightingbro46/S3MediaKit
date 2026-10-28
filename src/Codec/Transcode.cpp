@@ -668,7 +668,9 @@ bool FFmpegDecoder::inputFrame(const Frame::Ptr &frame, bool live, bool async, b
     }
 
     auto frame_cache = Frame::getCacheAbleFrame(frame);
-    return addDecodeTask(frame->keyFrame(), [this, live, frame_cache, enable_merge]() {
+    // Dropping stops at the config frames ahead of the IDR, not at the IDR: it needs them after a
+    // parameter change.
+    return addDecodeTask(frame->keyFrame() || frame->configFrame(), [this, live, frame_cache, enable_merge]() {
         inputFrame_l(frame_cache, live, enable_merge);
         // Here simulates decoding too slow, resulting in active frame dropping
         // usleep(100 * 1000);
