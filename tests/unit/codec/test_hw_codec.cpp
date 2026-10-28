@@ -563,7 +563,8 @@ TEST_F(HwCodecManagerTest, ProcessorReleasedWhileDecodingIsNotDestroyedOnTheDeco
     // there destroyed the decoder on its own thread, which joined itself and terminated the process.
     HwCodecManager::Instance().probe(fakeProbe({}));
     std::vector<Frame::Ptr> encoded;
-    FFmpegEncoder encoder(CodecH264, 320, 240, 25, 400000, 25);
+    const size_t gop = 25;
+    FFmpegEncoder encoder(CodecH264, 320, 240, 25, 400000, gop);
     encoder.setOnEncode([&encoded](const Frame::Ptr &frame) { encoded.emplace_back(Frame::getCacheAbleFrame(frame)); });
     // Frame-threaded software decoding holds a few frames back: send enough to get output.
     for (int i = 0; i < 50; ++i) {
@@ -573,6 +574,8 @@ TEST_F(HwCodecManagerTest, ProcessorReleasedWhileDecodingIsNotDestroyedOnTheDeco
     ASSERT_FALSE(encoded.empty());
 
     auto gate = std::make_shared<DecodeGateChannel>();
+    // The logger stops writing to its default console channel once a channel is added: the rest of
+    // this test logs nowhere but the gate.
     Logger::Instance().add(gate);
     ProtocolOption option;
     option.enable_rtsp = option.enable_rtmp = option.enable_hls = option.enable_hls_fmp4 = false;
@@ -591,8 +594,10 @@ TEST_F(HwCodecManagerTest, ProcessorReleasedWhileDecodingIsNotDestroyedOnTheDeco
     });
 
     gate->armed = true;
-    for (auto &frame : encoded) {
-        track->inputFrame(frame);
+    // First GOP only: it must decode by itself (its SPS/PPS reach the decoder). The burst overflows the
+    // decode queue, which drops up to the next key frame; a later GOP cut there may never come out.
+    for (size_t i = 0; i < std::min(encoded.size(), gop); ++i) {
+        track->inputFrame(encoded[i]);
     }
     ASSERT_TRUE(gate->entered.wait(5000)) << "no frame reached the decode callback";
     processor = nullptr;
