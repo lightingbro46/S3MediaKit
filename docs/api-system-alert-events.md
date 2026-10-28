@@ -276,54 +276,78 @@ dùng pool đó.
 
 ### Dung lượng giữ bản ghi — MỚI
 
-Với tốc độ ghi hình hiện tại, vùng lưu bản ghi mới (thư mục record khi **tắt** tier storage, từng pool HOT khi
-**bật**) có đủ chỗ cho thời gian lưu đã cấu hình hay không. Không đủ thì bản ghi bị xoá (hoặc chuyển tầng) sớm
-hơn cấu hình.
+Với tốc độ ghi hình hiện tại, vùng lưu (thư mục record khi **tắt** tier storage; từng pool HOT, WARM, COLD khi
+**bật**) có đủ chỗ cho thời gian lưu của các camera hay không, xét hai mức:
+
+- **Mục tiêu** (thời gian lưu đã cấu hình, là các mức trần: `retain_until_days`, `delete_after_days`,
+  `keepArchivedMaxFor`). Thiếu thì `WARNING`: bản ghi sẽ rời vùng lưu (chuyển tầng hoặc bị xoá) sớm hơn cấu hình.
+- **Cam kết** (`keepArchivedMinFor` đặt tay, thời gian tối thiểu đã hứa giữ). Thiếu thì `CRITICAL`: xoá do áp
+  lực dung lượng không xoá phần này nên vùng lưu sẽ đầy, ghi hình lỗi.
+
+Cảnh báo này độc lập với cảnh báo watermark của pool.
 
 ```json
 {"eventCode": "RetentionCapacityLow", "eventTime": 1759300000, "level": "CRITICAL",
  "scope": "record_dir", "poolId": "", "poolName": "",
  "path": "/opt/media/www/record", "mountPoint": "/opt/media",
  "currentValue": "4.20", "threshold": "7.00", "ingestMbps": "12.50",
- "usableBytes": 4535485464576, "requiredBytes": 7558557450240, "cameras": 24, "overflowAction": ""}
+ "usableBytes": 4535485464576, "requiredBytes": 7558557450240, "cameras": 24, "overflowAction": "",
+ "committedDays": "7.00", "committedBytes": 7558557450240, "committedCameras": 24}
 
 {"eventCode": "RetentionCapacityLow", "eventTime": 1759300000, "level": "WARNING",
  "scope": "hot_pool", "poolId": "pool-hot-01", "poolName": "SSD HOT",
  "path": "/data/hot", "mountPoint": "",
  "currentValue": "2.10", "threshold": "3.00", "ingestMbps": "40.00",
  "usableBytes": 7610000000000, "requiredBytes": 10871635968000, "cameras": 120,
- "overflowAction": "MOVE_TO_NEXT_TIER"}
+ "overflowAction": "MOVE_TO_NEXT_TIER", "committedDays": "", "committedBytes": 0, "committedCameras": 0}
 ```
 
 | Trường | Kiểu | Ý nghĩa |
 |---|---|---|
-| `scope` | string | `record_dir` (tắt tier) hoặc `hot_pool` (bật tier). Khoá nhận diện = `scope` + `poolId` |
+| `scope` | string | `record_dir` (tắt tier) hoặc `hot_pool` / `warm_pool` / `cold_pool` (bật tier, theo tầng của pool). Khoá nhận diện = `scope` + `poolId` |
 | `level` | string | `WARNING`, `CRITICAL`; `NORMAL` ở sự kiện hồi phục |
-| `poolId`, `poolName` | string | Pool HOT; rỗng khi `scope = record_dir` |
-| `path` | string | Thư mục record, hoặc `mount_path` của pool HOT |
-| `mountPoint` | string | Mount chứa thư mục record; rỗng với pool HOT |
-| `currentValue` | string | Số ngày ghi hình vùng lưu chứa được ở tốc độ hiện tại = dung lượng dùng được ÷ dung lượng ghi mỗi ngày |
-| `threshold` | string | Số ngày cần = `requiredBytes` ÷ dung lượng ghi mỗi ngày |
-| `ingestMbps` | string | Tốc độ ghi hình vào vùng lưu, MiB/s |
-| `usableBytes` | number | Dung lượng dùng được: tổng × `storage.limitPercentUsage` (thư mục record) hoặc × `high_watermark_percent` của pool (HOT) |
-| `requiredBytes` | number | Σ theo camera: tốc độ ghi × thời gian phải giữ |
-| `cameras` | number | Số camera đang ghi có yêu cầu thời gian lưu |
-| `overflowAction` | string | Pool HOT: hành động khi đầy của policy (`MOVE_TO_NEXT_TIER`, `DELETE_OLDEST`, `STOP_RECORDING_AND_ALERT`) |
+| `poolId`, `poolName` | string | Pool; rỗng khi `scope = record_dir` |
+| `path` | string | Thư mục record, hoặc `mount_path` của pool |
+| `mountPoint` | string | Mount chứa thư mục record; rỗng với pool |
+| `currentValue` | string | Số ngày ghi hình vùng lưu chứa được ở tốc độ hiện tại = dung lượng dùng được ÷ dung lượng đi vào mỗi ngày |
+| `threshold` | string | Số ngày cần cho **mục tiêu** = `requiredBytes` ÷ dung lượng đi vào mỗi ngày |
+| `ingestMbps` | string | Tốc độ dữ liệu đi vào vùng lưu, MiB/s: tốc độ ghi hình (thư mục record, pool HOT) hoặc tổng tốc độ ghi của các camera có bản ghi đi qua pool (WARM/COLD) |
+| `usableBytes` | number | Dung lượng dùng được: tổng × `storage.limitPercentUsage` (thư mục record) hoặc × `critical_watermark_percent` của pool |
+| `requiredBytes` | number | Mục tiêu: Σ theo camera tốc độ ghi × thời gian bản ghi nằm ở vùng lưu theo thời gian lưu cấu hình, cộng phần tầng trước dồn xuống |
+| `cameras` | number | Số camera đang ghi có mục tiêu ở vùng lưu này |
+| `overflowAction` | string | Pool: `MOVE_TO_NEXT_TIER` khi phần thiếu được chuyển xuống tầng sau, hoặc hành động của camera bị mất bản ghi (`DELETE_OLDEST`, `STOP_RECORDING_AND_ALERT`); khi `CRITICAL` là hành động của camera mất phần cam kết |
+| `committedDays` | string | **MỚI.** Số ngày cần cho **cam kết** = `committedBytes` ÷ dung lượng đi vào mỗi ngày; rỗng khi không có camera cam kết hoặc chưa biết |
+| `committedBytes` | number | **MỚI.** Cam kết: Σ theo camera tốc độ ghi × thời gian nằm ở vùng lưu trong `keepArchivedMinFor` (cắt ở mục tiêu), cộng phần tầng trước dồn xuống |
+| `committedCameras` | number | **MỚI.** Số camera đang ghi có cam kết ở vùng lưu này |
 
-Báo khi `requiredBytes × storage.retention_forecast_safety_factor` (mặc định 1,1) > `usableBytes`.
+`WARNING` khi `requiredBytes × storage.retention_forecast_safety_factor` (mặc định 1,1) > `usableBytes`; `CRITICAL` khi `committedBytes × safety_factor > usableBytes` và phần thiếu không chuyển được xuống tầng sau (xem **Mức**).
 
-- **Thời gian phải giữ:** thư mục record lấy `keepArchivedMinFor` của camera (bỏ camera đặt tối thiểu tự động);
-  pool HOT lấy `retain_until_days` của tầng HOT trong policy hiệu lực của camera (bỏ giá trị 0).
-- **Mức:** thư mục record luôn `CRITICAL` (sẽ xoá xuống dưới thời gian tối thiểu đã cam kết). Pool HOT là
-  `WARNING` khi mọi camera dùng `MOVE_TO_NEXT_TIER` (dữ liệu chuyển tầng sớm, không mất), `CRITICAL` khi có
-  camera dùng hành động xoá/dừng ghi.
+- **Thời gian lưu mục tiêu của camera (T):**
+  - Tắt tier: `keepArchivedMaxFor` đặt tay; Max để tự động thì dùng `keepArchivedMinFor` đặt tay; cả hai tự động
+    thì camera không có yêu cầu.
+  - Bật tier: vòng đời theo policy hiệu lực, T = min(`retain_until_days` của tầng cuối nếu tầng đó
+    `DELETE_OLDEST`, `delete_policy.delete_after_days`, `keepArchivedMaxFor` đặt tay). Không có giới hạn nào thì
+    dùng `keepArchivedMinFor` đặt tay. Không có cả hai thì tầng cuối không có yêu cầu.
+- **Thời gian cam kết của camera:** `keepArchivedMinFor` đặt tay, cắt ở T (cả tắt và bật tier). Tự động thì
+  không có cam kết.
+- **Chia theo tầng (bật tier, làm riêng cho mục tiêu và cho cam kết):** bản ghi của camera nằm ở HOT từ 0 tới `HOT.retain_until_days`, ở WARM tới
+  `WARM.retain_until_days`, rồi ở COLD tới T (mỗi mốc cắt ở T). Pool HOT là pool camera đang ghi vào, các tầng
+  sau lấy `pool_id` của policy. Camera không có policy thì giữ T trên pool HOT.
+- **Dồn tầng:** đánh giá lần lượt HOT → WARM → COLD. Pool cần nhiều hơn `usableBytes ÷ safety_factor` thì phần
+  dư được chia cho các camera theo tỉ lệ. Phần của camera `MOVE_TO_NEXT_TIER` được cộng vào pool tầng sau của
+  camera đó; phần của camera xoá/dừng ghi, hoặc ở tầng cuối, là bản ghi bị mất.
+- **Mức:**
+  - `WARNING`: thiếu cho mục tiêu (dồn được xuống tầng sau hay không đều vậy), hoặc thiếu cho cam kết nhưng toàn
+    bộ phần dư của cam kết chuyển được xuống tầng sau (không mất).
+  - `CRITICAL`: có phần cam kết bị mất. Thư mục record: thiếu cho cam kết là `CRITICAL`.
+  - Camera không đặt `keepArchivedMinFor` thì không bao giờ gây `CRITICAL`.
 - **Tốc độ ghi** lấy từ dung lượng các segment ghi xong trong cửa sổ `storage.pool_throughput_window_seconds`
   (mặc định 1 giờ), cần ít nhất 15 phút kể từ khi MediaServer khởi động. Chưa đủ, hoặc không biết dung lượng
   (pool object không quota, mount không tìm thấy) thì giữ nguyên trạng thái.
 - **Nhắc lại** mỗi `storage.retention_forecast_alert_repeat_seconds` (mặc định 6 giờ), không phải 300 s như các
   nhóm khác, vì tình trạng này đổi chậm. Phía API **không** được tự đóng cảnh báo nhóm này sau 15 phút không
   nhận nhắc lại; nên dùng ngưỡng lớn hơn chu kỳ nhắc lại (ví dụ 7 giờ).
-- Pool HOT còn có thêm một dòng `storage_alerts` loại `TIER_RETENTION_CAPACITY_LOW` (tối đa một dòng/giờ/pool cho cùng mức; đổi mức thì ghi ngay).
+- Pool (mọi tầng) còn có thêm một dòng `storage_alerts` loại `TIER_RETENTION_CAPACITY_LOW` (tối đa một dòng/giờ/pool cho cùng mức; đổi mức thì ghi ngay).
 
 Số liệu hiện tại đọc qua `GET /media/mserver/systemStatistic` (và `/media/monitor/summary` → `storage.record_write`), object
 `data.record_write`:
@@ -335,17 +359,22 @@ Số liệu hiện tại đọc qua `GET /media/mserver/systemStatistic` (và `/
   "path": "/opt/media/www/record", "mount_point": "/opt/media",
   "ingest_mbps": "12.50",          // tốc độ ghi hình lúc gọi, MiB/s; null khi chưa đủ 15 phút đo
   "recording_cameras": 24,         // camera có segment trong cửa sổ đo
-  "cameras": 20,                   // camera có thời gian lưu tối thiểu (tính ở lần đánh giá gần nhất)
+  "cameras": 20,                   // camera có mục tiêu (tính ở lần đánh giá gần nhất)
   "usable_bytes": 0, "used_bytes": 0, "required_bytes": 0,
+  "committed_cameras": 5, "committed_bytes": 0,   // MỚI: cam kết keepArchivedMinFor
   "retention_days_estimate": 21.4, "estimated_remaining_days": 3.2, "required_days": 7.0,
-  "state": "normal"                // "low" khi đang có RetentionCapacityLow
+  "committed_days": 3.0,           // MỚI; null khi không có cam kết
+  "state": "normal",               // "low" khi đang có RetentionCapacityLow
+  "level": "normal"                // MỚI: "normal" | "warning" | "critical" (mức đã sustain)
 }
-// Bật tier storage: tầng HOT
+// Bật tier storage: tốc độ ghi vào tầng HOT, dự báo của mọi pool (HOT trước, rồi WARM, COLD)
 "record_write": {
   "mode": "hot_tier",
-  "ingest_mbps": "40.00", "recording_cameras": 120, "state": "normal",
-  "pools": [{"pool_id": "pool-hot-01", "pool_name": "SSD HOT", "ingest_mbps": "40.00",
-             "recording_cameras": 120, "retention_forecast": { /* như dashboard/detail */ }}]
+  "ingest_mbps": "40.00", "recording_cameras": 120, "state": "normal",   // "low" khi có pool bất kỳ thiếu
+  "pools": [{"pool_id": "pool-hot-01", "pool_name": "SSD HOT", "tier": "HOT", "ingest_mbps": "40.00",
+             "recording_cameras": 120, "retention_forecast": { /* như dashboard/detail */ }},
+            {"pool_id": "pool-warm-01", "pool_name": "NAS WARM", "tier": "WARM", "ingest_mbps": "0.00",
+             "recording_cameras": 0, "retention_forecast": { /* ingest_mbps = tốc độ đi vào pool */ }}]
 }
 ```
 

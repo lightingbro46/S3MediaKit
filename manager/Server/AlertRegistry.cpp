@@ -296,6 +296,7 @@ void AlertRegistry::start() {
         extra["path"] = path;
         extra["mountPoint"] = mount_point;
         extra["ingestMbps"] = jsonNumber(ingest_mbps);
+        extra["committedDays"] = committed_days < 0 ? Json::Value(Json::nullValue) : jsonNumber(committed_days);
         AlertRegistry::Instance().onEvent("RetentionCapacity", scope + "|" + pool_id + "|" + path,
                                           level > 0 ? "RetentionCapacityLow" : "RetentionCapacityRecovered",
                                           level > 1 ? CRITICAL : (level > 0 ? WARNING : RECOVERED),

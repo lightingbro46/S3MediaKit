@@ -2169,6 +2169,9 @@ void installWebHook() {
         body["requiredBytes"] = static_cast<Json::Int64>(required_bytes);
         body["cameras"] = cameras;
         body["overflowAction"] = overflow_action;
+        body["committedDays"] = days(committed_days);
+        body["committedBytes"] = static_cast<Json::Int64>(committed_bytes);
+        body["committedCameras"] = committed_cameras;
         do_http_hook(hook_api_url + hook_system_alert, body, nullptr);
     });
 

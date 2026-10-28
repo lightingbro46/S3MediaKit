@@ -504,17 +504,24 @@ void StorageManager::addRecordIngest(const std::string &camera_id, uint64_t byte
     _record_ingest.addIngest(camera_id, kRecordDirKey, bytes, steadyNowMs());
 }
 
-// Minimum retention per camera in seconds; cameras on automatic minimum have none.
-static unordered_map<string, int64_t> cameraMinRetention() {
-    unordered_map<string, int64_t> out;
+// Retention per camera in seconds, (target, commitment). Target: keepArchivedMaxFor set by hand, else
+// keepArchivedMinFor set by hand. Commitment: keepArchivedMinFor set by hand, capped by the target.
+// Cameras on automatic for both have none (they keep what fits).
+static unordered_map<string, pair<int64_t, int64_t>> cameraRetention() {
+    unordered_map<string, pair<int64_t, int64_t>> out;
     DeviceSource::for_each_device([&](const DeviceSource::Ptr &src) {
         auto impl = dynamic_pointer_cast<GenericRtspCameraImp>(src->getListener().lock());
         if (!impl) {
             return;
         }
         auto option = impl->getCameraOption();
-        if (!option.keepArchivedMinForAuto && option.keepArchivedMinFor > 0) {
-            out[src->getDeviceTuple().device_id] = static_cast<int64_t>(option.keepArchivedMinFor);
+        const int64_t max_for = !option.keepArchivedMaxForAuto && option.keepArchivedMaxFor > 0
+            ? static_cast<int64_t>(option.keepArchivedMaxFor) : 0;
+        const int64_t min_for = !option.keepArchivedMinForAuto && option.keepArchivedMinFor > 0
+            ? static_cast<int64_t>(option.keepArchivedMinFor) : 0;
+        const int64_t target = max_for > 0 ? max_for : min_for;
+        if (target > 0) {
+            out[src->getDeviceTuple().device_id] = make_pair(target, min_for > 0 ? std::min(min_for, target) : 0);
         }
     });
     return out;
@@ -533,7 +540,7 @@ void StorageManager::evaluateRetentionForecast() {
     const bool mounted = GlobalMonitor::Instance().findMountPointInfo(record_path, partition, false);
     const int64_t now_ms = steadyNowMs();
     auto rates = _record_ingest.ingestRates(kRecordDirKey, window_sec, now_ms);
-    auto min_retention = cameraMinRetention();
+    auto retention = cameraRetention();
 
     RetentionForecastInput in;
     in.ingest_valid = rates.valid && mounted;
@@ -542,15 +549,18 @@ void StorageManager::evaluateRetentionForecast() {
     in.used_bytes = static_cast<int64_t>(partition.used_bytes);
     // Same clamp as estimateSpaceToReclaim(): deletion starts above this usage.
     in.usable_percent = std::min(99, std::max(0, limit_percent_usage));
-    // Short of the minimum retention means enforceStoragePolicy() deletes below it: data loss.
+    // Short of the target: enforceStoragePolicy() deletes recordings earlier than configured (warning).
+    // Short of the commitment: it stops at keepArchivedMinFor and the disk fills up (critical).
     in.short_level = 2;
     for (const auto &cam : rates.camera_mbps) {
         RetentionCameraDemand demand;
         demand.camera_id = cam.first;
         demand.mbps = cam.second;
-        auto it = min_retention.find(cam.first);
-        demand.required_sec = it == min_retention.end() ? 0 : it->second;
+        auto it = retention.find(cam.first);
+        demand.required_sec = it == retention.end() ? 0 : it->second.first;
         in.cameras.push_back(demand);
+        demand.required_sec = it == retention.end() ? 0 : it->second.second;
+        in.committed.push_back(demand);
     }
 
     auto forecast = computeRetentionForecast(in, safety_factor);
@@ -562,9 +572,11 @@ void StorageManager::evaluateRetentionForecast() {
     if (forecast.level > 0) {
         WarnL << "Record directory " << record_path << " holds " << forecast.retention_days_estimate
               << " day(s) at " << forecast.ingest_mbps << " MiB/s, below the " << forecast.required_days
-              << " day(s) of minimum retention of " << forecast.cameras << " camera(s)";
+              << " day(s) of configured retention of " << forecast.cameras << " camera(s); minimum retention "
+              << forecast.committed_days << " day(s) of " << forecast.committed_cameras << " camera(s)"
+              << (forecast.level > 1 ? " does not fit" : " fits");
     } else {
-        InfoL << "Record directory " << record_path << " holds the minimum retention again ("
+        InfoL << "Record directory " << record_path << " holds the configured retention again ("
               << forecast.retention_days_estimate << " day(s))";
     }
     const string scope = kRecordDirKey;
@@ -576,9 +588,13 @@ void StorageManager::evaluateRetentionForecast() {
     const int64_t usable_bytes = forecast.usable_bytes;
     const int64_t required_bytes = forecast.required_bytes;
     const int cameras = forecast.cameras;
+    const double committed_days = forecast.committed_days;
+    const int64_t committed_bytes = forecast.committed_bytes;
+    const int committed_cameras = forecast.committed_cameras;
     if (!NOTICE_EMIT(BroadcastRetentionForecastAlertArgs, Broadcast::kBroadcastRetentionForecastAlert, scope, empty,
                      empty, record_path, partition.mount_point, level, retention_days, required_days, ingest_mbps,
-                     usable_bytes, required_bytes, cameras, empty)) {
+                     usable_bytes, required_bytes, cameras, empty, committed_days, committed_bytes,
+                     committed_cameras)) {
         TraceL << "No one listen retention forecast alert event";
     }
 }
