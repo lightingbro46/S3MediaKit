@@ -2827,7 +2827,7 @@ bool TierStorageManager::deletePool(const std::string &pool_id, int &out_ref_cou
     unregisterPoolObjStorage(pool_id);
     unregisterPoolFileStorage(pool_id);
     _throughput.removePool(pool_id);
-    _hot_forecast.remove(pool_id);
+    _pool_forecast.remove(pool_id);
     return true;
 }
 
@@ -8049,7 +8049,8 @@ Json::Value TierStorageManager::getDashboardSummary() {
         }
         tier_ingest[p.tier] += getPoolIngest(p.id).mbps;
         RetentionForecast forecast;
-        if (getPoolRetentionForecast(p.id, forecast) && forecast.retention_days_estimate >= 0) {
+        if (p.tier == tierTypeToString(HotTier) && getPoolRetentionForecast(p.id, forecast) &&
+            forecast.retention_days_estimate >= 0) {
             if (hot_remaining_days < 0 || forecast.estimated_remaining_days < hot_remaining_days)
                 hot_remaining_days = forecast.estimated_remaining_days;
             if (hot_retention_days < 0 || forecast.retention_days_estimate < hot_retention_days)
@@ -8102,11 +8103,9 @@ Json::Value TierStorageManager::getDashboardDetail() {
         // Same object as pool/list and pool/detail; null before the first tiering cycle.
         PoolThroughputStats throughput;
         pv["throughput"] = getPoolThroughput(p.id, throughput) ? throughput.toJson() : Json::Value(Json::nullValue);
-        if (p.tier == tierTypeToString(HotTier)) {
-            RetentionForecast forecast;
-            pv["retention_forecast"] = getPoolRetentionForecast(p.id, forecast) ? forecast.toJson()
-                                                                               : Json::Value(Json::nullValue);
-        }
+        RetentionForecast forecast;
+        pv["retention_forecast"] = getPoolRetentionForecast(p.id, forecast) ? forecast.toJson()
+                                                                           : Json::Value(Json::nullValue);
         pools_arr.append(pv);
     }
     data["pools"] = pools_arr;
@@ -8180,20 +8179,23 @@ PoolIngestRates TierStorageManager::getPoolIngest(const std::string &pool_id) {
 }
 
 bool TierStorageManager::getPoolRetentionForecast(const std::string &pool_id, RetentionForecast &out) const {
-    return _hot_forecast.get(pool_id, out);
+    return _pool_forecast.get(pool_id, out);
 }
 
 Json::Value TierStorageManager::makeHotWriteJson() {
-    std::vector<StoragePool> hot_pools;
+    // Every tier has a retention forecast; only HOT pools receive recordings.
+    std::vector<StoragePool> tier_pools;
     {
         std::lock_guard<std::mutex> lk(_pool_cache_mtx);
         for (const auto &kv : _pool_cache) {
-            if (kv.second.enabled && kv.second.tier == tierTypeToString(HotTier))
-                hot_pools.push_back(kv.second);
+            if (kv.second.enabled && tierTypeFromString(kv.second.tier) < TierMax)
+                tier_pools.push_back(kv.second);
         }
     }
-    std::sort(hot_pools.begin(), hot_pools.end(), [](const StoragePool &a, const StoragePool &b) {
-        return a.name < b.name;
+    std::sort(tier_pools.begin(), tier_pools.end(), [](const StoragePool &a, const StoragePool &b) {
+        const auto ta = tierTypeFromString(a.tier);
+        const auto tb = tierTypeFromString(b.tier);
+        return ta != tb ? ta < tb : a.name < b.name;
     });
 
     Json::Value pools(Json::arrayValue);
@@ -8201,11 +8203,12 @@ Json::Value TierStorageManager::makeHotWriteJson() {
     float total_mbps = 0.0f;
     bool valid = false;
     bool low = false;
-    for (const auto &pool : hot_pools) {
+    for (const auto &pool : tier_pools) {
         auto rates = getPoolIngest(pool.id);
         Json::Value item;
         item["pool_id"] = pool.id;
         item["pool_name"] = pool.name;
+        item["tier"] = pool.tier;
         item["ingest_mbps"] = rates.valid ? Json::Value(sanitize_for_json(rates.mbps)) : Json::Value(Json::nullValue);
         item["recording_cameras"] = static_cast<int>(rates.camera_mbps.size());
         RetentionForecast forecast;
@@ -8269,72 +8272,177 @@ void TierStorageManager::evaluateRetentionForecast(
     GET_CONFIG(float, safety_factor, Storage::kRetentionForecastSafetyFactor);
     GET_CONFIG(int, sustain_samples, Storage::kRetentionForecastSustainSamples);
     GET_CONFIG(int, repeat_sec, Storage::kRetentionForecastAlertRepeatSeconds);
+    const std::string move_action = overflowActionToString(OverflowAction::MOVE_TO_NEXT_TIER);
+    const std::string delete_action = overflowActionToString(OverflowAction::DELETE_OLDEST);
+    const int64_t kUnbounded = std::numeric_limits<int64_t>::max();
 
-    // HOT tier of each camera's effective policy.
-    std::unordered_map<std::string, PolicyTierConfig> hot_tiers;
-    for (const auto &item : camera_policies) {
-        if (item.second.enabled == 0)
-            continue;
-        for (const auto &t : item.second.parsedTiers()) {
-            if (t.enabled && t.tier == tierTypeToString(HotTier)) {
-                hot_tiers[item.first] = t;
-                break;
-            }
+    std::vector<StoragePool> pools;
+    for (int t = HotTier; t < TierMax; ++t) {
+        for (const auto &pool : listPools(tierTypeToString(static_cast<TierType>(t)))) {
+            if (pool.enabled)
+                pools.push_back(pool);
         }
     }
 
-    const std::string move_action = overflowActionToString(OverflowAction::MOVE_TO_NEXT_TIER);
-    for (const auto &pool : listPools(tierTypeToString(HotTier))) {
-        if (!pool.enabled)
+    // Recording rate of each camera and the HOT pool it records into.
+    bool rates_valid = false;
+    std::map<std::string, float> camera_mbps;
+    std::map<std::string, std::pair<std::string, float>> camera_hot_pool;
+    for (const auto &pool : pools) {
+        if (pool.tier != tierTypeToString(HotTier))
             continue;
-        const int64_t now_ms = steadyNowMs();
         auto rates = getPoolIngest(pool.id);
+        rates_valid = rates_valid || rates.valid;
+        for (const auto &cam : rates.camera_mbps) {
+            camera_mbps[cam.first] += cam.second;
+            auto &hot = camera_hot_pool[cam.first];
+            if (hot.first.empty() || cam.second > hot.second)
+                hot = std::make_pair(pool.id, cam.second);
+        }
+    }
+    std::unordered_map<std::string, const StoragePolicy *> policy_of;
+    for (const auto &item : camera_policies) {
+        if (item.second.enabled != 0)
+            policy_of[item.first] = &item.second;
+    }
 
+    // Each camera's recordings go through the tiers of its policy, measured twice:
+    // - target: until the configured retention T = min(age deletion of the last tier,
+    //   delete_after_days, keepArchivedMaxFor set by hand), keepArchivedMinFor when nothing bounds
+    //   it. These are upper bounds, so falling short is a warning;
+    // - commitment: until keepArchivedMinFor set by hand (capped by T). Losing part of it is critical.
+    // Pool watermarks play no part: retain_until_days is when the recordings move on.
+    std::vector<RetentionCameraPlan> plans;
+    std::vector<RetentionCameraPlan> committed_plans;
+    for (const auto &cam : camera_mbps) {
+        int64_t retention = kUnbounded;
+        int64_t min_retention = 0;
+        auto recorder = StatisticRecorder::Instance().getRecorder(cam.first, false);
+        if (recorder) {
+            auto params = recorder->getParams();
+            if (!params.option.keepArchivedMaxForAuto && params.option.keepArchivedMaxFor > 0)
+                retention = static_cast<int64_t>(params.option.keepArchivedMaxFor);
+            if (!params.option.keepArchivedMinForAuto && params.option.keepArchivedMinFor > 0)
+                min_retention = static_cast<int64_t>(params.option.keepArchivedMinFor);
+        }
+        std::vector<PolicyTierConfig> tiers;
+        auto policy = policy_of.find(cam.first);
+        if (policy != policy_of.end()) {
+            for (const auto &t : policy->second->parsedTiers()) {
+                if (t.enabled && tierTypeFromString(t.tier) < TierMax)
+                    tiers.push_back(t);
+            }
+            std::sort(tiers.begin(), tiers.end(), [](const PolicyTierConfig &a, const PolicyTierConfig &b) {
+                return tierTypeFromString(a.tier) < tierTypeFromString(b.tier);
+            });
+            const int delete_after_days = policy->second->parsedDeletePolicy().delete_after_days;
+            if (delete_after_days > 0)
+                retention = std::min(retention, static_cast<int64_t>(delete_after_days) * 86400);
+        }
+        // Without a usable policy the recordings stay on the HOT pool they land on.
+        if (tiers.empty() || tierTypeFromString(tiers.front().tier) != HotTier) {
+            PolicyTierConfig hot;
+            hot.tier = tierTypeToString(HotTier);
+            hot.overflow_action = delete_action;
+            tiers.assign(1, hot);
+        }
+        for (const auto &t : tiers) {
+            if (t.overflow_action != move_action) {
+                if (t.overflow_action == delete_action && t.retain_until_days > 0)
+                    retention = std::min(retention, static_cast<int64_t>(t.retain_until_days) * 86400);
+                break;
+            }
+        }
+        if (retention == kUnbounded && min_retention > 0)
+            retention = min_retention;
+
+        auto makePlan = [&](int64_t keep) {
+            RetentionCameraPlan plan;
+            plan.camera_id = cam.first;
+            plan.mbps = cam.second;
+            int64_t start = 0;
+            for (size_t i = 0; i < tiers.size(); ++i) {
+                const auto &t = tiers[i];
+                const bool moves_on = t.overflow_action == move_action && i + 1 < tiers.size();
+                int64_t end = kUnbounded;
+                if (moves_on || (t.overflow_action == delete_action && t.retain_until_days > 0))
+                    end = static_cast<int64_t>(std::max(0, t.retain_until_days)) * 86400;
+                RetentionTierStay stay;
+                stay.pool_id = i == 0 ? camera_hot_pool[cam.first].first : t.pool_id;
+                stay.tier = tierTypeFromString(t.tier);
+                const int64_t until = std::min(end, keep);
+                stay.sec = until == kUnbounded ? 0 : std::max<int64_t>(0, until - std::min(start, until));
+                stay.spill = moves_on;
+                stay.overflow_action = t.overflow_action;
+                if (!stay.pool_id.empty())
+                    plan.stays.push_back(stay);
+                if (!moves_on)
+                    break;
+                start = end;
+            }
+            return plan;
+        };
+        plans.push_back(makePlan(retention));
+        committed_plans.push_back(makePlan(min_retention > 0 ? std::min(min_retention, retention) : 0));
+    }
+
+    std::map<std::string, int64_t> usable;
+    for (const auto &pool : pools) {
+        if (pool.total_bytes > 0)
+            usable[pool.id] = pool.total_bytes / 100 * std::min(100, std::max(0, pool.critical_watermark_percent));
+    }
+    auto demand = planRetentionDemand(plans, usable, safety_factor);
+    auto committed_demand = planRetentionDemand(committed_plans, usable, safety_factor);
+
+    for (const auto &pool : pools) {
+        const int64_t now_ms = steadyNowMs();
+        const auto &need = demand[pool.id];
+        const auto &committed = committed_demand[pool.id];
         RetentionForecastInput in;
         // Unknown capacity (object storage without a quota, unreachable mount) gives no forecast.
-        in.ingest_valid = rates.valid && pool.total_bytes > 0;
-        in.ingest_mbps = rates.mbps;
+        in.ingest_valid = rates_valid && pool.total_bytes > 0;
+        in.ingest_mbps = need.inflow_mbps;
         in.total_bytes = pool.total_bytes;
         in.used_bytes = pool.used_bytes;
-        in.usable_percent = pool.high_watermark_percent;
-        // Moved early to the next tier is a warning; deleted early loses recordings.
-        in.short_level = 1;
-        std::string overflow_action = move_action;
-        for (const auto &cam : rates.camera_mbps) {
-            RetentionCameraDemand demand;
-            demand.camera_id = cam.first;
-            demand.mbps = cam.second;
-            auto it = hot_tiers.find(cam.first);
-            if (it != hot_tiers.end() && it->second.retain_until_days > 0) {
-                demand.required_sec = static_cast<int64_t>(it->second.retain_until_days) * 86400;
-                if (it->second.overflow_action != move_action) {
-                    in.short_level = 2;
-                    overflow_action = it->second.overflow_action;
-                }
+        in.usable_percent = pool.critical_watermark_percent;
+        // A commitment that only moves on to the next tier early is still kept.
+        in.short_level = committed.short_level > 1 ? 2 : 1;
+        auto toDemand = [&](const std::map<std::string, double> &bytes, std::vector<RetentionCameraDemand> &out) {
+            for (const auto &c : bytes) {
+                RetentionCameraDemand cam;
+                cam.camera_id = c.first;
+                cam.mbps = camera_mbps[c.first];
+                if (cam.mbps > 0)
+                    cam.required_sec = static_cast<int64_t>(c.second / (static_cast<double>(cam.mbps) * 1024.0 * 1024.0));
+                out.push_back(cam);
             }
-            in.cameras.push_back(demand);
-        }
+        };
+        toDemand(need.camera_bytes, in.cameras);
+        toDemand(committed.camera_bytes, in.committed);
+        const std::string overflow_action = committed.short_level > 1 ? committed.overflow_action : need.overflow_action;
 
         auto forecast = computeRetentionForecast(in, safety_factor);
-        const bool emit = _hot_forecast.update(pool.id, forecast, sustain_samples,
-                                               static_cast<int64_t>(repeat_sec) * 1000, now_ms);
+        const bool emit = _pool_forecast.update(pool.id, forecast, sustain_samples,
+                                                static_cast<int64_t>(repeat_sec) * 1000, now_ms);
         if (!emit || !alert_enabled)
             continue;
 
         if (forecast.level == 0) {
             _retention_alerted_at.erase(pool.id);
-            InfoL << "HOT pool " << pool.id << " holds the configured retention again ("
+            InfoL << pool.tier << " pool " << pool.id << " holds the configured retention again ("
                   << format_float_2f(static_cast<float>(forecast.retention_days_estimate)) << " day(s))";
         } else {
             const std::string message = StrPrinter
                 << "At " << format_float_2f(forecast.ingest_mbps) << " MiB/s the pool holds "
                 << format_float_2f(static_cast<float>(forecast.retention_days_estimate))
-                << " day(s) below its high watermark, short of the "
+                << " day(s) below its critical watermark, short of the "
                 << format_float_2f(static_cast<float>(forecast.required_days))
-                << " day(s) the HOT retention of " << forecast.cameras << " camera(s) needs ("
-                << forecast.required_bytes << " of " << forecast.usable_bytes << " bytes); overflow action "
-                << overflow_action;
-            WarnL << "HOT pool " << pool.id << ": " << message;
+                << " day(s) the configured retention of " << forecast.cameras << " camera(s) needs ("
+                << forecast.required_bytes << " of " << forecast.usable_bytes << " bytes), minimum retention of "
+                << forecast.committed_cameras << " camera(s) "
+                << format_float_2f(static_cast<float>(forecast.committed_days)) << " day(s)"
+                << (forecast.level > 1 ? " does not fit" : " fits") << "; overflow action " << overflow_action;
+            WarnL << pool.tier << " pool " << pool.id << ": " << message;
             const int64_t now = static_cast<int64_t>(time(nullptr));
             // One row an hour per pool and level: a move to another level is always recorded.
             auto &alerted = _retention_alerted_at[pool.id];
@@ -8350,7 +8458,8 @@ void TierStorageManager::evaluateRetentionForecast(
                 StorageAlertImp().add(item);
             }
         }
-        const std::string scope = "hot_pool";
+        std::string scope = pool.tier + "_pool";
+        std::transform(scope.begin(), scope.end(), scope.begin(), ::tolower);
         const std::string path = pool.mount_path.value_or("");
         const std::string mount_point;
         const int level = forecast.level;
@@ -8360,9 +8469,13 @@ void TierStorageManager::evaluateRetentionForecast(
         const int64_t usable_bytes = forecast.usable_bytes;
         const int64_t required_bytes = forecast.required_bytes;
         const int cameras = forecast.cameras;
+        const double committed_days = forecast.committed_days;
+        const int64_t committed_bytes = forecast.committed_bytes;
+        const int committed_cameras = forecast.committed_cameras;
         if (!NOTICE_EMIT(BroadcastRetentionForecastAlertArgs, Broadcast::kBroadcastRetentionForecastAlert, scope,
                          pool.id, pool.name, path, mount_point, level, retention_days, required_days, ingest_mbps,
-                         usable_bytes, required_bytes, cameras, overflow_action)) {
+                         usable_bytes, required_bytes, cameras, overflow_action, committed_days, committed_bytes,
+                         committed_cameras)) {
             TraceL << "No one listen retention forecast alert event";
         }
     }

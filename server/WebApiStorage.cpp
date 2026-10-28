@@ -918,7 +918,7 @@ void storageDashboardSummary(Json::Value &val) {
         float write_mbps = 0.0f;
         float read_mbps = 0.0f;
         float record_ingest_mbps = 0.0f;
-        // HOT only: the tightest pool, -1 when no pool has a forecast yet.
+        // The tightest pool of the tier, -1 when no pool has a forecast yet.
         double remaining_days = -1;
         double retention_days = -1;
         bool retention_low = false;
@@ -986,7 +986,7 @@ void storageDashboardSummary(Json::Value &val) {
         t["status"] = agg.status;
         t["total_bytes"] = static_cast<Json::Int64>(agg.total);
         t["used_bytes"] = static_cast<Json::Int64>(agg.used);
-        // Forecast for the HOT tier only; 0 (and retention_days_estimate null) when unknown.
+        // Tightest pool forecast of the tier; 0 (and retention_days_estimate null) when unknown.
         t["estimated_remaining_days"] = agg.remaining_days >= 0 ? std::round(agg.remaining_days * 100.0) / 100.0 : 0.0;
         t["retention_days_estimate"] = agg.retention_days >= 0 ? Json::Value(std::round(agg.retention_days * 100.0) / 100.0)
                                                                : Json::Value(Json::nullValue);

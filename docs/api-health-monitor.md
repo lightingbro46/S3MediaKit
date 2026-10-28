@@ -154,7 +154,7 @@ VMS gửi 0 hoặc không gửi `serverGroupId` đều ra 0. `/media/mserver/hea
 | `storage.disks[]` | chỉ các mount chứa bản ghi / DB / pool: `mount`, `device`, `total_bytes`, `used_bytes`, `free_bytes`, `usage_pct`, `read_only`, `retention_limit_pct` (mức retention giữ mount, `null` nếu không có), `warn_pct`/`crit_pct` (ngưỡng đang áp), `io_util_pct`, `await_ms`, `read_mbps`, `write_mbps`, `io_state` |
 | `storage.disk_io` | `valid`, `iowait_pct`, `psi_io_full_pct`, `state` (`normal`/`warning`/`critical`) |
 | `storage.storage_write[]` | kết quả thử ghi từng thư mục (như `storage_write` của `systemStatistic`) |
-| `storage.record_write` | tốc độ ghi hình và dự báo retention, cùng object `record_write` của `systemStatistic` ([api-system-alert-events.md](api-system-alert-events.md), mục dự báo dung lượng): tắt tier `mode=record_dir`, `path`, `mount_point`, `ingest_mbps`, `recording_cameras`, `retention_days_estimate`, `estimated_remaining_days`, `required_days`, `state`, ...; bật tier `mode=hot_tier`, `ingest_mbps`, `recording_cameras`, `state`, `pools[]` (`pool_id`, `pool_name`, `ingest_mbps`, `recording_cameras`, `retention_forecast`) |
+| `storage.record_write` | tốc độ ghi hình và dự báo retention, cùng object `record_write` của `systemStatistic` ([api-system-alert-events.md](api-system-alert-events.md), mục dự báo dung lượng): tắt tier `mode=record_dir`, `path`, `mount_point`, `ingest_mbps`, `recording_cameras`, `retention_days_estimate`, `estimated_remaining_days`, `required_days`, `state`, ...; bật tier `mode=hot_tier`, `ingest_mbps`, `recording_cameras`, `state`, `pools[]` (mọi pool HOT/WARM/COLD: `pool_id`, `pool_name`, `tier`, `ingest_mbps`, `recording_cameras`, `retention_forecast`) |
 | `recording` | `cameras` (đang bật), `expected`, `active`, `starting`, `stalled`, `stalled_pct`, `stale_sec`, `write_errors` (từ lúc khởi động), `write_errors_cycle`, `close` (hàng đợi đóng segment `rec close`: `queued` tổng số đoạn đang chờ, `oldest_queued_ms` đoạn chờ lâu nhất, `oldest_pool` shard của nó), `stalled_cameras[]` (tối đa 100: `cameraId`, `name`, `ip`, `recordMode`, `lastWriteAt`, `expectedSince`) |
 | `delivery.viewers` | `live`, `playback`, `total`, `cameras_viewed` (số camera có ≥ 1 người xem), `limit` (giới hạn license, null = không giới hạn), `limit_used_pct` |
 | `delivery.play` | `window_sec`, `requests`, `failures`, `failure_pct` (trong cửa sổ), `failures_by_reason` (từ lúc khởi động: `Unauthorized`, `MaxRequest`, `ResourceUnavailable`, `OverlayForbidden`, `TranscodeDisabled`, ...) |
@@ -171,6 +171,21 @@ VMS gửi 0 hoặc không gửi `serverGroupId` đều ra 0. `/media/mserver/hea
 | `recording.coverage` | `computed_at`, `cameras_evaluated` (camera có ≥ 1 h lẽ ra ghi), `below_warn`, `below_crit`, `low_pct`, `avg_pct` |
 | `delivery.play.open` | thời gian từ yêu cầu xem tới khi có luồng (`MediaSource::findAsync`, gồm chờ kéo luồng theo yêu cầu) trong `monitor.playWindowSec`: `live_samples`, `live_p50_ms`, `live_p95_ms`, `live_max_ms` (luồng live mở được), `replay_samples`, `replay_max_ms` (xem lại, có thể chờ restore S3, chỉ đếm), `not_found` (không có luồng sau `general.maxStreamWaitMS`, thường do client gửi sai id, chỉ đếm) |
 | `cluster.kafka` | `enabled`; khi bật: `mode` (`LIVE`/`SPOOL`/`DRAIN`), `brokers_up`, `brokers_known`, `queued`, `delivered`, `spool_pending`, `spool_bytes`, `dropped_rate` (vượt hạn mức/camera, không tính là lỗi), `dropped` (mất do giới hạn spool/hàng đợi), `last_drop_at` |
+
+Đơn vị. Chú ý: hậu tố `_mbps` **không** cùng một đơn vị ở mọi nhóm:
+
+| Field | Đơn vị |
+|---|---|
+| `host.nets[].rx_mbps`, `tx_mbps`, `speed_mbps` | **Mbit/s** (megabit thập phân, byte × 8 / 10⁶ mỗi giây) |
+| `storage.disks[].read_mbps`, `write_mbps`; `storage.tier.pools[].write_mbps`; `storage.record_write.ingest_mbps`, `pools[].ingest_mbps`, `retention_forecast.ingest_mbps` | **MiB/s** (mebibyte, 1 MiB = 1024 × 1024 byte; 1 MiB/s ≈ 8,39 Mbit/s) |
+| `*_bytes`, `host.ram.total`/`used`/`proc_rss`, `host.swap.total`/`used` | byte |
+| `*_pct` | phần trăm 0–100 |
+| `*_ms`, `*_sec` | mili giây, giây |
+| `retention_days_estimate`, `estimated_remaining_days`, `required_days` | ngày, làm tròn 2 chữ số, `null` khi chưa biết |
+| `host.ram.proc_rss_growth_mb_per_h` | MiB/giờ |
+
+Số đo trong `storage.disks[]`, `storage.tier` làm tròn 2 chữ số. Riêng `storage.record_write` giữ nguyên định dạng của
+`systemStatistic`: các tốc độ `ingest_mbps` là **chuỗi** 2 chữ số (`"12.50"`), `null` khi chưa đủ 15 phút đo.
 
 `cluster.sync.state`, theo thứ tự ưu tiên:
 

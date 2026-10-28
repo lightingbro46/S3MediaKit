@@ -662,7 +662,7 @@ Mỗi phần tử `tier_summary[]`:
 | `record_ingest_mbps` | number | Tốc độ ghi hình mới vào tier (MiB/s), tính lúc gọi; chỉ HOT khác `0` |
 | `estimated_remaining_days` | number | HOT: số ngày tới khi pool HOT chật nhất chạm `high_watermark_percent` ở tốc độ ghi hiện tại; `0` khi chưa có dự báo và với WARM/COLD |
 | `retention_days_estimate` | number \| null | HOT: số ngày ghi hình pool HOT chật nhất chứa được dưới watermark; `null` khi chưa có |
-| `retention_state` | string | `low` khi có pool HOT không giữ nổi `retain_until_days` của tầng HOT (xem `RetentionCapacityLow` trong [api-system-alert-events.md](api-system-alert-events.md)), ngược lại `normal` |
+| `retention_state` | string | `low` khi có pool của tầng không giữ nổi thời gian lưu cấu hình của các camera (xem `RetentionCapacityLow` trong [api-system-alert-events.md](api-system-alert-events.md)), ngược lại `normal` |
 
 Dự báo cần ít nhất 15 phút đo tốc độ ghi và được tính lại mỗi chu kỳ tiering (300 s).
 
@@ -693,8 +693,8 @@ Khác với summary gọn, detail dùng `TierStorageManager::getDashboardDetail(
 
 - `summary.tiers.{HOT,WARM,COLD}` thêm `write_mbps`, `read_mbps`, `record_ingest_mbps` (number, MiB/s); `HOT` thêm
   `estimated_remaining_days`, `retention_days_estimate` (number hoặc `null` khi chưa có dự báo).
-- Mỗi phần tử `pools[]` thêm `throughput` (cùng object với `pool/list`, `null` trước chu kỳ tiering đầu tiên). Pool
-  HOT thêm `retention_forecast`:
+- Mỗi phần tử `pools[]` thêm `throughput` (cùng object với `pool/list`, `null` trước chu kỳ tiering đầu tiên) và
+  `retention_forecast` (mọi tầng; `null` trước chu kỳ đầu):
 
 ```json
 "retention_forecast": {
@@ -706,12 +706,18 @@ Khác với summary gọn, detail dùng `TierStorageManager::getDashboardDetail(
   "retention_days_estimate": 6.73,
   "estimated_remaining_days": 2.2,
   "required_days": 5.73,
-  "state": "normal"
+  "committed_cameras": 4,
+  "committed_bytes": 1130000000000,
+  "committed_days": 1.0,
+  "state": "normal",
+  "level": "normal"
 }
 ```
 
 `ingest_mbps` và các trường ngày là `null` khi chưa đủ 15 phút đo hoặc pool không biết dung lượng; `cameras` và
-`required_bytes` chỉ tính camera có `retain_until_days > 0` ở tầng HOT.
+`required_*` là **mục tiêu** (thời gian lưu cấu hình, mức trần), `committed_*` là **cam kết** (`keepArchivedMinFor`
+đặt tay); `level` = `normal` | `warning` (thiếu cho mục tiêu) | `critical` (mất phần cam kết), `state` = `low` khi
+`level` khác `normal`. `required_bytes` = Σ tốc độ camera × thời gian bản ghi nằm ở pool theo policy (cắt ở thời gian lưu cấu hình), cộng phần tầng trước dồn xuống; camera không có thời gian lưu giới hạn thì tầng cuối không tính. Xem [api-system-alert-events.md](api-system-alert-events.md) mục dung lượng giữ bản ghi.
 
 ## 9. Alert
 

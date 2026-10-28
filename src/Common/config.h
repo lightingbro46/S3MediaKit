@@ -255,7 +255,7 @@ extern const std::string kBroadcastPoolThroughputAlert;
 // hold the configured retention at the current recording rate (level 1 warning, 2 critical), or
 // recovered (level 0). Days are -1 when unknown; ingest is MiB/s.
 extern const std::string kBroadcastRetentionForecastAlert;
-#define BroadcastRetentionForecastAlertArgs const std::string &scope, const std::string &pool_id, const std::string &pool_name, const std::string &path, const std::string &mount_point, const int &level, const double &retention_days, const double &required_days, const float &ingest_mbps, const int64_t &usable_bytes, const int64_t &required_bytes, const int &cameras, const std::string &overflow_action
+#define BroadcastRetentionForecastAlertArgs const std::string &scope, const std::string &pool_id, const std::string &pool_name, const std::string &path, const std::string &mount_point, const int &level, const double &retention_days, const double &required_days, const float &ingest_mbps, const int64_t &usable_bytes, const int64_t &required_bytes, const int &cameras, const std::string &overflow_action, const double &committed_days, const int64_t &committed_bytes, const int &committed_cameras
 
 #define BroadcastPoolThroughputAlertArgs const std::string &pool_id, const std::string &pool_name, const std::string &tier, const float &capacity_mbps, const float &demand_mbps, const float &required_mbps, const int64_t &backlog_bytes, const int64_t &eta_sec, const bool &is_low
 
