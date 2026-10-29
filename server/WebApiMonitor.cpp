@@ -33,6 +33,9 @@ static void systemStatistic(Json::Value &val) {
 #else
     val["data"]["record_write"] = StorageManager::Instance().makeRecordWriteJson();
 #endif
+    // Supports api systemStatisticHistory: the app can query historical metrics from the DB.
+    // The app can use this to decide whether to show the history chart or not.
+    val["data"]["hasHistoryRecords"] = true;
 }
 
 // Statistics DB query over a time range: runs on the API worker pool.
