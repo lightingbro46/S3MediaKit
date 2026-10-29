@@ -20,6 +20,33 @@ struct DeviceOption {
     std::string controlProtocol = "AUTO";
 };
 
+// Options of every recorded device (RTSP camera, push camera).
+struct RecordingOption {
+    // device name
+    std::string name;
+
+    // whether to enable recording
+    bool enableRecord = false;
+
+    // custom MP4 recording root. Empty means use Protocol::kMP4SavePath.
+    std::string recordRootPath;
+
+    // whether to enable automatic choose minium value of block retention
+    bool keepArchivedMinForAuto = true;
+
+    // keep minimum time block from being deleted
+    uint64_t keepArchivedMinFor = 0;
+
+    // whether to enable automatic choose maximum value of block retention
+    bool keepArchivedMaxForAuto = true;
+
+    // keep time block from exceeding threshold
+    uint64_t keepArchivedMaxFor = 0;
+
+    // recording schedules, include 168 elements for one week
+    std::string recordSchedules;
+};
+
 struct ControllerOption {
     std::string manufacturer;
     std::string ip;

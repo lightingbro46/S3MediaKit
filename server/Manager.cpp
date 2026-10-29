@@ -29,6 +29,7 @@
 #include "Manager.h"
 #include "Server/ClusterManager.h"
 #include "Local/StatisticRecorder.h"
+#include "Camera/PushCameraManager.h"
 #include "Common/BlockingExecutors.h"
 #include "Common/StrUtil.h"
 #include "Onvif/OnvifEventTopics.h"
@@ -70,6 +71,9 @@ static void loadSavedDeviceInfo() {
     StatisticRecorder::Instance().registerType({ GENERIC_IP_SPEAKER_SCHEMA,
                                                  [](const string &device_dir) -> DeviceStatisticBase::Ptr { return std::make_shared<SpeakerStatisticImp>(device_dir); },
                                                  SpeakerManager::Instance().shared_from_this() });
+    StatisticRecorder::Instance().registerType({ GENERIC_PUSH_CAMERA_SCHEMA,
+                                                 [](const string &device_dir) -> DeviceStatisticBase::Ptr { return std::make_shared<PushCameraStatisticImp>(device_dir); },
+                                                 PushCameraManager::Instance().shared_from_this() });
     EventPollerPool::Instance().getPoller()->doDelayTask(3000, []() {
         DebugL << "Started loading saved devices";
         BlockingExecutors::storage()->async([]() { StatisticRecorder::Instance().loadAll(); });
@@ -612,9 +616,9 @@ void installManagerHook () {
     // for a device that may currently be offline. Reads info.txt via StatisticRecorder.
     NoticeCenter::Instance().addListener(&manager_hook_tag, Broadcast::kBroadcastGetStreamQuality, [](BroadcastGetStreamQualityArgs) {
         std::map<int, std::string> result;
-        auto recorder = StatisticRecorder::Instance().getRecorder(device_id, false);
+        auto recorder = StatisticRecorder::Instance().getRecording(device_id);
         if (recorder) {
-            auto params = recorder->getParams();
+            auto params = recorder->getRecordingParams();
             for (const auto &kv : params.stream_map) {
                 if (!kv.second.stream_id.empty()) {
                     result[kv.first] = kv.second.stream_id;

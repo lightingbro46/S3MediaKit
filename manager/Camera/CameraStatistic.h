@@ -6,6 +6,7 @@
 #include <unordered_set>
 #include "Local/FileRecorder.h"
 #include "Local/DeviceStatistic.h"
+#include "RecordingStatistic.h"
 #include "Poller/EventPoller.h"
 #include "Common/SerialTaskQueue.h"
 #include "GenericRtspCamera.h"
@@ -13,60 +14,12 @@
 
 namespace managerkit {
 
-struct BookmarkStats {
-    size_t recordAverageSizeB = 0;
-    size_t recordCount = 0;
-};
-
-struct StreamStorageStats {
-    size_t archiveIndexRecordCount = 0;
-    size_t archiveSizeB = 0;
-    uint64_t archiveStartTime = 0;
-    uint64_t archiveEndTime = 0;
-};
-
-struct StreamStatistic {
-    bool live = false;
-    uint64_t last_change_status = 0;
-    std::string status;
-    int byte_speed = 0;
-    bool has_video = false;
-    std::string vcodec;
-    // Camera codec before ingest transcoding (e.g. JPEG while vcodec is H264).
-    std::string source_vcodec;
-    bool transcoded = false;
-    int width = 0;
-    int height = 0;
-    int bitrate = 0;
-    float fps = 0.0;
-    bool has_audio = false;
-    std::string acodec;
-    int sample_rate = 0;
-    int channel_no = 0;
-    int sample_bit = 0;
-};
-
 struct DeviceStatistic {
     bool connect = false;
     std::string status;
     DeviceCapabilities device_caps;
     OnvifPTZProfile::PTZPresetMap user_presets;
     VideoEncoderConfig::VideoEncoderConfigMap stream_settings;
-};
-
-struct MotionStorageStats {
-    uint64_t archiveStartTime = 0;
-    uint64_t archiveEndTime = 0;
-};
-
-struct TierStorageStats {
-    uint64_t archiveStartTime = 0;
-    uint64_t archiveEndTime = 0;
-};
-
-struct TransportStats {
-    std::vector<std::string> liveTransports;
-    std::vector<std::string> replayTransports;
 };
 
 struct CameraStatistic;
@@ -77,25 +30,11 @@ public:
     static std::string getParamsString(const CameraStatistic &stats);
 };
 
-struct CameraStatistic {
-    std::string schema = GENERIC_RTSP_CAMERA_SCHEMA;
-    DeviceTuple tuple;
+struct CameraStatistic : public RecordingStatistic {
     CameraOption option;
-    std::unordered_map<int, StreamTuple> stream_map;
-    BookmarkStats bm;
-    std::unordered_map<std::string, StreamStorageStats> storage_map;
-    std::unordered_map<int, StreamStatistic> sinfo_map;
-    MotionStorageStats motion_stats;
-    TransportStats transport_stats;
-    std::unordered_map<int, TierStorageStats> tier_storage_map;
     DeviceStatistic device_stats;
-    uint64_t created_at;
-    uint64_t updated_at;
 
-    CameraStatistic() {
-        created_at = 0;
-        updated_at = 0;
-    }
+    CameraStatistic() { schema = GENERIC_RTSP_CAMERA_SCHEMA; }
 };
 
 struct ReduceQualityCapability {
@@ -115,7 +54,7 @@ public:
     static Json::Value toJson(const ReduceQualityCapability &capability);
 };
 
-class CameraStatisticImp : private CameraStatistic, public DeviceStatisticBase, public std::enable_shared_from_this<CameraStatisticImp> {
+class CameraStatisticImp : private CameraStatistic, public RecordingStatisticImp, public std::enable_shared_from_this<CameraStatisticImp> {
 public:
     using Ptr = std::shared_ptr<CameraStatisticImp>;
 
@@ -137,23 +76,14 @@ public:
 
     void setTransportStats(const TransportStats &input_stats);
 
-    std::string getStreamID(const int &stream_type);
-
     std::unordered_map<std::string, VideoEncoderConfig> getStreamVideoEncoderConfigMap();
 
-    void addArchiveSize(std::string stream_id, size_t count, size_t size, uint64_t archived_start_time, uint64_t archived_end_time, bool add = true);
-
-    void addBookmarkCount(uint64_t bm_created_at,  size_t size, bool add = true);
-
-    void addStreamStatistic(int stream_type, bool live, std::string status, const mediakit::TranslationInfo *info = nullptr);
+    // Also writes the stream status history and the ESC status.
+    void addStreamStatistic(int stream_type, bool live, std::string status, const mediakit::TranslationInfo *info = nullptr) override;
 
     void addDeviceCapabilities(bool connect, std::string status, const DeviceCapabilities *device_caps = nullptr);
 
     void addUserPresets(const std::string &preset_token, const std::string &preset_name, float abs_pan, float abs_tilt, float abs_zoom, bool add = true);
-
-    void addMotionKeepThreshold(bool start, uint64_t threshold);
-
-    void addTierKeepThreshold(int tier_type, bool start, uint64_t threshold);
 
     void saveVideoEncoderConfig(const std::string token, const VideoEncoderConfig &config);
 
@@ -178,6 +108,12 @@ public:
     static bool syncFromEsc(std::string &guid, CameraStatistic &resource);
 
 private:
+    RecordingStatistic &recordingData() override { return *this; }
+
+    RecordingOption &recordingOption() override { return option; }
+
+    void saveRecording() override { save(); }
+
     void setup(const std::string &src_path);
 
     void load();
@@ -223,7 +159,6 @@ private:
                                  bool connect, const std::string &reason);
 
 private:
-    std::mutex _mtx;
     FileRecorder<CameraStatistic, CameraStatisticHelper>::Ptr _file;
     uint64_t _file_seq = 0;            // bumped by every save() (guarded by _mtx)
     bool _file_save_queued = false;    // an async write is waiting on the ESC queue (guarded by _mtx)

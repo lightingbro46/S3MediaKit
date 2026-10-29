@@ -1061,9 +1061,9 @@ FFmpegExtractor::PreviewInfo FFmpegExtractor::getExtractPreview(const string &ca
     result.hasData = result.availableDuration > 0;
     if (result.hasData) {
         result.streamId = selected_stream_id;
-        auto recorder = StatisticRecorder::Instance().getRecorder(camera_id, false);
+        auto recorder = StatisticRecorder::Instance().getRecording(camera_id);
         if (recorder) {
-            auto params = recorder->getParams();
+            auto params = recorder->getRecordingParams();
             for (const auto &item : params.stream_map) {
                 if (item.second.stream_id == result.streamId) {
                     result.streamName = item.second.name;
@@ -2204,9 +2204,9 @@ void FFmpegExtractor::emitAuditEvent(bool success, const string &err_msg) {
         log.camera_id = tuple.app;
         log.stream_id = tuple.stream;
         {
-            auto recorder = StatisticRecorder::Instance().getRecorder(tuple.app, false);
+            auto recorder = StatisticRecorder::Instance().getRecording(tuple.app);
             if (recorder) {
-                auto params = recorder->getParams();
+                auto params = recorder->getRecordingParams();
                 log.camera_name = params.option.name;
                 for (const auto &it : params.stream_map) {
                     if (it.second.stream_id == tuple.stream) {

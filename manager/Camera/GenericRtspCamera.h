@@ -13,14 +13,13 @@
 
 namespace managerkit {
 
-class CameraOption : public DeviceOption {
+// The recording options (name, enableRecord, recordRootPath, keepArchived*, recordSchedules) are
+// in RecordingOption, shared with the push camera.
+class CameraOption : public DeviceOption, public RecordingOption {
 public:
     CameraOption() {
         // todo: load default value from database
     }
-
-    // camera name 
-    std::string name;
 
     // camera model
     std::string model;
@@ -36,24 +35,6 @@ public:
 
     // whether to disable recording secondary stream
     bool doNotRecordSecondaryStream = false;
-
-    // whether to enable recording
-    bool enableRecord = false;
-
-    // custom MP4 recording root. Empty means use Protocol::kMP4SavePath.
-    std::string recordRootPath;
-
-    // whether to enable automatic choose minium value of block retention
-    bool keepArchivedMinForAuto = true;
-
-    // keep minimum time block from being deleted
-    uint64_t keepArchivedMinFor = 0;
-
-    // whether to enable automatic choose maximum value of block retention
-    bool keepArchivedMaxForAuto = true;
-
-    // keep time block from exceeding threshold
-    uint64_t keepArchivedMaxFor = 0;
 
     // whether to enable camera
     bool enableActive = false;
@@ -84,9 +65,6 @@ public:
 
     // post-record seconds for motion detection
     int motionPostRecordSec = 0;
-
-    // recording schedules, include 168 elements for one week
-    std::string recordSchedules;
 
     // whether to disable audio
     bool disableAudio = false;

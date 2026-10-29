@@ -7,7 +7,7 @@ Nhánh: `feature/speaker-statistic-record-dir` (từ `develop` 9e8d04f7).
 ```
 <mp4_save_path>/<record.appName>/<camera_id>/info.txt   {"schema":"generic_rtsp_camera", ...}
 <mp4_save_path>/<record.appName>/<speaker_id>/info.txt  {"schema":"generic_ip_speaker", ...}
-<mp4_save_path>/<record.appName>/<push_id>/info.txt     {"schema":"push_camera", ...}       (đợt S2)
+<mp4_save_path>/<record.appName>/<push_id>/info.txt     {"schema":"generic_push_camera", ...} (đợt S2)
 <mp4_save_path>/<speaker.audioFileDir>/...              (mặc định ./www/audioFile, không đổi)
 ```
 
@@ -46,7 +46,7 @@ lớn chỉ đọc `getParams()`: `option.keepArchivedMin/MaxFor[Auto]`, `option
 
 | Trường | Quy tắc |
 |---|---|
-| `schema` | Macro trong `manager/Common/DeviceSource.h` (`GENERIC_RTSP_CAMERA_SCHEMA`, `GENERIC_IP_SPEAKER_SCHEMA`, sau này `PUSH_CAMERA_SCHEMA`). Thiếu → `generic_rtsp_camera`. |
+| `schema` | Macro trong `manager/Common/DeviceSource.h` (`GENERIC_RTSP_CAMERA_SCHEMA`, `GENERIC_IP_SPEAKER_SCHEMA`, sau này `GENERIC_PUSH_CAMERA_SCHEMA`). Thiếu → `generic_rtsp_camera`. |
 | `schemaVersion` | Thiếu → 1. Lớn hơn bản build hỗ trợ → không nạp, giữ file. |
 | `id`, `vhost`, `name` | Header chung (đã có ở cả camera và loa). |
 
@@ -235,10 +235,15 @@ DeviceStatisticBase
   `get<RecordingStatisticImp>`; các chỗ đọc `params.option.keepArchived*` / `stream_map` / `sinfo_map`
   (TierStorageManager, FFmpegSource, GlobalMonitor, HealthMonitor, Manager.cpp) đổi sang getter
   của phần chung. Chỉ chỗ thật sự cần ONVIF/`CameraOption` mới giữ `getRecorder()`.
-- **Đăng ký**: macro `PUSH_CAMERA_SCHEMA` trong `DeviceSource.h`, `PushCameraManager` cài
+- **Đăng ký**: macro `GENERIC_PUSH_CAMERA_SCHEMA` trong `DeviceSource.h`, `PushCameraManager` cài
   `ISavedDeviceLoader`, một dòng `registerType` trong `server/Manager.cpp`. Vòng quét không đổi.
-- **Còn mở, chốt khi làm S2**: drone và mobile là một schema `push_camera` + trường loại thiết bị
-  (cùng manager), hay hai schema riêng; danh sách trường riêng của push; sync ESC cho camera push.
+- **Đã chốt (2026-10-29)**: một schema `generic_push_camera` + `PushCameraOption::originType` (`DeviceOriginType`:
+  `mobile_device`, `flying_device`, lưu bằng `getOriginTypeString`),
+  một `PushCameraManager`. Đợt này chỉ làm khung: `RecordingStatistic.{h,cpp}` (dữ liệu + `RecordingOption`
+  mà `CameraOption` kế thừa + đọc/ghi JSON chung + `RecordingStatisticImp`), `PushCameraStatistic`,
+  `PushCameraManager`, `registerType`; chưa có ingest/API tạo camera push.
+- **Còn mở**: danh sách trường riêng của push (hiện chỉ `originType`, `enableActive`); sync ESC cho camera
+  push (hiện không sync).
 
 ## Rủi ro / giới hạn
 

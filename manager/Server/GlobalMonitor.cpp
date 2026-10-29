@@ -586,12 +586,13 @@ Json::Value GlobalMonitor::makeSystemStatisticJson() {
     std::vector<ReaderDeviceStats> readerDeviceStatsList;
 
     for (const auto &item : reader_map) {
-        auto recorder = StatisticRecorder::Instance().getRecorder(item.first, false);
+        auto recorder = StatisticRecorder::Instance().getRecording(item.first);
         if (recorder) {
-            auto params = recorder->getParams();
             ReaderDeviceStats stats;
-            stats.name         = params.option.name;
-            stats.ipAddress    = params.option.ip;
+            stats.name         = recorder->getRecordingParams().option.name;
+            // A push camera has no IP.
+            auto camera = std::dynamic_pointer_cast<CameraStatisticImp>(recorder);
+            stats.ipAddress    = camera ? camera->getParams().option.ip : "";
             stats.live_count     = item.second.first;
             stats.playback_count = item.second.second;
             stats.total_count    = stats.live_count + stats.playback_count;

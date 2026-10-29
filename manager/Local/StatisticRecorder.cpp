@@ -164,8 +164,13 @@ bool StatisticRecorder::removeSpeakerRecorder(const string &device_id) {
     return remove<SpeakerStatisticImp>(device_id);
 }
 
+PushCameraStatisticImp::Ptr StatisticRecorder::getPushCameraRecorder(const string &device_id, bool create_if_not_exist) {
+    CHECK(!device_id.empty());
+    return create_if_not_exist ? create<PushCameraStatisticImp>(GENERIC_PUSH_CAMERA_SCHEMA, device_id) : get<PushCameraStatisticImp>(device_id);
+}
+
 void StatisticRecorder::addArchiveSize(const string &device_id, const string &stream_id, size_t count, size_t size, uint64_t archive_start_time, uint64_t archive_end_time, bool add) {
-    auto recorder = getRecorder(device_id, false);
+    auto recorder = getRecording(device_id);
     if (!recorder) {
         WarnL << "Received archive size update for device " << device_id << " stream "<< stream_id << " but no statistic recorder found. Ignore update.";
         return;
@@ -174,7 +179,7 @@ void StatisticRecorder::addArchiveSize(const string &device_id, const string &st
 }
 
 void StatisticRecorder::addBookmarkCount(const string &device_id, uint64_t created_at, bool add) {
-    auto recorder = getRecorder(device_id, false);
+    auto recorder = getRecording(device_id);
     if (!recorder) {
         WarnL << "Received bookmark count update for device " << device_id << " but no statistic recorder found. Ignore update.";
         return;
@@ -192,7 +197,7 @@ void StatisticRecorder::addDeviceCapabilities(const string &device_id, bool conn
 }
 
 void StatisticRecorder::addStreamStatistic(const string &device_id, int stream_type, bool live, const string &status, const TranslationInfo *info) {
-    auto recorder = getRecorder(device_id, false);
+    auto recorder = getRecording(device_id);
     if (!recorder) {
         WarnL << "Received stream statistic update for device " << device_id << " stream type " << stream_type << " but no statistic recorder found. Ignore update.";
         return;
@@ -201,7 +206,7 @@ void StatisticRecorder::addStreamStatistic(const string &device_id, int stream_t
 }
 
 void StatisticRecorder::addMotionKeepThreshold(const std::string &device_id, bool start,  uint64_t threshold) {
-    auto recorder = getRecorder(device_id, false);
+    auto recorder = getRecording(device_id);
     if (!recorder) {
         WarnL << "Received motion keep threshold update for device " << device_id << " but no statistic recorder found. Ignore update.";
         return;
@@ -210,7 +215,7 @@ void StatisticRecorder::addMotionKeepThreshold(const std::string &device_id, boo
 }
 
 void StatisticRecorder::addTierKeepThreshold(const std::string &device_id, int tier_type, bool start, uint64_t threshold) {
-    auto recorder = getRecorder(device_id, false);
+    auto recorder = getRecording(device_id);
     if (!recorder) {
         WarnL << "Received tier keep threshold update for device " << device_id << " but no statistic recorder found. Ignore update.";
         return;
@@ -223,7 +228,7 @@ static void* s_tag;
 static onceToken g_token(
 []() {
     NoticeCenter::Instance().addListener(&s_tag, Broadcast::kBroadcastMotionKeepThreshold, [](BroadcastMotionKeepThresholdArgs) {
-        auto recorder = StatisticRecorder::Instance().getRecorder(device_id, false);
+        auto recorder = StatisticRecorder::Instance().getRecording(device_id);
         if (!recorder) {
             WarnL << "Received motion keep threshold update for device " << device_id << " but no statistic recorder found. Ignore update.";
             return;
@@ -231,7 +236,7 @@ static onceToken g_token(
         recorder->addMotionKeepThreshold(start, threshold);
     });
     NoticeCenter::Instance().addListener(&s_tag, Broadcast::kBroadcastTierKeepThreshold, [](BroadcastTierKeepThresholdArgs) {
-        auto recorder = StatisticRecorder::Instance().getRecorder(args.device_id, false);
+        auto recorder = StatisticRecorder::Instance().getRecording(args.device_id);
         if (!recorder) {
             WarnL << "Received tier keep threshold update for device " << args.device_id << " but no statistic recorder found. Ignore update.";
             return;

@@ -11,6 +11,8 @@
 #define ONVIF_CAMERA_SCHEMA "onvif_camera"
 #define RTSP_STREAM_SCHEMA "rtsp_stream"
 #define GENERIC_IP_SPEAKER_SCHEMA "generic_ip_speaker"
+// Camera pushing its stream to the server (drone, mobile video push), see PushCameraOption::originType
+#define GENERIC_PUSH_CAMERA_SCHEMA "generic_push_camera"
 // todo: add more device types here
 
 namespace managerkit {

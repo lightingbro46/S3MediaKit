@@ -3,6 +3,7 @@
 
 #include "Camera/CameraStatistic.h"
 #include "Speaker/SpeakerStatistic.h"
+#include "Camera/PushCameraStatistic.h"
 #include "Local/DeviceStatistic.h"
 
 namespace managerkit {
@@ -32,6 +33,9 @@ public:
         return it == _stats_map.end() ? nullptr : std::dynamic_pointer_cast<T>(it->second);
     }
 
+    // Recording part of any recorded device (RTSP camera, push camera), nullptr for other devices.
+    RecordingStatisticImp::Ptr getRecording(const std::string &device_id) { return get<RecordingStatisticImp>(device_id); }
+
     // nullptr when create_if_not_exist and the id already belongs to a device of another schema.
     CameraStatisticImp::Ptr getRecorder(const std::string &device_id, bool create_if_not_exist = true);
 
@@ -40,6 +44,8 @@ public:
     SpeakerStatisticImp::Ptr getSpeakerRecorder(const std::string &device_id, bool create_if_not_exist = true);
 
     bool removeSpeakerRecorder(const std::string &device_id);
+
+    PushCameraStatisticImp::Ptr getPushCameraRecorder(const std::string &device_id, bool create_if_not_exist = true);
 
     void addArchiveSize(const std::string &device_id, const std::string &stream_id, size_t count, size_t size, uint64_t archive_start_time, uint64_t archive_end_time, bool add = true);
 

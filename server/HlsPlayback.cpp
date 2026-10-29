@@ -493,9 +493,9 @@ void installHlsPlaybackApi() {
             // Query stream quality map
             string hi_stream_id;
             string lo_stream_id;
-            auto recorder = StatisticRecorder::Instance().getRecorder(cameraId);
+            auto recorder = StatisticRecorder::Instance().getRecording(cameraId);
             if (recorder) {
-                auto params = recorder->getParams();
+                auto params = recorder->getRecordingParams();
                 auto hi_it = params.stream_map.find(managerkit::PrimaryStream);
                 if (hi_it != params.stream_map.end()) {
                     hi_stream_id = hi_it->second.stream_id;

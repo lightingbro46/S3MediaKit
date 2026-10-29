@@ -2189,8 +2189,8 @@ void HealthMonitor::emitFailedJobEvents(int64_t now, const map<string, string> &
             }
             string camera_name;
             if (!f.camera_id.empty()) {
-                if (auto rec = StatisticRecorder::Instance().getRecorder(f.camera_id, false)) {
-                    camera_name = rec->getParams().option.name;
+                if (auto rec = StatisticRecorder::Instance().getRecording(f.camera_id)) {
+                    camera_name = rec->getRecordingParams().option.name;
                 }
             }
             auto pit = pool_names.find(f.pool_id);

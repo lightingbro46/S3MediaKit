@@ -4675,11 +4675,11 @@ bool TierStorageManager::cleanupRangeBookmarkMetadata(const SegmentTierRange &ra
 
 void TierStorageManager::enforceCameraArchiveRetention(const std::string &camera_id,
                                                        const StoragePolicy &) {
-    auto recorder = StatisticRecorder::Instance().getRecorder(camera_id, false);
+    auto recorder = StatisticRecorder::Instance().getRecording(camera_id);
     if (!recorder)
         return;
 
-    auto params = recorder->getParams();
+    auto params = recorder->getRecordingParams();
     int64_t now = static_cast<int64_t>(time(nullptr));
 
     // keepArchivedMaxFor keeps its original meaning: when explicit, data older
@@ -5468,9 +5468,9 @@ void TierStorageManager::enforcePoolPressureRetention() {
         if (it != camera_cutoffs.end())
             return it->second;
         int64_t cutoff = now;
-        auto recorder = StatisticRecorder::Instance().getRecorder(camera_id, false);
+        auto recorder = StatisticRecorder::Instance().getRecording(camera_id);
         if (recorder) {
-            auto params = recorder->getParams();
+            auto params = recorder->getRecordingParams();
             if (!params.option.keepArchivedMinForAuto)
                 cutoff = now - static_cast<int64_t>(params.option.keepArchivedMinFor);
         }
@@ -5656,9 +5656,9 @@ void TierStorageManager::reclaimPoolBalanced(const StoragePool &pool,
         if (!range_imp.findOldestStartByCameraPool(camera_id, pool.id, pool.tier, window.lo))
             continue;
         window.hi = now;
-        auto recorder = StatisticRecorder::Instance().getRecorder(camera_id, false);
+        auto recorder = StatisticRecorder::Instance().getRecording(camera_id);
         if (recorder) {
-            auto params = recorder->getParams();
+            auto params = recorder->getRecordingParams();
             if (!params.option.keepArchivedMinForAuto)
                 window.hi = now - static_cast<int64_t>(params.option.keepArchivedMinFor);
         }
@@ -8136,11 +8136,12 @@ Json::Value TierStorageManager::getDashboardDetail() {
         cv["policy_name"] = pit != policy_map.end() ? pit->second.name : "";
         cv["policy_enabled"] = pit != policy_map.end() ? (pit->second.enabled != 0) : false;
 
-        auto recorder = StatisticRecorder::Instance().getRecorder(a.camera_id, false);
+        auto recorder = StatisticRecorder::Instance().getRecording(a.camera_id);
         if (recorder) {
-            auto params = recorder->getParams();
-            cv["camera_name"] = params.option.name;
-            cv["camera_ip"] = params.option.ip;
+            cv["camera_name"] = recorder->getRecordingParams().option.name;
+            // A push camera has no IP.
+            auto camera = std::dynamic_pointer_cast<CameraStatisticImp>(recorder);
+            cv["camera_ip"] = camera ? camera->getParams().option.ip : "";
         } else {
             cv["camera_name"] = "";
             cv["camera_ip"] = "";
@@ -8317,9 +8318,9 @@ void TierStorageManager::evaluateRetentionForecast(
     for (const auto &cam : camera_mbps) {
         int64_t retention = kUnbounded;
         int64_t min_retention = 0;
-        auto recorder = StatisticRecorder::Instance().getRecorder(cam.first, false);
+        auto recorder = StatisticRecorder::Instance().getRecording(cam.first);
         if (recorder) {
-            auto params = recorder->getParams();
+            auto params = recorder->getRecordingParams();
             if (!params.option.keepArchivedMaxForAuto && params.option.keepArchivedMaxFor > 0)
                 retention = static_cast<int64_t>(params.option.keepArchivedMaxFor);
             if (!params.option.keepArchivedMinForAuto && params.option.keepArchivedMinFor > 0)
@@ -8857,9 +8858,9 @@ void TierStorageManager::cleanupOrphanTemporarySegments() {
             }
 
             uint64_t retention_seconds = static_cast<uint64_t>(tier.retain_until_days) * 86400ULL;
-            auto recorder = StatisticRecorder::Instance().getRecorder(camera_id, false);
+            auto recorder = StatisticRecorder::Instance().getRecording(camera_id);
             if (recorder) {
-                auto params = recorder->getParams();
+                auto params = recorder->getRecordingParams();
                 if (!params.option.keepArchivedMaxForAuto &&
                     params.option.keepArchivedMaxFor > 0) {
                     retention_seconds = std::min<uint64_t>(
