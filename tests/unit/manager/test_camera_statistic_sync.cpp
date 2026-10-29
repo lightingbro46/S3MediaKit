@@ -10,6 +10,7 @@
 #include "Camera/CameraStatistic.h"
 #include "Speaker/SpeakerStatistic.h"
 #include "Local/StatisticRecorder.h"
+#include "Camera/GenericPushCameraImp.h"
 #include "Common/config.h"
 #include "Local/StorageTier.h"
 #include "Extension/Resource.h"
@@ -743,6 +744,25 @@ std::string speakerJson(const std::string &id) {
     return SpeakerStatisticHelper::getParamsString(stats);
 }
 
+std::string pushCameraJson(const std::string &id) {
+    PushCameraStatistic stats;
+    stats.tuple.vhost = DEFAULT_VHOST;
+    stats.tuple.device_id = id;
+    stats.option.name = "drone " + id;
+    stats.option.originType = DeviceOriginType::mobile_device;
+    stats.option.keepArchivedMaxForAuto = false;
+    stats.option.keepArchivedMaxFor = 3600;
+    StreamTuple main;
+    main.vhost = DEFAULT_VHOST;
+    main.device_id = id;
+    main.name = getStreamTypeString(PrimaryStream);
+    main.stream_id = id + "-main";
+    stats.stream_map[PrimaryStream] = main;
+    stats.storage_map[main.stream_id] = StreamStorageStats();
+    stats.sinfo_map[PrimaryStream] = StreamStatistic();
+    return PushCameraStatisticHelper::getParamsString(stats);
+}
+
 class FakeLoader : public ISavedDeviceLoader {
 public:
     void addSaved(const DeviceStatisticBase::Ptr &stats) override {
@@ -765,6 +785,7 @@ protected:
         _dir = dir;
         _cameras = std::make_shared<FakeLoader>();
         _speakers = std::make_shared<FakeLoader>();
+        _push_cameras = std::make_shared<FakeLoader>();
     }
 
     void TearDown() override {
@@ -780,6 +801,9 @@ protected:
         recorder->registerType({ GENERIC_IP_SPEAKER_SCHEMA,
                                  [](const std::string &dir) -> DeviceStatisticBase::Ptr { return std::make_shared<SpeakerStatisticImp>(dir); },
                                  _speakers });
+        recorder->registerType({ GENERIC_PUSH_CAMERA_SCHEMA,
+                                 [](const std::string &dir) -> DeviceStatisticBase::Ptr { return std::make_shared<PushCameraStatisticImp>(dir); },
+                                 _push_cameras });
         return recorder;
     }
 
@@ -788,6 +812,7 @@ protected:
     std::string _dir;
     std::shared_ptr<FakeLoader> _cameras;
     std::shared_ptr<FakeLoader> _speakers;
+    std::shared_ptr<FakeLoader> _push_cameras;
 };
 
 } // namespace
@@ -908,4 +933,125 @@ TEST_F(DeviceStatisticSchemaTest, CreateRefusesIdOfAnotherSchema) {
 
     // A new id still gets a camera.
     EXPECT_TRUE(recorder->getRecorder("cam-2", true));
+}
+
+// Files written before the recording part was split from CameraStatistic keep every key.
+TEST(RecordingStatistic, LegacyCameraKeysAreRead) {
+    const std::string json = "{\"id\":\"cam-1\",\"vhost\":\"" DEFAULT_VHOST "\",\"name\":\"Gate\",\"ip\":\"10.0.0.1\","
+                             "\"enableRecord\":true,\"recordRootPath\":\"/data\",\"keepArchivedMaxForAuto\":false,"
+                             "\"keepArchivedMaxFor\":7200,\"keepArchivedMinForAuto\":false,\"keepArchivedMinFor\":60,"
+                             "\"recordSchedules\":\"abc\",\"streamUrls\":\"[{\\\"id\\\":\\\"cam-1-main\\\",\\\"url\\\":\\\"rtsp://x\\\"}]\","
+                             "\"addParams\":[{\"name\":\"bookmarkStats\",\"value\":\"{\\\"recordCount\\\":5}\"}]}";
+    CameraStatistic camera;
+    ASSERT_TRUE(CameraStatisticHelper::getParams(json, camera));
+    EXPECT_EQ("Gate", camera.option.name);
+    EXPECT_EQ("10.0.0.1", camera.option.ip);
+    EXPECT_TRUE(camera.option.enableRecord);
+    EXPECT_EQ("/data", camera.option.recordRootPath);
+    EXPECT_FALSE(camera.option.keepArchivedMaxForAuto);
+    EXPECT_EQ(7200u, camera.option.keepArchivedMaxFor);
+    EXPECT_EQ(60u, camera.option.keepArchivedMinFor);
+    EXPECT_EQ("abc", camera.option.recordSchedules);
+    ASSERT_EQ(1u, camera.stream_map.count(PrimaryStream));
+    EXPECT_EQ("cam-1-main", camera.stream_map[PrimaryStream].stream_id);
+    EXPECT_EQ(5u, camera.bm.recordCount);
+
+    CameraStatistic round_trip;
+    ASSERT_TRUE(CameraStatisticHelper::getParams(CameraStatisticHelper::getParamsString(camera), round_trip));
+    EXPECT_EQ(7200u, round_trip.option.keepArchivedMaxFor);
+    EXPECT_EQ("10.0.0.1", round_trip.option.ip);
+    EXPECT_EQ("cam-1-main", round_trip.stream_map[PrimaryStream].stream_id);
+    EXPECT_EQ(5u, round_trip.bm.recordCount);
+}
+
+TEST(RecordingStatistic, PushCameraRoundTripAndSchema) {
+    const std::string json = pushCameraJson("drone-1");
+    PushCameraStatistic push;
+    ASSERT_TRUE(PushCameraStatisticHelper::getParams(json, push));
+    EXPECT_EQ(GENERIC_PUSH_CAMERA_SCHEMA, push.schema);
+    EXPECT_EQ("drone-1", push.tuple.device_id);
+    EXPECT_EQ(DeviceOriginType::mobile_device, push.option.originType);
+    EXPECT_NE(std::string::npos, json.find("\"originType\" : \"mobile_device\""));
+    EXPECT_EQ(3600u, push.option.keepArchivedMaxFor);
+    EXPECT_EQ("drone-1-main", push.stream_map[PrimaryStream].stream_id);
+
+    CameraStatistic camera;
+    SpeakerStatistic speaker;
+    EXPECT_FALSE(CameraStatisticHelper::getParams(json, camera));
+    EXPECT_FALSE(SpeakerStatisticHelper::getParams(json, speaker));
+    EXPECT_FALSE(PushCameraStatisticHelper::getParams(legacyCameraJson("cam-1"), push));
+}
+
+TEST_F(DeviceStatisticSchemaTest, PushCameraSharesTheRecordingPart) {
+    writeText(infoPath("cam-old"), legacyCameraJson("cam-old"));
+    writeText(infoPath("spk-1"), speakerJson("spk-1"));
+    writeText(infoPath("drone-1"), pushCameraJson("drone-1"));
+
+    auto recorder = makeRecorder();
+    recorder->loadAll();
+    ASSERT_EQ(1u, _push_cameras->ids.size());
+    EXPECT_EQ("drone-1", _push_cameras->ids[0]);
+    EXPECT_EQ(GENERIC_PUSH_CAMERA_SCHEMA, _push_cameras->schemas[0]);
+    EXPECT_EQ(1, _push_cameras->loaded_calls);
+    EXPECT_EQ(1u, _cameras->ids.size());
+
+    EXPECT_TRUE(recorder->getRecording("cam-old"));
+    EXPECT_FALSE(recorder->getRecording("spk-1"));
+    auto push = recorder->getRecording("drone-1");
+    ASSERT_TRUE(push);
+    EXPECT_FALSE(recorder->getRecorder("drone-1", false));
+    EXPECT_FALSE(recorder->getRecorder("drone-1", true));
+    ASSERT_TRUE(recorder->getPushCameraRecorder("drone-1", false));
+
+    auto params = push->getRecordingParams();
+    EXPECT_EQ("drone drone-1", params.option.name);
+    EXPECT_EQ(3600u, params.option.keepArchivedMaxFor);
+    EXPECT_EQ("drone-1-main", push->getStreamID(PrimaryStream));
+
+    // Statistics routed by device id reach the push camera.
+    uint64_t now = time(nullptr);
+    recorder->addArchiveSize("drone-1", "drone-1-main", 2, 1000, now, now + 10, true);
+    recorder->addStreamStatistic("drone-1", PrimaryStream, true, "ok");
+    params = push->getRecordingParams();
+    EXPECT_EQ(1000u, params.storage_map["drone-1-main"].archiveSizeB);
+    EXPECT_TRUE(params.sinfo_map[PrimaryStream].live);
+
+    // The queued write lands in info.txt.
+    EXPECT_TRUE(waitFor([&] {
+        PushCameraStatistic saved;
+        return PushCameraStatisticHelper::getParams(File::loadFile(infoPath("drone-1")), saved) &&
+               saved.storage_map["drone-1-main"].archiveSizeB == 1000u;
+    }));
+
+    recorder->getPushCameraRecorder("drone-1", false)->remove();
+    EXPECT_FALSE(recorder->getRecording("drone-1"));
+    EXPECT_FALSE(File::fileExist(infoPath("drone-1")));
+}
+
+TEST_F(DeviceStatisticSchemaTest, GenericPushCameraImpSavesOptionAndStreams) {
+    writeText(infoPath("drone-2"), pushCameraJson("drone-2"));
+    auto recorder = makeRecorder();
+    recorder->loadAll();
+    auto stats = recorder->getPushCameraRecorder("drone-2", false);
+    ASSERT_TRUE(stats);
+    auto params = stats->getParams();
+    auto imp = std::make_shared<GenericPushCameraImp>(params.tuple, params.stream_map, stats);
+
+    PushCameraOption option = params.option;
+    option.enableActive = true;
+    option.originType = DeviceOriginType::mobile_device;
+    auto poller = imp->getOwnerPoller(DeviceSource::NullDeviceSource());
+    poller->sync([&]() { imp->setPushCameraOption(option); });
+    EXPECT_TRUE(imp->isEnabled());
+    EXPECT_EQ(DeviceOriginType::mobile_device, imp->getCameraSource()->getOriginType());
+    EXPECT_EQ(DeviceOriginType::mobile_device, stats->getParams().option.originType);
+    EXPECT_TRUE(DeviceSource::find(GENERIC_PUSH_CAMERA_SCHEMA, DEFAULT_VHOST, "drone-2"));
+
+    PushCameraStatistic saved;
+    ASSERT_TRUE(PushCameraStatisticHelper::getParams(File::loadFile(infoPath("drone-2")), saved));
+    EXPECT_EQ(DeviceOriginType::mobile_device, saved.option.originType);
+    EXPECT_TRUE(saved.option.enableActive);
+
+    imp->onStreamReady(*imp->getCameraSource(), PrimaryStream, true, "ok", toolkit::Any());
+    EXPECT_TRUE(stats->getRecordingParams().sinfo_map[PrimaryStream].live);
 }
