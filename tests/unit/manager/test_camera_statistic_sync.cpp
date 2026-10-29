@@ -2,12 +2,14 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
 #include <functional>
 #include <thread>
 #include <unistd.h>
 
 #include "Camera/CameraStatistic.h"
 #include "Speaker/SpeakerStatistic.h"
+#include "Local/StatisticRecorder.h"
 #include "Common/config.h"
 #include "Local/StorageTier.h"
 #include "Extension/Resource.h"
@@ -715,4 +717,195 @@ TEST_F(SpeakerStatisticSyncTest, RemoveKeepsRecordOfOtherMediaServer) {
     stats->remove();
     waitEscIdle();
     EXPECT_TRUE(escHasResource(guid));
+}
+
+// ################### info.txt schema / StatisticRecorder::loadAll ###########################
+
+namespace {
+
+void writeText(const std::string &path, const std::string &text) {
+    File::create_path(path.substr(0, path.rfind('/') + 1), 0755);
+    std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+    ofs << text;
+}
+
+// A camera info.txt written before "schema" existed: every production camera file looks like this.
+std::string legacyCameraJson(const std::string &id) {
+    return "{\"vhost\":\"" DEFAULT_VHOST "\",\"id\":\"" + id + "\",\"name\":\"" + id + "\",\"ip\":\"10.0.0.1\"}";
+}
+
+std::string speakerJson(const std::string &id) {
+    SpeakerStatistic stats;
+    stats.tuple.vhost = DEFAULT_VHOST;
+    stats.tuple.device_id = id;
+    stats.option.name = id;
+    stats.option.ip = "10.0.0.2";
+    return SpeakerStatisticHelper::getParamsString(stats);
+}
+
+class FakeLoader : public ISavedDeviceLoader {
+public:
+    void addSaved(const DeviceStatisticBase::Ptr &stats) override {
+        ids.push_back(stats->deviceId());
+        schemas.push_back(stats->schema());
+    }
+    void onSavedLoaded() override { ++loaded_calls; }
+
+    std::vector<std::string> ids;
+    std::vector<std::string> schemas;
+    int loaded_calls = 0;
+};
+
+class DeviceStatisticSchemaTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        char tmpl[] = "/tmp/s3mk_dev_stats_XXXXXX";
+        char *dir = mkdtemp(tmpl);
+        ASSERT_NE(nullptr, dir);
+        _dir = dir;
+        _cameras = std::make_shared<FakeLoader>();
+        _speakers = std::make_shared<FakeLoader>();
+    }
+
+    void TearDown() override {
+        std::string cmd = "rm -rf '" + _dir + "'";
+        (void)std::system(cmd.c_str());
+    }
+
+    std::shared_ptr<StatisticRecorder> makeRecorder() {
+        auto recorder = std::make_shared<StatisticRecorder>(_dir);
+        recorder->registerType({ GENERIC_RTSP_CAMERA_SCHEMA,
+                                 [](const std::string &dir) -> DeviceStatisticBase::Ptr { return std::make_shared<CameraStatisticImp>(dir); },
+                                 _cameras });
+        recorder->registerType({ GENERIC_IP_SPEAKER_SCHEMA,
+                                 [](const std::string &dir) -> DeviceStatisticBase::Ptr { return std::make_shared<SpeakerStatisticImp>(dir); },
+                                 _speakers });
+        return recorder;
+    }
+
+    std::string infoPath(const std::string &id) const { return _dir + "/" + id + "/info.txt"; }
+
+    std::string _dir;
+    std::shared_ptr<FakeLoader> _cameras;
+    std::shared_ptr<FakeLoader> _speakers;
+};
+
+} // namespace
+
+TEST(DeviceStatisticHeader, DefaultsAndBrokenJson) {
+    DeviceStatisticHeader header;
+    ASSERT_TRUE(parseDeviceStatisticHeader("{\"id\":\"cam-1\"}", header));
+    EXPECT_EQ(GENERIC_RTSP_CAMERA_SCHEMA, header.schema);
+    EXPECT_EQ(1, header.schema_version);
+    EXPECT_EQ("cam-1", header.id);
+
+    ASSERT_TRUE(parseDeviceStatisticHeader("{\"schema\":\"generic_ip_speaker\",\"schemaVersion\":3,\"id\":\"spk\"}", header));
+    EXPECT_EQ(GENERIC_IP_SPEAKER_SCHEMA, header.schema);
+    EXPECT_EQ(3, header.schema_version);
+
+    EXPECT_FALSE(parseDeviceStatisticHeader("{\"id\":", header));
+    EXPECT_FALSE(parseDeviceStatisticHeader("[1,2]", header));
+}
+
+// Camera and speaker files share id/vhost/name: without the schema check each helper would read the other.
+TEST(DeviceStatisticHeader, HelpersAcceptOnlyTheirSchema) {
+    CameraStatistic camera;
+    SpeakerStatistic speaker;
+    const std::string speaker_json = speakerJson("spk-1");
+    EXPECT_FALSE(CameraStatisticHelper::getParams(speaker_json, camera));
+    EXPECT_TRUE(SpeakerStatisticHelper::getParams(speaker_json, speaker));
+    EXPECT_EQ("spk-1", speaker.tuple.device_id);
+
+    const std::string camera_json = legacyCameraJson("cam-1");
+    EXPECT_TRUE(CameraStatisticHelper::getParams(camera_json, camera));
+    EXPECT_EQ("cam-1", camera.tuple.device_id);
+    EXPECT_FALSE(SpeakerStatisticHelper::getParams(camera_json, speaker));
+
+    const std::string other_json = "{\"schema\":\"push_camera_x\",\"id\":\"push-1\"}";
+    EXPECT_FALSE(CameraStatisticHelper::getParams(other_json, camera));
+    EXPECT_FALSE(SpeakerStatisticHelper::getParams(other_json, speaker));
+}
+
+TEST(DeviceStatisticHeader, RoundTripKeepsSchema) {
+    CameraStatistic camera;
+    camera.tuple.device_id = "cam-1";
+    const std::string camera_json = CameraStatisticHelper::getParamsString(camera);
+    DeviceStatisticHeader header;
+    ASSERT_TRUE(parseDeviceStatisticHeader(camera_json, header));
+    EXPECT_EQ(GENERIC_RTSP_CAMERA_SCHEMA, header.schema);
+    EXPECT_EQ(kDeviceStatisticSchemaVersion, header.schema_version);
+    CameraStatistic camera_read;
+    ASSERT_TRUE(CameraStatisticHelper::getParams(camera_json, camera_read));
+    EXPECT_EQ(GENERIC_RTSP_CAMERA_SCHEMA, camera_read.schema);
+
+    SpeakerStatistic speaker_read;
+    ASSERT_TRUE(parseDeviceStatisticHeader(speakerJson("spk-1"), header));
+    EXPECT_EQ(GENERIC_IP_SPEAKER_SCHEMA, header.schema);
+    ASSERT_TRUE(SpeakerStatisticHelper::getParams(speakerJson("spk-1"), speaker_read));
+    EXPECT_EQ(GENERIC_IP_SPEAKER_SCHEMA, speaker_read.schema);
+}
+
+TEST_F(DeviceStatisticSchemaTest, LoadAllDispatchesBySchema) {
+    writeText(infoPath("cam-old"), legacyCameraJson("cam-old"));
+    writeText(infoPath("spk-1"), speakerJson("spk-1"));
+    const std::string unknown_json = "{\"schema\":\"push_camera_x\",\"id\":\"push-1\"}";
+    writeText(infoPath("push-1"), unknown_json);
+    const std::string newer_json = "{\"schema\":\"generic_rtsp_camera\",\"schemaVersion\":99,\"id\":\"cam-new\"}";
+    writeText(infoPath("cam-new"), newer_json);
+    writeText(infoPath("empty"), "");
+    // Same id as cam-old in another directory: only one of them is loaded.
+    writeText(infoPath("cam-dup"), legacyCameraJson("cam-old"));
+
+    auto recorder = makeRecorder();
+    recorder->loadAll();
+
+    ASSERT_EQ(1u, _cameras->ids.size());
+    EXPECT_EQ("cam-old", _cameras->ids[0]);
+    EXPECT_EQ(GENERIC_RTSP_CAMERA_SCHEMA, _cameras->schemas[0]);
+    ASSERT_EQ(1u, _speakers->ids.size());
+    EXPECT_EQ("spk-1", _speakers->ids[0]);
+    EXPECT_EQ(GENERIC_IP_SPEAKER_SCHEMA, _speakers->schemas[0]);
+    EXPECT_EQ(1, _cameras->loaded_calls);
+    EXPECT_EQ(1, _speakers->loaded_calls);
+
+    // Files this build cannot read are kept for the build that can, empty ones are removed.
+    EXPECT_EQ(unknown_json, File::loadFile(infoPath("push-1")));
+    EXPECT_EQ(newer_json, File::loadFile(infoPath("cam-new")));
+    EXPECT_FALSE(File::fileExist(infoPath("empty")));
+
+    EXPECT_TRUE(recorder->getRecorder("cam-old", false));
+    EXPECT_TRUE(recorder->getSpeakerRecorder("spk-1", false));
+    EXPECT_FALSE(recorder->getRecorder("spk-1", false));
+    EXPECT_FALSE(recorder->getSpeakerRecorder("cam-old", false));
+    EXPECT_FALSE(recorder->getRecorder("push-1", false));
+}
+
+TEST_F(DeviceStatisticSchemaTest, LoadAllWithoutFilesStillReportsLoaded) {
+    auto recorder = makeRecorder();
+    recorder->loadAll();
+    EXPECT_TRUE(_cameras->ids.empty());
+    EXPECT_EQ(1, _cameras->loaded_calls);
+    EXPECT_EQ(1, _speakers->loaded_calls);
+}
+
+// A camera created on a speaker's id would load nothing and overwrite the speaker's info.txt on its first save.
+TEST_F(DeviceStatisticSchemaTest, CreateRefusesIdOfAnotherSchema) {
+    const std::string speaker_json = speakerJson("spk-1");
+    writeText(infoPath("spk-1"), speaker_json);
+
+    // Only on disk.
+    auto fresh = makeRecorder();
+    EXPECT_FALSE(fresh->getRecorder("spk-1", true));
+    EXPECT_EQ(speaker_json, File::loadFile(infoPath("spk-1")));
+
+    // Loaded in memory.
+    auto recorder = makeRecorder();
+    recorder->loadAll();
+    ASSERT_TRUE(recorder->getSpeakerRecorder("spk-1", false));
+    EXPECT_FALSE(recorder->getRecorder("spk-1", true));
+    EXPECT_TRUE(recorder->getSpeakerRecorder("spk-1", true));
+    EXPECT_EQ(speaker_json, File::loadFile(infoPath("spk-1")));
+
+    // A new id still gets a camera.
+    EXPECT_TRUE(recorder->getRecorder("cam-2", true));
 }
