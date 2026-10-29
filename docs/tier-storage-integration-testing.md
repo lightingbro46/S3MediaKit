@@ -293,7 +293,7 @@ Sau đó configure lại với `-DENABLE_AWS_SDK=ON`.
 - Protected video và retention override chặn xóa đến khi cả hai guard hết hiệu lực.
 - Giới hạn concurrent restore bằng trạng thái child durable trong SQLite.
 - SearchEngine trả đúng `tier` và `restore_required` khi range chuyển HOT → COLD.
-- `StatisticRecorder::loadSavedCameraStatistics()` phục hồi `CameraOption::recordRootPath`; effective root từ policy được lưu bền vững lại vào `info.txt`.
+- `StatisticRecorder::loadAll()` phục hồi `CameraOption::recordRootPath`; effective root từ policy được lưu bền vững lại vào `info.txt`.
 - Lifecycle policy create/update/delete đổi HOT record root và đường tiering thực tế, chặn xóa policy đang được camera dùng, rồi fallback về system default sau remove override.
 - Recovery tiering job và restore child từ `RUNNING` về `PENDING` qua process mới.
 - Vòng đời object MinIO trực tiếp qua `TierObjectStorage`.

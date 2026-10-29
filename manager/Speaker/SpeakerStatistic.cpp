@@ -130,10 +130,16 @@ static DeviceCapabilities getDeviceCapabilities(const Json::Value &data) {
 
 bool SpeakerStatisticHelper::getParams(const string &json_str, SpeakerStatistic &stats) {
     Json::Value ret;
-    if (!StrJsonUtils::readJsonString(json_str, ret)) {
+    DeviceStatisticHeader header;
+    if (!StrJsonUtils::readJsonString(json_str, ret) || !parseDeviceStatisticJson(ret, header)) {
         WarnL << "Parse json string failed";
         return false;
     }
+    if (header.schema != GENERIC_IP_SPEAKER_SCHEMA) {
+        WarnL << "Not a speaker statistic: " << header.id << " has schema " << header.schema;
+        return false;
+    }
+    stats.schema = header.schema;
     DeviceTuple tuple;
     tuple.vhost = ret["vhost"].asString();
     tuple.device_id = ret["id"].asString();
@@ -201,6 +207,7 @@ bool SpeakerStatisticHelper::getParams(const string &json_str, SpeakerStatistic 
 
 string SpeakerStatisticHelper::getParamsString(const SpeakerStatistic &stats) {
     Json::Value root;
+    writeDeviceStatisticHeader(stats.schema, root);
     // Speaker info
     root["vhost"] = stats.tuple.vhost;
     root["id"] = stats.tuple.device_id;
@@ -384,6 +391,11 @@ void SpeakerStatisticImp::setAudioVolume(const int deviceVolume, const int confi
 SpeakerStatistic SpeakerStatisticImp::getParams() {
     std::lock_guard<std::mutex> lck(_mtx);
     return static_cast<const SpeakerStatistic &>(*this);
+}
+
+std::string SpeakerStatisticImp::deviceId() {
+    std::lock_guard<std::mutex> lck(_mtx);
+    return tuple.device_id;
 }
 
 void SpeakerStatisticImp::remove() {

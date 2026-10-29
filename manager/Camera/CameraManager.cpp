@@ -64,6 +64,9 @@ bool CameraManager::addCamera(DeviceTuple &tuple, CameraOption &option, unordere
 
     // create new one
     auto stats_imp = StatisticRecorder::Instance().getRecorder(tuple.device_id);
+    if (!stats_imp) {
+        return false;
+    }
     auto imp = std::make_shared<GenericRtspCameraImp>(tuple, stream_map, stats_imp);
     auto poller = imp->getOwnerPoller(DeviceSource::NullDeviceSource());
     poller->async([imp, option]() {
@@ -313,33 +316,18 @@ vector<string> CameraManager::getCameraKeys() {
     return ret;
 }
 
-void CameraManager::loadSavedCameraInfo() {
-    std::lock_guard<std::recursive_mutex> lck(_mtx);
-    std::weak_ptr<CameraManager> weak_self = shared_from_this();
+void CameraManager::addSaved(const DeviceStatisticBase::Ptr &stats) {
+    auto camera = std::dynamic_pointer_cast<CameraStatisticImp>(stats);
+    if (!camera) {
+        return;
+    }
+    addCamera(camera);
+    DebugL << "Added saved info: " << camera->getParams().tuple.shortUrl();
+}
 
-    WorkThreadPool::Instance().getExecutor()->async([weak_self]() { 
-        auto strong_self = weak_self.lock();
-        if (!strong_self) {
-            return;
-        }
-        // reset ticker to elapse time
-        Ticker ticker;
-    
-        auto invoker = [weak_self](CameraStatisticImp::Ptr &stats) {
-            auto strong_self = weak_self.lock();
-            if (!strong_self) {
-                return;
-            }
-            strong_self->addCamera(stats);
-            DebugL << "Added saved info: " << stats->getParams().tuple.shortUrl();
-            return;
-        };
-
-        StatisticRecorder::Instance().loadSavedCameraStatistics(invoker);
-
-        InfoL << "Loaded all saved camera. Finished. " << format_duration_verbose(ticker.elapsedTime()) << " elapsed";
-        strong_self->setReady(true);
-    });
+void CameraManager::onSavedLoaded() {
+    InfoL << "Loaded all saved camera. Finished";
+    setReady(true);
 }
 
 void CameraManager::setReady(bool ready) {

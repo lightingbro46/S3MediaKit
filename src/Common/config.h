@@ -1065,11 +1065,7 @@ extern const std::string kDecryptSavePath;
 
 // //////////Speaker Configuration///////////
 namespace Speaker {
-// Speaker save path
-extern const std::string kSpeakerSavePath;
-// Directory for speaker-related data
-extern const std::string kSpeakerDir;
-// Directory for storing audio files
+// Directory for storing audio files, relative to protocol.mp4_save_path
 extern const std::string kAudioFilesDir;
 // Maximum allowed audio file size in bytes
 extern const std::string kMaxAudioFileSizeBytes;

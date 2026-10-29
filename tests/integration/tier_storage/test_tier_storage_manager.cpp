@@ -3200,17 +3200,29 @@ int scenarioLoadsSavedCameraRecordRoot(const std::string &root) {
         saved.setCameraOption(option);
     }
 
-    int loaded_count = 0;
-    CameraStatisticImp::Ptr loaded;
-    StatisticRecorder::Instance().loadSavedCameraStatistics(
-        [&](CameraStatisticImp::Ptr &stats) {
-            if (stats->getParams().tuple.device_id == camera) {
-                loaded = stats;
+    struct SavedCameraLoader : public ISavedDeviceLoader {
+        std::string camera;
+        int loaded_count = 0;
+        CameraStatisticImp::Ptr loaded;
+        void addSaved(const DeviceStatisticBase::Ptr &stats) override {
+            auto cam = std::dynamic_pointer_cast<CameraStatisticImp>(stats);
+            if (cam && cam->getParams().tuple.device_id == camera) {
+                loaded = cam;
                 ++loaded_count;
             }
-        });
-    require(loaded_count == 1 && loaded,
-            "loadSavedCameraStatistics did not restore the camera");
+        }
+        void onSavedLoaded() override {}
+    };
+    auto loader = std::make_shared<SavedCameraLoader>();
+    loader->camera = camera;
+    StatisticRecorder::Instance().registerType(
+        { GENERIC_RTSP_CAMERA_SCHEMA,
+          [](const std::string &device_dir) -> DeviceStatisticBase::Ptr { return std::make_shared<CameraStatisticImp>(device_dir); },
+          loader });
+    StatisticRecorder::Instance().loadAll();
+    CameraStatisticImp::Ptr loaded = loader->loaded;
+    require(loader->loaded_count == 1 && loaded,
+            "StatisticRecorder::loadAll did not restore the camera");
     require(loaded->getParams().option.recordRootPath == root + "/legacy-record-root",
             "Saved CameraOption::recordRootPath was not restored");
 

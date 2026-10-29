@@ -9,7 +9,7 @@
 
 namespace managerkit {
 
-class SpeakerManager : public std::enable_shared_from_this<SpeakerManager> {
+class SpeakerManager : public std::enable_shared_from_this<SpeakerManager>, public ISavedDeviceLoader {
 public:
     using Ptr = std::shared_ptr<SpeakerManager>;
 
@@ -26,7 +26,10 @@ public:
 
     void clear();
 
-    void loadSavedSpeakerInfo();
+    // ISavedDeviceLoader: saved speakers from StatisticRecorder::loadAll()
+    void addSaved(const DeviceStatisticBase::Ptr &stats) override;
+
+    void onSavedLoaded() override;
 
     // Configuration reconciliation must wait until saved speakers have loaded, even for an empty list.
     bool isReady();

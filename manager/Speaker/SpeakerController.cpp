@@ -1044,7 +1044,7 @@ void SpeakerController::playAudioFileByBackchannel(const std::string& fileId, On
         return;
     }
 
-    GET_CONFIG(std::string, speaker_path, mediakit::Speaker::kSpeakerSavePath);
+    GET_CONFIG(std::string, speaker_path, mediakit::Protocol::kMP4SavePath);
     GET_CONFIG(std::string, audio_file_dir, mediakit::Speaker::kAudioFilesDir);
     std::string filePath = file.localPath(toolkit::File::absolutePath(audio_file_dir, speaker_path));
 

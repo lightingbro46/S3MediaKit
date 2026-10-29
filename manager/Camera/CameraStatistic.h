@@ -5,6 +5,7 @@
 #include <vector>
 #include <unordered_set>
 #include "Local/FileRecorder.h"
+#include "Local/DeviceStatistic.h"
 #include "Poller/EventPoller.h"
 #include "Common/SerialTaskQueue.h"
 #include "GenericRtspCamera.h"
@@ -77,6 +78,7 @@ public:
 };
 
 struct CameraStatistic {
+    std::string schema = GENERIC_RTSP_CAMERA_SCHEMA;
     DeviceTuple tuple;
     CameraOption option;
     std::unordered_map<int, StreamTuple> stream_map;
@@ -113,7 +115,7 @@ public:
     static Json::Value toJson(const ReduceQualityCapability &capability);
 };
 
-class CameraStatisticImp : private CameraStatistic, public std::enable_shared_from_this<CameraStatisticImp> {
+class CameraStatisticImp : private CameraStatistic, public DeviceStatisticBase, public std::enable_shared_from_this<CameraStatisticImp> {
 public:
     using Ptr = std::shared_ptr<CameraStatisticImp>;
 
@@ -121,7 +123,11 @@ public:
     
     ~CameraStatisticImp();
 
-    void setOnRemove(const std::function<void(const std::string&)> &cb) { _on_remove = std::move(cb); }
+    std::string schema() override { return CameraStatistic::schema; }
+
+    std::string deviceId() override;
+
+    void setOnRemove(const std::function<void(const std::string&)> &cb) override { _on_remove = cb; }
 
     void setDeviceTuple(const DeviceTuple &input_tuple);
 

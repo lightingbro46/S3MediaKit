@@ -810,8 +810,6 @@ static onceToken token([]() {
 // //////////Speaker Configuration///////////
 namespace Speaker {
 #define SPEAKER_FIELD "speaker."
-const string kSpeakerSavePath = SPEAKER_FIELD "speakerSavePath";
-const string kSpeakerDir = SPEAKER_FIELD "speakerDir";
 const string kAudioFilesDir = SPEAKER_FIELD "audioFileDir";
 const string kMaxAudioFileSizeBytes = SPEAKER_FIELD "maxAudioFileSizeBytes";
 const string kOnvifUsername = SPEAKER_FIELD "onvifUsername";
@@ -822,8 +820,6 @@ const string kSyncConfigToDb = SPEAKER_FIELD "sync_config_to_db";
 const string kDetectMaxIntervalSec = SPEAKER_FIELD "detect_max_interval_sec";
 
 static onceToken token([]() {
-    mINI::Instance()[kSpeakerSavePath] = "./www";
-    mINI::Instance()[kSpeakerDir] = "speaker";
     mINI::Instance()[kAudioFilesDir] = "audioFile";
     mINI::Instance()[kMaxAudioFileSizeBytes] = 2 * 1024 * 1024;
     mINI::Instance()[kOnvifUsername] = "onvif_vms";

@@ -196,7 +196,7 @@ void BoschIpSpeaker::uploadAudio(const AudioFile& file, OnDeviceResult cb) {
         return;
     }
 
-    GET_CONFIG(std::string, speaker_path, mediakit::Speaker::kSpeakerSavePath);
+    GET_CONFIG(std::string, speaker_path, mediakit::Protocol::kMP4SavePath);
     GET_CONFIG(std::string, audio_file_dir, mediakit::Speaker::kAudioFilesDir);
     auto audioFilesDir = toolkit::File::absolutePath(audio_file_dir, speaker_path);
     std::string localPath = file.localPath(audioFilesDir);
@@ -609,7 +609,7 @@ void BoschIpSpeaker::uploadChunk(const AudioFile& file, const std::string& mimeT
     uint64_t offset = static_cast<uint64_t>(chunkIndex) * kBoschChunkSizeBytes;
     size_t readSize = static_cast<size_t>(std::min<uint64_t>(kBoschChunkSizeBytes, fileSize - offset));
 
-    GET_CONFIG(std::string, speaker_path, mediakit::Speaker::kSpeakerSavePath);
+    GET_CONFIG(std::string, speaker_path, mediakit::Protocol::kMP4SavePath);
     GET_CONFIG(std::string, audio_file_dir, mediakit::Speaker::kAudioFilesDir);
     auto audioFilesDir = toolkit::File::absolutePath(audio_file_dir, speaker_path);
     std::string localPath = file.localPath(audioFilesDir);

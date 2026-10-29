@@ -43,6 +43,9 @@ bool SpeakerManager::addSpeaker(DeviceTuple &tuple, SpeakerOption &option) {
 
     // create new one
     auto stats_imp = StatisticRecorder::Instance().getSpeakerRecorder(tuple.device_id);
+    if (!stats_imp) {
+        return false;
+    }
     auto imp = std::make_shared<GenericIPSpeakerImp>(tuple, stats_imp);
     auto poller = imp->getOwnerPoller(DeviceSource::NullDeviceSource());
     poller->async([imp, stats_imp, option]() {
@@ -112,33 +115,18 @@ std::vector<std::string> SpeakerManager::getSpeakerKeys() {
     return ret;
 }
 
-void SpeakerManager::loadSavedSpeakerInfo() {
-    std::lock_guard<std::recursive_mutex> lck(_mtx);
-    std::weak_ptr<SpeakerManager> weak_self = shared_from_this();
+void SpeakerManager::addSaved(const DeviceStatisticBase::Ptr &stats) {
+    auto speaker = std::dynamic_pointer_cast<SpeakerStatisticImp>(stats);
+    if (!speaker) {
+        return;
+    }
+    addSpeaker(speaker);
+    DebugL << "Added saved info: " << speaker->getParams().tuple.shortUrl();
+}
 
-    WorkThreadPool::Instance().getPoller()->async([weak_self]() { 
-        auto strong_self = weak_self.lock();
-        if (!strong_self) {
-            return;
-        }
-        // reset ticker to elapse time
-        Ticker ticker;
-    
-        auto invoker = [weak_self](SpeakerStatisticImp::Ptr &stats) {
-            auto strong_self = weak_self.lock();
-            if (!strong_self) {
-                return;
-            }
-            strong_self->addSpeaker(stats);
-            DebugL << "Added saved info: " << stats->getParams().tuple.shortUrl();
-            return;
-        };
-
-        StatisticRecorder::Instance().loadSavedSpeakerStatistics(invoker);
-
-        InfoL << "Loaded all saved speaker. Finished. " << format_duration_verbose(ticker.elapsedTime()) << " elapsed";
-        strong_self->setReady(true);
-    });
+void SpeakerManager::onSavedLoaded() {
+    InfoL << "Loaded all saved speaker. Finished";
+    setReady(true);
 }
 
 void SpeakerManager::setReady(bool ready) {

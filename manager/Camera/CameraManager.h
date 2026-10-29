@@ -5,7 +5,7 @@
 
 namespace managerkit {
 
-class CameraManager : public std::enable_shared_from_this<CameraManager> {
+class CameraManager : public std::enable_shared_from_this<CameraManager>, public ISavedDeviceLoader {
 public:
     using Ptr = std::shared_ptr<CameraManager>;
 
@@ -26,7 +26,10 @@ public:
 
     std::vector<std::string> getCameraKeys();
 
-    void loadSavedCameraInfo();
+    // ISavedDeviceLoader: saved cameras from StatisticRecorder::loadAll()
+    void addSaved(const DeviceStatisticBase::Ptr &stats) override;
+
+    void onSavedLoaded() override;
 
     void setReady(bool ready);
 

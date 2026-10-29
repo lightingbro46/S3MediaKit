@@ -29,6 +29,7 @@
 #include "Manager.h"
 #include "Server/ClusterManager.h"
 #include "Local/StatisticRecorder.h"
+#include "Common/BlockingExecutors.h"
 #include "Common/StrUtil.h"
 #include "Onvif/OnvifEventTopics.h"
 #include "User/UserAuditLog.h"
@@ -62,14 +63,16 @@ static void initializeTierEncryption() {
 }
 
 static void loadSavedDeviceInfo() {
+    // Every device type saves <record dir>/<id>/info.txt; "schema" picks the type and its manager.
+    StatisticRecorder::Instance().registerType({ GENERIC_RTSP_CAMERA_SCHEMA,
+                                                 [](const string &device_dir) -> DeviceStatisticBase::Ptr { return std::make_shared<CameraStatisticImp>(device_dir); },
+                                                 CameraManager::Instance().shared_from_this() });
+    StatisticRecorder::Instance().registerType({ GENERIC_IP_SPEAKER_SCHEMA,
+                                                 [](const string &device_dir) -> DeviceStatisticBase::Ptr { return std::make_shared<SpeakerStatisticImp>(device_dir); },
+                                                 SpeakerManager::Instance().shared_from_this() });
     EventPollerPool::Instance().getPoller()->doDelayTask(3000, []() {
-        DebugL << "Camera manager has been started loading saved camera";
-        CameraManager::Instance().loadSavedCameraInfo();
-        return 0;
-    });
-    EventPollerPool::Instance().getPoller()->doDelayTask(3000, []() {
-        DebugL << "Speaker manager has been started loading saved speaker";
-        SpeakerManager::Instance().loadSavedSpeakerInfo();
+        DebugL << "Started loading saved devices";
+        BlockingExecutors::storage()->async([]() { StatisticRecorder::Instance().loadAll(); });
         return 0;
     });
 }

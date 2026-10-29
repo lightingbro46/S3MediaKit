@@ -664,10 +664,16 @@ static TierStorageStats getTierStorageStats(const Json::Value &data) {
 
 bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &stats) {
     Json::Value ret;
-    if (!StrJsonUtils::readJsonString(json_str, ret)) {
+    DeviceStatisticHeader header;
+    if (!StrJsonUtils::readJsonString(json_str, ret) || !parseDeviceStatisticJson(ret, header)) {
         WarnL << "Parse json string failed";
         return false;
     }
+    if (header.schema != GENERIC_RTSP_CAMERA_SCHEMA) {
+        WarnL << "Not a camera statistic: " << header.id << " has schema " << header.schema;
+        return false;
+    }
+    stats.schema = header.schema;
     DeviceTuple tuple;
     tuple.vhost = ret["vhost"].asString();
     tuple.device_id = ret["id"].asString();
@@ -805,6 +811,7 @@ bool CameraStatisticHelper::getParams(const string &json_str, CameraStatistic &s
 
 string CameraStatisticHelper::getParamsString(const CameraStatistic &stats) {
     Json::Value root;
+    writeDeviceStatisticHeader(stats.schema, root);
     // camera info
     root["vhost"] = stats.tuple.vhost;
     root["id"] = stats.tuple.device_id;
@@ -1201,6 +1208,11 @@ void CameraStatisticImp::addBookmarkCount(uint64_t bm_created_at, size_t size, b
 CameraStatistic CameraStatisticImp::getParams() {
     std::lock_guard<std::mutex> lck(_mtx);
     return static_cast<const CameraStatistic &>(*this);
+}
+
+std::string CameraStatisticImp::deviceId() {
+    std::lock_guard<std::mutex> lck(_mtx);
+    return tuple.device_id;
 }
 
 void CameraStatisticImp::addStreamStatistic(int stream_type, bool live, string status, const TranslationInfo *info_) {

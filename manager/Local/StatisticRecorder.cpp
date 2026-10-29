@@ -1,5 +1,7 @@
 #include "StatisticRecorder.h"
+#include <map>
 #include "Common/config.h"
+#include "Util/TimeTicker.h"
 
 using namespace std;
 using namespace toolkit;
@@ -15,99 +17,151 @@ StatisticRecorder::StatisticRecorder(const string &record_path) : _record_path(r
         GET_CONFIG(string, app_name, Record::kAppName)
         _record_path = File::absolutePath(app_name, mp4_save_path);
     } 
-    if (_speaker_path.empty()) {
-        GET_CONFIG(string, speaker_save_path, Speaker::kSpeakerSavePath)
-        GET_CONFIG(string, speaker_dir, Speaker::kSpeakerDir)
-        _speaker_path = File::absolutePath(speaker_dir, speaker_save_path);
-    }
 }
 
 StatisticRecorder::~StatisticRecorder() {
     std::lock_guard<std::mutex> lock(_mtx_stats);
-    _cam_stats_map.clear();
-    _sp_stats_map.clear();
+    _stats_map.clear();
+}
+
+void StatisticRecorder::registerType(const DeviceStatisticType &type) {
+    CHECK(!type.schema.empty() && type.create);
+    std::lock_guard<std::mutex> lock(_mtx_stats);
+    _types[type.schema] = type;
+}
+
+void StatisticRecorder::setOnRemove(const DeviceStatisticBase::Ptr &stats) {
+    weak_ptr<StatisticRecorder> weak_self = shared_from_this();
+    weak_ptr<DeviceStatisticBase> weak_stats = stats;
+    stats->setOnRemove([weak_self, weak_stats](const string &device_id) {
+        auto strong_self = weak_self.lock();
+        auto strong_stats = weak_stats.lock();
+        if (!strong_self || !strong_stats) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(strong_self->_mtx_stats);
+        auto it = strong_self->_stats_map.find(device_id);
+        if (it != strong_self->_stats_map.end() && it->second == strong_stats) {
+            strong_self->_stats_map.erase(it);
+        }
+    });
+}
+
+bool StatisticRecorder::savedSchemaMatches(const string &device_dir, const string &schema) {
+    auto saved_path = device_dir + "/info.txt";
+    if (!File::fileExist(saved_path) || File::fileSize(saved_path) == 0) {
+        return true;
+    }
+    DeviceStatisticHeader header;
+    if (!parseDeviceStatisticHeader(File::loadFile(saved_path), header)) {
+        // Unreadable: same as before schemas existed, the new statistic overwrites it.
+        return true;
+    }
+    if (header.schema != schema) {
+        ErrorL << "Device id " << header.id << " is already used by " << saved_path << " (schema " << header.schema
+               << "), cannot create " << schema;
+        return false;
+    }
+    return true;
+}
+
+void StatisticRecorder::loadAll() {
+    Ticker ticker;
+    std::unordered_map<std::string, DeviceStatisticType> types;
+    {
+        std::lock_guard<std::mutex> lock(_mtx_stats);
+        types = _types;
+    }
+    std::map<std::string, size_t> loaded_count;
+    File::scanDir(_record_path, [&](const string &path, bool isDir) {
+        if (!isDir) {
+            return true;
+        }
+        auto saved_path = path + "/info.txt";
+        if (!File::fileExist(saved_path) || File::fileSize(saved_path) == 0) {
+            WarnL << "Saved file empty or invalid format: " << saved_path << ". Ignore";
+            File::delete_file(saved_path, true);
+            return true;
+        }
+        try {
+            DeviceStatisticHeader header;
+            if (!parseDeviceStatisticHeader(File::loadFile(saved_path), header)) {
+                WarnL << "Saved file is not valid JSON: " << saved_path << ". Ignore";
+                return true;
+            }
+            auto type = types.find(header.schema);
+            if (type == types.end()) {
+                WarnL << "Saved file has unknown schema " << header.schema << ": " << saved_path << ". Ignore";
+                return true;
+            }
+            if (header.schema_version > kDeviceStatisticSchemaVersion) {
+                WarnL << "Saved file has schema version " << header.schema_version << " newer than "
+                      << kDeviceStatisticSchemaVersion << ": " << saved_path << ". Ignore";
+                return true;
+            }
+            if (header.id.empty()) {
+                WarnL << "Saved file has no device id: " << saved_path << ". Ignore";
+                return true;
+            }
+            {
+                std::lock_guard<std::mutex> lock(_mtx_stats);
+                if (_stats_map.find(header.id) != _stats_map.end()) {
+                    ErrorL << "Device id " << header.id << " of " << saved_path << " is already loaded. Ignore";
+                    return true;
+                }
+            }
+            DebugL << "Found saved file: " << saved_path << ". Loading...";
+            auto stats = type->second.create(path);
+            if (!stats) {
+                WarnL << "Load saved file failed: " << saved_path;
+                return true;
+            }
+            setOnRemove(stats);
+            {
+                std::lock_guard<std::mutex> lock(_mtx_stats);
+                if (!_stats_map.emplace(header.id, stats).second) {
+                    ErrorL << "Device id " << header.id << " of " << saved_path << " is already loaded. Ignore";
+                    return true;
+                }
+            }
+            ++loaded_count[header.schema];
+            if (auto loader = type->second.loader.lock()) {
+                loader->addSaved(stats);
+            }
+        } catch (const exception &ex) {
+            WarnL << "Load saved file failed: " << saved_path << ": " << ex.what();
+        }
+        return true;
+    });
+
+    string counts;
+    for (const auto &it : loaded_count) {
+        counts += " " + it.first + "=" + to_string(it.second);
+    }
+    InfoL << "Loaded all saved devices:" << (counts.empty() ? " none" : counts) << ". " << ticker.elapsedTime() << " ms elapsed";
+    for (const auto &it : types) {
+        if (auto loader = it.second.loader.lock()) {
+            loader->onSavedLoaded();
+        }
+    }
 }
 
 CameraStatisticImp::Ptr StatisticRecorder::getRecorder(const string &device_id, bool create_if_not_exist) {
     CHECK(!device_id.empty());
-    {
-        std::lock_guard<std::mutex> lock(_mtx_stats);
-        if (_cam_stats_map.find(device_id) != _cam_stats_map.end()) {
-            return _cam_stats_map[device_id];
-        }
-    }
-    return create_if_not_exist ? addRecorder(device_id) : nullptr;
-}
-
-CameraStatisticImp::Ptr StatisticRecorder::addRecorder(const string &device_id) {
-    auto device_path = _record_path + "/" + device_id;
-    auto imp = std::make_shared<CameraStatisticImp>(device_path);
-    weak_ptr<StatisticRecorder> weak_self = shared_from_this();
-    imp->setOnRemove([weak_self](const std::string &device_id) {
-        auto strong_self = weak_self.lock();
-        if (!strong_self) {
-            return;
-        }
-        strong_self->removeRecorder(device_id);
-    });
-    {
-        std::lock_guard<std::mutex> lock(_mtx_stats);
-        if (_cam_stats_map.find(device_id) != _cam_stats_map.end()) {
-            _cam_stats_map.erase(device_id);
-        }
-        _cam_stats_map.emplace(device_id, imp);
-    }
-    return imp;
+    return create_if_not_exist ? create<CameraStatisticImp>(GENERIC_RTSP_CAMERA_SCHEMA, device_id) : get<CameraStatisticImp>(device_id);
 }
 
 bool StatisticRecorder::removeRecorder(const string &device_id) {
-    std::lock_guard<std::mutex> lock(_mtx_stats);
-    if (_cam_stats_map.find(device_id) == _cam_stats_map.end()) {
-        return false;
-    }
-    _cam_stats_map.erase(device_id);
-    return true;
+    return remove<CameraStatisticImp>(device_id);
 }
 
 SpeakerStatisticImp::Ptr StatisticRecorder::getSpeakerRecorder(const string &device_id, bool create_if_not_exist) {
     CHECK(!device_id.empty());
-    {
-        std::lock_guard<std::mutex> lock(_mtx_stats);
-        if (_sp_stats_map.find(device_id) != _sp_stats_map.end()) {
-            return _sp_stats_map[device_id];
-        }
-    }
-    return create_if_not_exist ? addSpeakerRecorder(device_id) : nullptr;
-}
-
-SpeakerStatisticImp::Ptr StatisticRecorder::addSpeakerRecorder(const string &device_id) {
-    auto device_path = _speaker_path + "/" + device_id;
-    auto imp = std::make_shared<SpeakerStatisticImp>(device_path);
-    weak_ptr<StatisticRecorder> weak_self = shared_from_this();
-    imp->setOnRemove([weak_self](const std::string &device_id) {
-        auto strong_self = weak_self.lock();
-        if (!strong_self) {
-            return;
-        }
-        strong_self->removeSpeakerRecorder(device_id);
-    });
-    {
-        std::lock_guard<std::mutex> lock(_mtx_stats);
-        if (_sp_stats_map.find(device_id) != _sp_stats_map.end()) {
-            _sp_stats_map.erase(device_id);
-        }
-        _sp_stats_map.emplace(device_id, imp);
-    }
-    return imp;
+    return create_if_not_exist ? create<SpeakerStatisticImp>(GENERIC_IP_SPEAKER_SCHEMA, device_id) : get<SpeakerStatisticImp>(device_id);
 }
 
 bool StatisticRecorder::removeSpeakerRecorder(const string &device_id) {
-    std::lock_guard<std::mutex> lock(_mtx_stats);
-    if (_sp_stats_map.find(device_id) == _sp_stats_map.end()) {
-        return false;
-    }
-    _sp_stats_map.erase(device_id);
-    return true;
+    return remove<SpeakerStatisticImp>(device_id);
 }
 
 void StatisticRecorder::addArchiveSize(const string &device_id, const string &stream_id, size_t count, size_t size, uint64_t archive_start_time, uint64_t archive_end_time, bool add) {
@@ -144,70 +198,6 @@ void StatisticRecorder::addStreamStatistic(const string &device_id, int stream_t
         return;
     }
     recorder->addStreamStatistic(stream_type, live, status, info);
-}
-
-void StatisticRecorder::loadSavedCameraStatistics(const std::function<void(CameraStatisticImp::Ptr &stats)> &invoker) {
-    File::scanDir(_record_path, [&](const string &path, bool isDir) {
-        if (isDir) {
-            auto saved_path = path + "/info.txt";
-            if (File::fileExist(saved_path) && File::fileSize(saved_path) > 0) {
-                DebugL << "Found saved file: " << saved_path << ". Loading...";
-                try {
-                    auto imp = std::make_shared<CameraStatisticImp>(saved_path);
-                    weak_ptr<StatisticRecorder> weak_self = shared_from_this();
-                    imp->setOnRemove([weak_self](const string &device_id) {
-                        auto strong_self = weak_self.lock();
-                        if (!strong_self) {
-                            return;
-                        }
-                        strong_self->removeRecorder(device_id);
-                    });
-                    auto stats = imp->getParams();
-                    {
-                        std::lock_guard<std::mutex> lock(_mtx_stats);
-                        _cam_stats_map.emplace(stats.tuple.device_id, imp);
-                    }
-                    invoker(imp);
-                } catch (const exception &ex) {
-                    WarnL << "Load saved file failed: " << saved_path << ": " << ex.what();
-                }
-                return true;
-            }
-            WarnL << "Saved file empty or invalid format: " << saved_path << ". Ignore";
-            File::delete_file(saved_path, true);
-        }
-        return true;
-    });
-}
-
-void StatisticRecorder::loadSavedSpeakerStatistics(const std::function<void(SpeakerStatisticImp::Ptr &stats)> &invoker) {
-    File::scanDir(_speaker_path, [&](const string &path, bool isDir) {
-        if (isDir) {
-            auto saved_path = path + "/info.txt";
-            if (File::fileExist(saved_path) && File::fileSize(saved_path) > 0) {
-                DebugL << "Found saved file: " << saved_path << ". Loading...";
-                auto imp = std::make_shared<SpeakerStatisticImp>(saved_path);
-                weak_ptr<StatisticRecorder> weak_self = shared_from_this();
-                imp->setOnRemove([weak_self](const string &device_id) {
-                    auto strong_self = weak_self.lock();
-                    if (!strong_self) {
-                        return;
-                    }
-                    strong_self->removeSpeakerRecorder(device_id);
-                });
-                auto stats = imp->getParams();
-                {
-                    std::lock_guard<std::mutex> lock(_mtx_stats);
-                    _sp_stats_map.emplace(stats.tuple.device_id, imp);
-                }
-                invoker(imp);
-                return true;
-            }
-            WarnL << "Saved file empty or invalid format: " << saved_path << ". Ignore";
-            File::delete_file(saved_path, true);
-        }
-        return true;
-    });
 }
 
 void StatisticRecorder::addMotionKeepThreshold(const std::string &device_id, bool start,  uint64_t threshold) {

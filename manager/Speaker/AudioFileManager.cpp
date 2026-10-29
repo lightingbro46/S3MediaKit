@@ -107,7 +107,7 @@ std::string AudioFileManagerHelper::getParamsString(const std::unordered_map<std
 INSTANCE_IMP(AudioFileManager)
 
 AudioFileManager::AudioFileManager() {
-    GET_CONFIG(string, speaker_path, Speaker::kSpeakerSavePath);
+    GET_CONFIG(string, speaker_path, Protocol::kMP4SavePath);
     GET_CONFIG(string, audio_file_dir, Speaker::kAudioFilesDir);
     _folder_path = File::absolutePath(audio_file_dir, speaker_path);
     CHECK(!_folder_path.empty(), "File path cannot be empty");
