@@ -26,6 +26,8 @@ string getOriginTypeString(DeviceOriginType type){
         SWITCH_CASE(unknown);
         SWITCH_CASE(api_service);
         SWITCH_CASE(mobile_device);
+        SWITCH_CASE(desktop_app);
+        SWITCH_CASE(flying_device);
         default : return "unknown";
     }
 }
@@ -285,6 +287,22 @@ bool equalDeviceTuple(const DeviceTuple &a, const DeviceTuple &b) {
 
 string DeviceSourceEvent::getOriginUrl(DeviceSource &sender) const {
     return sender.getUrl();
+}
+
+DeviceOriginType DeviceSourceEventInterceptor::getOriginType(DeviceSource &sender) const {
+    auto listener = _listener.lock();
+    if (!listener) {
+        return DeviceSourceEvent::getOriginType(sender);
+    }
+    return listener->getOriginType(sender);
+}
+
+std::string DeviceSourceEventInterceptor::getOriginUrl(DeviceSource &sender) const {
+    auto listener = _listener.lock();
+    if (!listener) {
+        return DeviceSourceEvent::getOriginUrl(sender);
+    }
+    return listener->getOriginUrl(sender);
 }
 
 void DeviceSourceEventInterceptor::onRegist(DeviceSource &sender, bool regist) {

@@ -20,6 +20,8 @@ public:
 
     bool isEnabled() const { return _enabled.load(); }
 
+    DeviceOriginType getOriginType(DeviceSource &sender) const override { return DeviceOriginType::api_service; }
+
     GenericRtspCamera::Ptr getCameraSource() const { return _src; }
 
     void setCameraOption(const CameraOption &option);

@@ -8,8 +8,6 @@
 #include "Poller/Timer.h"
 
 #define GENERIC_RTSP_CAMERA_SCHEMA "generic_rtsp_camera"
-#define ONVIF_CAMERA_SCHEMA "onvif_camera"
-#define RTSP_STREAM_SCHEMA "rtsp_stream"
 #define GENERIC_IP_SPEAKER_SCHEMA "generic_ip_speaker"
 // Camera pushing its stream to the server (drone, mobile video push), see PushCameraOption::originType
 #define GENERIC_PUSH_CAMERA_SCHEMA "generic_push_camera"
@@ -30,6 +28,8 @@ enum class DeviceOriginType : uint8_t {
     unknown = 0,
     api_service,
     mobile_device,
+    desktop_app,
+    flying_device
 };
 
 std::string getOriginTypeString(DeviceOriginType type);
@@ -71,6 +71,8 @@ public:
     void setDelegate(const std::weak_ptr<DeviceSourceEvent> &listener);
     std::shared_ptr<DeviceSourceEvent> getDelegate() const;
 
+    DeviceOriginType getOriginType(DeviceSource &sender) const override;
+    std::string getOriginUrl(DeviceSource &sender) const override;
     void onRegist(DeviceSource &sender, bool regist) override;
     void onRecordModeChange(DeviceSource &sender, int archive_mode, bool start) override;
     bool onRecordRootPathChange(DeviceSource &sender, const std::string &record_root_path) override;
