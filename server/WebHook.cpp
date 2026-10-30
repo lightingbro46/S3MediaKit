@@ -928,12 +928,14 @@ static bool decryptServerConfigJson(const Value &obj, Value &config) {
     }
 
     GET_CONFIG(string, api_secret, Manager::kApiSecret);
-    if (api_secret.empty() || !obj["media_server"].isNull()) {
+    // The encrypted payload is the string in {"data": "..."}; any other object is plaintext JSON.
+    const Value &payload = obj.isObject() ? obj["data"] : obj;
+    if (api_secret.empty() || !payload.isString()) {
         config = obj;
         return true;
     }
 
-    string combined = decodeBase64(obj.asString());
+    string combined = decodeBase64(payload.asString());
     if (combined.empty()) {
         WarnL << "Load server config failed: decode base64 response data is empty";
         return false;
