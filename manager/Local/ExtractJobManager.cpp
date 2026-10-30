@@ -64,11 +64,14 @@ static bool isRetryableHttpFailure(int status_code) {
 }
 
 static string uploadHost(const string &url) {
-    const string prefix = "https://";
-    if (!start_with(url, prefix)) {
+    size_t authority_start;
+    if (start_with(url, "https://")) {
+        authority_start = 8;
+    } else if (start_with(url, "http://")) {
+        authority_start = 7;
+    } else {
         return "";
     }
-    const size_t authority_start = prefix.size();
     const size_t authority_end = url.find_first_of("/?#", authority_start);
     string authority = url.substr(authority_start, authority_end == string::npos ? string::npos : authority_end - authority_start);
     if (authority.empty() || authority.find('@') != string::npos) {

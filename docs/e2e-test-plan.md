@@ -344,7 +344,7 @@ hiện tại ±1 để thấy chuyển mốc trong buổi test.
 | EXT-04 | P1 | M | `stampSource=true`, camera có overlay | video có dấu nguồn + watermark + mask |
 | EXT-05 | P0 | A | Cửa sổ extract nằm ở COLD (sau TIR-05) | tự restore, rồi xuất đúng nội dung |
 | EXT-06 | P1 | A | Cửa sổ extract trên bản ghi mã hoá | file xuất ra là plaintext phát được |
-| EXT-07 | P1 | A/N/A | Job service `extractArchived/job` với `uploadUrl` presigned HTTPS của MinIO | chỉ chạy được khi MinIO có HTTPS; callback `video-extractions/result` tới mock |
+| EXT-07 | P1 | A/N/A | Job service `extractArchived/job` với `uploadUrl` presigned HTTP hoặc HTTPS của MinIO | callback `video-extractions/result` tới mock |
 | EXT-08 | P2 | A | `delete` và hết `ffmpeg.delay_close_sec` | file bị xoá |
 
 ### TIR — Lưu trữ đa tầng (MinIO)

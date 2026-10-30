@@ -29,7 +29,7 @@ Endpoint này dành cho giao tiếp service-to-service và không sử dụng JW
 | `fileId` | string | Có | Không rỗng; là khóa idempotency |
 | `cameraId` | string | Có | Tối đa 256 ký tự; camera phải tồn tại trên node |
 | `startTime`, `endTime` | số nguyên | Có | `startTime > 0`, `endTime > startTime`, độ dài không vượt `extract_job.max_duration_sec` (mặc định 3600) |
-| `uploadUrl` | string | Có | HTTPS, không chứa userinfo, tối đa 8192 ký tự; nếu `extract_job.allowed_upload_hosts` khác rỗng thì host phải nằm trong danh sách (phân tách bằng dấu phẩy) |
+| `uploadUrl` | string | Có | HTTP hoặc HTTPS, không chứa userinfo, tối đa 8192 ký tự; nếu `extract_job.allowed_upload_hosts` khác rỗng thì host phải nằm trong danh sách (phân tách bằng dấu phẩy) |
 | `format` | string | Có | `mp4`, `mkv` hoặc `avi` |
 | `streamId` | string | Không | Tối đa 256 ký tự; bỏ trống thì MediaServer chọn stream có dữ liệu khả dụng dài nhất |
 

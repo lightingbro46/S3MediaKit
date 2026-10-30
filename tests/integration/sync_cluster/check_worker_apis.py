@@ -287,6 +287,13 @@ status, data, _ = post_json(E + "/job", job)
 check("step5 job(unknown camera)", status == 404 and data.get("code") == 905001, "status=%s code=%s" % (status, data.get("code")))
 status, data, _ = post_json(E + "/job", dict(job, format="mov"))
 check("step5 job(bad format)", status == 400 and data.get("code") == 902003, "status=%s code=%s" % (status, data.get("code")))
+# A plain HTTP uploadUrl passes the URL check and stops at the unknown camera.
+status, data, _ = post_json(E + "/job", dict(job, uploadUrl="http://127.0.0.1:9000/clips/a.mp4"))
+check("step5 job(http uploadUrl)", status == 404 and data.get("code") == 905001, "status=%s code=%s" % (status, data.get("code")))
+for bad_url in ("ftp://example.com/upload", "http://user:pass@example.com/upload"):
+    status, data, _ = post_json(E + "/job", dict(job, uploadUrl=bad_url))
+    check("step5 job(bad uploadUrl %s)" % bad_url.split(":")[0], status == 400 and "uploadUrl" in data.get("msg", ""),
+          "status=%s code=%s msg=%s" % (status, data.get("code"), data.get("msg")))
 
 # 10. Storage mutations (worker.md step 4) run on the API worker, serialized: a NAS pool
 #     create/update/test/delete cycle and the error paths keep their status and codes.

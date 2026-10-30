@@ -276,7 +276,7 @@ void registerExtractionApis() {
             return;
         }
         if (!ExtractJobManager::isAllowedUploadUrl(submit_request.upload_url)) {
-            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "uploadUrl must be an allowed HTTPS URL without userinfo");
+            RETURN_API_RESPONSE(ApiErrCode::CODE_INVALID_ARGS, "uploadUrl must be an allowed HTTP(S) URL without userinfo");
             return;
         }
 
