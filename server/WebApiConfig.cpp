@@ -97,9 +97,11 @@ void registerConfigurationApis() {
                     ++result->changed;
                 }
 
+                // Copied here: the worker must not read mINI while the pollers change it.
+                auto ini_copy = std::make_shared<mINI>(ini);
                 runApiWork(owner, session,
                     // `result` is only touched by the worker, then by the completion (sequential).
-                    [result, update_cert, mediaServerDomain, mediaServerCert]() {
+                    [result, ini_copy, update_cert, mediaServerDomain, mediaServerCert]() {
                         if (update_cert) {
                             auto imp = std::make_shared<CertificateImp>();
                             if (!imp->certExist(mediaServerDomain, mediaServerCert)) {
@@ -108,7 +110,7 @@ void registerConfigurationApis() {
                             }
                         }
                         if (result->changed > 0) {
-                            mINI::Instance().dumpFile(g_ini_file);
+                            ini_copy->dumpFile(g_ini_file);
                         }
                     },
                     [result, session, val, headerOut, invoker](const std::exception_ptr &error) mutable {

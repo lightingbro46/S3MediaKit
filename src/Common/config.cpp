@@ -19,6 +19,8 @@ bool loadIniConfig(const char *ini_path) {
     } else {
         ini = exePath() + ".ini";
     }
+    // Every static onceToken has registered its default by now: dumpFile() writes only what differs.
+    static onceToken s_defaults([]() { mINI::Instance().markDefaults(); });
     try {
         mINI tmp;
         tmp.parseFile(ini);
@@ -303,7 +305,7 @@ static onceToken token([]() {
                                                 "<body bgcolor=\"white\">"
                                                 "<center><h1>The resources you access do not exist!</h1></center>"
                                                 "<hr><center>"
-                                             << kServerName
+                                             << kServerShortName
                                              << "</center>"
                                                 "</body>"
                                                 "</html>"
